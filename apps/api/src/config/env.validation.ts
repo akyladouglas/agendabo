@@ -25,9 +25,11 @@ const envSchema = z.object({
 
   ANTHROPIC_API_KEY: z.string().min(1).optional(),
   LLM_MODEL_PRIMARY: z.string().default('claude-haiku-4-5-20251001'),
-  LLM_MODEL_ESCALATION: z.string().default('claude-sonnet-4-5'),
+  LLM_MODEL_ESCALATION: z.string().default('claude-sonnet-5-5'),
   /** ADR-003: abaixo disso a extracao vira needs_review, nunca chute silencioso. */
   MIN_CONFIDENCE_TO_ACCEPT: z.coerce.number().min(0).max(1).default(0.7),
+  /** Spec Fase 1: inatividade que descarta a sessao de conversa do bot (memoria). */
+  BOT_SESSION_TTL_MINUTES: z.coerce.number().int().positive().default(30),
 });
 
 export type Env = z.infer<typeof envSchema>;

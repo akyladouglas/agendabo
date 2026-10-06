@@ -1,8 +1,0 @@
-
-  [31merror[39m telegram-encapsulation: [1msrc/shared/telegram/telegram-client.service.ts[22m → [1m../../node_modules/.pnpm/telegraf@4.16.3/node_modules/telegraf/lib/index.js[22m
-  [31merror[39m resend-encapsulation: [1msrc/modules/auth/mail.service.ts[22m → [1m../../node_modules/.pnpm/resend@4.8.0_react-dom@19.3.0_react@19.3.0__react@19.3.0/node_modules/resend/dist/index.js[22m
-  [31merror[39m ai-sdk-encapsulation: [1msrc/modules/ai/anthropic-messages-client.ts[22m → [1m../../node_modules/.pnpm/@anthropic-ai+sdk@0.71.2_zod@3.25.76/node_modules/@anthropic-ai/sdk/resources/messages/messages.js[22m
-  [31merror[39m ai-sdk-encapsulation: [1msrc/modules/ai/anthropic-client.provider.ts[22m → [1m../../node_modules/.pnpm/@anthropic-ai+sdk@0.71.2_zod@3.25.76/node_modules/@anthropic-ai/sdk/index.js[22m
-[31m
-x 4 dependency violations (4 errors, 0 warnings). 61 modules, 136 dependencies cruised.
-[39m

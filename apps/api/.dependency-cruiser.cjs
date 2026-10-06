@@ -19,7 +19,10 @@ const CROSS_MODULE_EDGES = {
   'modules/auth': ['modules', 'health', 'shared', 'app.module.ts'],
   'modules/appointments': ['modules'],
   'modules/bot': ['modules'],
-  'modules/ai': ['modules'],
+  // Fase 1: o fluxo do bot consome a classificacao de intencao (modules/ai) e o
+  // mesmo AppointmentsService da web para conflito/criacao (plano D7). Servicos
+  // exportados; nada de importar SDK/Prisma de lá.
+  'modules/ai': ['modules', 'modules/bot'],
   'modules/notifications': ['modules'],
   'modules/users': ['modules'],
 };

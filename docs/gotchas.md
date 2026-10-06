@@ -40,3 +40,12 @@ parse e mandar para `needs_review` sem necessidade.
 **Fix aplicado:** o bot roda num unico processo (dev: script `dev:bot`); antes de subir,
 `deleteWebhook` e chamado no boot.
 **Se acontecer de novo:** confira se nao ha outro processo/instancia com o mesmo token.
+
+## 6. Telegram: `text` HTML com < & > derruba o sendMessage (bot fica mudo)
+
+**Problema:** o `TelegramClientService.sendMessage` envia com `parse_mode: HTML`, mas
+o bot repete texto digitado pelo usuario (titulo, notas) nas mensagens; um titulo tipo
+`Nota <10>` faz a API devolver 400 e a resposta do fluxo nunca chega.
+**Fix aplicado:** `escapeHtml()` em `modules/bot/messages.ts` aplicado as replies
+em `scheduling-flow.service.send()` (`HTML` e so em rotulos controlados).
+**Se acontecer de novo:** escape todo texto de usuario antes de mandar com parse_mode.

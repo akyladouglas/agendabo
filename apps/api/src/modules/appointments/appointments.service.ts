@@ -41,7 +41,7 @@ export class AppointmentsService {
     return { conflict: result.conflict, with: result.with ?? null };
   }
 
-  async create(userId: string, raw: unknown) {
+  async create(userId: string, raw: unknown, options: { origin?: 'bot' | 'web' } = {}) {
     const input = appointmentInputSchema.parse(raw);
     await this.assertNoConflict(userId, input);
     return this.prisma.appointment.create({
@@ -49,7 +49,7 @@ export class AppointmentsService {
         ...input,
         notes: input.notes ?? null,
         userId,
-        origin: 'web',
+        origin: options.origin ?? 'web',
         status: 'confirmed',
         notificationRules: { create: input.notificationRules.map(toRuleCreate) },
       },
