@@ -1,0 +1,35 @@
+{
+  "name": "agendabo",
+  "private": true,
+  "engines": {
+    "node": ">=22"
+  },
+  "packageManager": "pnpm@9.15.0",
+  "scripts": {
+    "dev:api": "pnpm --filter @agendabo/api dev",
+    "dev:web": "pnpm --filter @agendabo/web dev",
+    "dev:bot": "pnpm --filter @agendabo/api dev:bot",
+    "build": "pnpm -r build",
+    "lint": "pnpm -r lint",
+    "lint:arch": "pnpm --filter @agendabo/api lint:arch",
+    "test": "pnpm -r test",
+    "typecheck": "pnpm -r typecheck",
+    "infra:up": "docker compose up -d",
+    "infra:down": "docker compose down",
+    "sync:ia": "node scripts/sync-ia.mjs",
+    "prepare": "husky || true"
+  },
+  "lint-staged": {
+    "*.{md,json,yml,yaml}": [
+      "prettier --write"
+    ]
+  },
+  "devDependencies": {
+    "@commitlint/cli": "^19.6.0",
+    "@commitlint/config-conventional": "^19.6.0",
+    "husky": "^9.1.7",
+    "lint-staged": "^15.2.10",
+    "prettier": "^3.4.2",
+    "typescript": "^5.7.2"
+  }
+}

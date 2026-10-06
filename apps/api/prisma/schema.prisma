@@ -1,0 +1,137 @@
+// Modelagem minima do Agendabô (ver PROMPT.md + ia-docs/decisions).
+// Datas em UTC; timezone por usuario (ADR-001). Conflito e regra deterministica
+// em schedule-core, nunca decidida pelo LLM (ADR-003).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum AppointmentStatus {
+  confirmed
+  needs_review
+}
+
+enum AppointmentOrigin {
+  bot
+  web
+}
+
+enum NotificationRuleType {
+  none
+  before_hours
+  before_days
+  countdown_3_2_1
+}
+
+enum NotificationOutboxStatus {
+  pending
+  sent
+  failed
+}
+
+model User {
+  id               String    @id @default(uuid()) @db.Uuid
+  email            String    @unique
+  passwordHash     String
+  /// Id numerico do Telegram (unico; null ate o fluxo de confirmacao permitir)
+  telegramId       String?   @unique
+  emailConfirmedAt DateTime?
+  timezone         String    @default("America/Sao_Paulo")
+  /// Hora do resumo diario no fuso do usuario, "HH:mm" (2.1)
+  resumoDiarioHora String    @default("07:00")
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  appointments  Appointment[]
+  refreshTokens RefreshToken[]
+
+  @@map("users")
+}
+
+model Appointment {
+  id        String            @id @default(uuid()) @db.Uuid
+  title     String
+  startsAt  DateTime
+  endsAt    DateTime
+  notes     String?
+  status    AppointmentStatus @default(confirmed)
+  origin    AppointmentOrigin @default(web)
+  /// Texto original dito no bot (auditoria da fila de revisao, 3.3)
+  rawText   String?
+  /// Por que caiu em revisao (parse falho / confianca baixa / conflito abortado)
+  reviewReason String?
+  createdAt DateTime          @default(now())
+  updatedAt DateTime          @updatedAt
+
+  userId String @db.Uuid
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  notificationRules NotificationRule[]
+  notificationOutbox NotificationOutbox[]
+
+  @@index([userId, startsAt])
+  @@index([status])
+  @@map("appointments")
+}
+
+model NotificationRule {
+  id   String               @id @default(uuid()) @db.Uuid
+  type NotificationRuleType
+  /// Horas/dias antes; null para none e countdown_3_2_1
+  value Int?
+
+  appointmentId String      @db.Uuid
+  appointment   Appointment @relation(fields: [appointmentId], references: [id], onDelete: Cascade)
+
+  @@map("notification_rules")
+}
+
+/// Outbox pattern: cada disparo vira uma linha; worker BullMQ so consome o id.
+model NotificationOutbox {
+  id        String                   @id @default(uuid()) @db.Uuid
+  firesAt   DateTime
+  status    NotificationOutboxStatus @default(pending)
+  attempts  Int                      @default(0)
+  lastError String?
+  sentAt    DateTime?
+
+  appointmentId String      @db.Uuid
+  appointment   Appointment @relation(fields: [appointmentId], references: [id], onDelete: Cascade)
+
+  /// Regra que gerou este disparo (referencia informativa; payload vai no job)
+  ruleType NotificationRuleType
+
+  @@index([status, firesAt])
+  @@map("notification_outbox")
+}
+
+/// Codigo de verificacao de email (3.1.1 / ADR-002): 6 digitos, hash sha256.
+model VerificationCode {
+  id        String    @id @default(uuid()) @db.Uuid
+  email     String
+  codeHash  String
+  expiresAt DateTime
+  /// Timestamps de cada envio: comprimento no intervalo de 30min = quota de reenvio (max 3)
+  sentAt    DateTime  @default(now())
+  usedAt    DateTime?
+
+  @@index([email, sentAt])
+  @@map("verification_codes")
+}
+
+model RefreshToken {
+  id        String   @id @default(uuid()) @db.Uuid
+  tokenHash String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  userId String @db.Uuid
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("refresh_tokens")
+}

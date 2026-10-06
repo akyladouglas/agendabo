@@ -1,0 +1,25 @@
+node_modules/
+dist/
+build/
+coverage/
+.turbo/
+*.tsbuildinfo
+
+# Segredos — nunca commitar
+.env
+.env.local
+.env.*.local
+
+# Pontas geradas pelo scripts/sync-ia.mjs (fonte canônica é .ia/)
+.claude/agents/
+.opencode/agents/
+.claude/skills/
+.opencode/skills/
+.agents/
+CLAUDE.md
+
+# IDE / SO
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

@@ -1,0 +1,31 @@
+# Infra local do Agendabô — Postgres + Redis
+# Portas não-padrão para não colidir com outros projetos (financas usa 5433/6380).
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: agendabo
+      POSTGRES_PASSWORD: agendabo_dev
+      POSTGRES_DB: agendabo
+    ports:
+      - "5434:5432"
+    volumes:
+      - agendabo_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U agendabo"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7.4-alpine
+    ports:
+      - "6381:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  agendabo_postgres_data:
