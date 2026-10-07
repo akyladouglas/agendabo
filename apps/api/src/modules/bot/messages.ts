@@ -153,18 +153,21 @@ export const BOT_MESSAGES = {
     `Tem alguma informação importante pra eu anotar nesse compromisso? ` +
     `(Se não, responde "não")`,
 
-  /** Regra 6 — resumo unico final (decisao de produto #3) + confirmar/alterar. */
-  resumoFinal: (resumo: string, notas: string) =>
+  /** Regra 6 — resumo unico final (decisao de produto #3) + confirmar/alterar.
+   *  `lembrete` é a linha `⏰` já formatada (Fase 3, spec regra 1). */
+  resumoFinal: (resumo: string, notas: string, lembrete: string) =>
     `Fechando então:\n\n` +
     `📌 ${resumo}\n` +
-    `📝 ${notas}\n\n` +
+    `📝 ${notas}\n` +
+    `${lembrete}\n\n` +
     `Confirmo? (confirmar / alterar)`,
 
   /** Regra 6 — criacao ok: confirma citando titulo e horario no tz do usuario. */
   criado: (titulo: string, range: string) => `Prontinho! Criei "${titulo}" de ${range} ✅`,
 
   /** Alterar no resumo final: o que mudar? */
-  alterarPergunta: 'Tranquilo, o que você quer alterar? (título, dia, horário, duração ou notas)',
+  alterarPergunta:
+    'Tranquilo, o que você quer alterar? (título, dia, horário, duração, notas ou lembrete)',
 
   /** Regra 12/ajuste: "depois de um alterar" re-pergunta mantendo o passo. */
   perdoaRepetido: 'Beleza, continua por aqui então 🙂 ',
@@ -179,14 +182,15 @@ export const BOT_MESSAGES = {
     fim: 'fim',
     nota: 'notas',
     notas: 'notas',
-  } as Record<string, 'titulo' | 'dia' | 'hora' | 'fim' | 'notas'>,
+    lembrete: 'lembrete',
+  } as Record<string, 'titulo' | 'dia' | 'hora' | 'fim' | 'notas' | 'lembrete'>,
 
   /** Nao entendi a resposta do passo atual: re-pergunta o mesmo passo. */
   naoEntendi: 'Hmm, não entendi 🤔 ',
 
   /** Resposta de alterar fora do vocabulario. */
   alterarNaoEntendido:
-    'Não entendi o que alterar 🤔 Responde: título, dia, horário, duração ou notas.',
+    'Não entendi o que alterar 🤔 Responde: título, dia, horário, duração, notas ou lembrete.',
 
   // ---------- Fase 2: consulta de agenda sob demanda (spec consultar-agenda-bot) ----------
 
@@ -215,4 +219,39 @@ export const BOT_MESSAGES = {
 
   /** Decisão #3 — compromisso ainda em revisão aparece com o marcador. */
   consultaMarcadorNeedsReview: '⚠️ conferindo',
+
+  // ---------- Fase 3: lembretes no criar + resumo diário (spec lembretes-e-resumo-diario) ----------
+
+  /** Spec 2 — pergunta do esquema de lembrete (atalhos = botões; fala natural por cima). */
+  pedeLembrete: (resumo: string) =>
+    `Anotado: ${resumo}\n\n` +
+    `Como eu te lembro desse compromisso? Pode falar do seu jeito (ex.: "3 dias antes e 1h antes") ` +
+    `ou escolher um atalho.`,
+
+  /** Spec 2 — rótulos dos atalhos (botões do teclado de lembrete). */
+  lembreteAtalhos: ['24h antes', '3 dias antes', '3-2-1', 'sem lembrete', 'personalizado'],
+
+  /** Spec 4 — fala que o LLM não traduziu com confiança: re-pergunta, nunca grava no chute. */
+  lembreteNaoEntendido:
+    'Hmm, não tenho certeza se entendi esse lembrete 🤔 Me diz de novo como quer ser avisado? ' +
+    '(ex.: "24h antes", "3 dias antes", "3-2-1", "sem lembrete")',
+
+  /** Spec 1 — linha do resumo final com o esquema entendido (regras = rótulos schedule-core). */
+  lembreteResumo: (regras: string) => `⏰ ${regras}`,
+  lembreteResumoNenhum: '⏰ sem lembrete',
+
+  /** Spec 7 (decisão #1) — aviso de gatilho retroativo: o bot avisa e cria mesmo assim. */
+  lembreteRetroativo: (rotulos: string[]) =>
+    `Heads-up: ${rotulos.join(', ')} ${rotulos.length === 1 ? 'não vai' : 'não vão'} disparar — ` +
+    `o compromisso é logo e o tempo do lembrete já passou. O agendamento segue normal 😉`,
+
+  /** Spec 13 (decisão #3) — lembrete enviado pelo worker (texto aprovado na spec):
+   *  `⏰ Lembrete: "X" — qui 08/10 às 14:30 (daqui a 1 hora)` + notas quando existirem. */
+  lembrete: (n: { title: string; when: string; lead: string; notes: string | null }) =>
+    `⏰ Lembrete: "${n.title}" — ${n.when} (${n.lead})` + (n.notes ? `\n📝 ${n.notes}` : ''),
+
+  /** Spec 15/17 — resumo diário: cabeçalho "📋 Resumo de <dia>" é gerado em digest.ts; aqui os fixos. */
+  resumoVencendoHoje: '⏰ Lembretes que vencem hoje:',
+  /** Decisão #5 — dia sem compromisso e sem lembrete vencendo: heartbeat. */
+  resumoDiaLivre: '☀️ Hoje você está livre!',
 } as const;

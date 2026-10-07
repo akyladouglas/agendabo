@@ -13,6 +13,10 @@ import { BotAccessService, type BotUser } from './bot-access.service';
 import { BOT_MESSAGES, escapeHtml, givesUpQuery, parseYesNo } from './messages';
 import { IntentClassifierService, type IntentFlowContext } from '../ai/intent-classifier.service';
 import {
+  ReminderInterpreterService,
+  resolveReminderShortcut,
+} from '../ai/reminder-interpreter.service';
+import {
   AgendaQueryService,
   AGENDA_QUERY_MAX_PERIOD_PROMPTS,
   type AgendaQueryResult,
@@ -22,6 +26,7 @@ import {
   type BotReply,
   type FlowSession,
   type HandleTurnInput,
+  type ReminderClassified,
 } from './scheduling-flow.machine';
 
 /** Borda zod dos callbacks de teclado (callback_data nao e confiavel por natureza). */
@@ -87,6 +92,7 @@ export class SchedulingFlowService {
     private readonly prisma: PrismaService,
     private readonly config: ConfigService<Env, true>,
     private readonly agendaQuery: AgendaQueryService,
+    private readonly reminderInterpreter: ReminderInterpreterService,
   ) {
     this.ttlMs = this.config.get('BOT_SESSION_TTL_MINUTES', { infer: true }) * 60_000; // decisao D2 do plano (30 min)
     this.minConfidence = this.config.get('MIN_CONFIDENCE_TO_ACCEPT', { infer: true });
@@ -187,9 +193,17 @@ export class SchedulingFlowService {
     const context: IntentFlowContext = { inFlow: true, step: session.step, conflictPending };
     // Passo deterministico (teclado) nao precisa do LLM; o que o usuario FALA sim.
     const deterministic = Boolean(partial.dayChoice || partial.timeChoice);
-    const classified = deterministic
-      ? undefined
-      : await this.classifier.classify(partial.text ?? '', context);
+    // Passo `lembrete` (Fase 3): a fala é DADO do passo — o interpretador de lembrete
+    // é a ÚNICA chamada de LLM deste turno (a classificação de intenção é substituída
+    // por ele; desistência "deixa pra lá" continua determinística na máquina).
+    const reminder =
+      !deterministic && session.step === 'lembrete'
+        ? await this.interpretReminder(partial.text ?? '')
+        : undefined;
+    const classified =
+      reminder || deterministic
+        ? undefined
+        : await this.classifier.classify(partial.text ?? '', context);
 
     // Consulta de agenda com o fluxo de criar ABERTO (Fase 2, decisão #5): responde
     // a consulta e volta ao mesmo passo — o estado do candidato fica intacto e o
@@ -213,6 +227,7 @@ export class SchedulingFlowService {
       user,
       text: partial.text ?? '',
       classified,
+      reminder,
       existing,
       offsetMinutes,
       now,
@@ -226,6 +241,19 @@ export class SchedulingFlowService {
     if (outcome.create) {
       await this.persist(user, outcome.create);
     }
+  }
+
+  /**
+   * Borda do passo `lembrete` (spec regra 4): o atalho determinístico roda ANTES do
+   * LLM (D3 do plano — "não"/"24h antes"/"3-2-1" não gastam LLM); fala livre vai ao
+   * interpretador. A máquina só consome o veredito (padrão do `classified`).
+   */
+  private async interpretReminder(text: string): Promise<ReminderClassified> {
+    const shortcut = resolveReminderShortcut(text);
+    if (shortcut) return { ok: true, regras: shortcut };
+    const result = await this.reminderInterpreter.interpretar(text);
+    if (result.ok) return { ok: true, regras: result.regras };
+    return { ok: false, reason: result.reason };
   }
 
   /** Carga p/ findConflict: confirmed, endsAt>now, janela futura de 90 dias (spec). */
@@ -397,7 +425,17 @@ export class SchedulingFlowService {
   /** Criacao via AppointmentsService (mesmo caminho da web, D7). Falha logada, nunca engolida calada. */
   private async persist(
     user: BotUser,
-    create: { title: string; startsAt: Date; endsAt: Date; notes: string | null; timezone: string },
+    create: {
+      title: string;
+      startsAt: Date;
+      endsAt: Date;
+      notes: string | null;
+      notificationRules: {
+        type: 'none' | 'before_hours' | 'before_days' | 'countdown_3_2_1';
+        value?: number;
+      }[];
+      timezone: string;
+    },
   ): Promise<void> {
     try {
       await this.appointments.create(
@@ -407,6 +445,7 @@ export class SchedulingFlowService {
           startsAt: create.startsAt,
           endsAt: create.endsAt,
           notes: create.notes ?? undefined,
+          notificationRules: create.notificationRules,
         },
         { origin: 'bot' },
       );

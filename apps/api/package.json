@@ -6,6 +6,7 @@
     "build": "nest build",
     "dev": "nest start --watch",
     "dev:bot": "nest build && node dist/bot-main.js",
+    "dev:worker": "nest build && node dist/workers/notifications-worker.js",
     "start:prod": "node dist/main.js",
     "test": "vitest run && jest --passWithNoTests",
     "lint": "eslint .",

@@ -23,7 +23,9 @@ const CROSS_MODULE_EDGES = {
   // mesmo AppointmentsService da web para conflito/criacao (plano D7). Servicos
   // exportados; nada de importar SDK/Prisma de lá.
   'modules/ai': ['modules', 'modules/bot'],
-  'modules/notifications': ['modules'],
+  // Fase 3: appointments/bot consomem OutboxService; o WORKER standalone
+  // (src/workers/, ADR-009) consome DispatchService via entrypoint fino.
+  'modules/notifications': ['modules', 'workers'],
   'modules/users': ['modules'],
 };
 

@@ -9,6 +9,7 @@
     "dev:api": "pnpm --filter @agendabo/api dev",
     "dev:web": "pnpm --filter @agendabo/web dev",
     "dev:bot": "pnpm --filter @agendabo/api dev:bot",
+    "dev:worker": "pnpm --filter @agendabo/api dev:worker",
     "build": "pnpm -r build",
     "lint": "pnpm -r lint",
     "lint:arch": "pnpm --filter @agendabo/api lint:arch",

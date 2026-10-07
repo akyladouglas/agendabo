@@ -49,7 +49,7 @@ const intent = (intentName: string, confidence = 0.95) => ({
   confidence,
 });
 
-describe('SchedulingFlowMachine — fluxo feliz (spec 3+4+6)', () => {
+describe('SchedulingFlowMachine - fluxo feliz (spec 3+4+6)', () => {
   it('título → dia (hoje) → hora → fim → sem conflito → notas → confirma → create UTC', async () => {
     const m = machine();
     const s = session();
@@ -98,8 +98,19 @@ describe('SchedulingFlowMachine — fluxo feliz (spec 3+4+6)', () => {
       text: 'não',
       classified: intent('continuar_fluxo'),
     });
+    expect(s.step).toBe('lembrete'); // Fase 3: notas → lembrete (spec criar-compromisso regra 5)
+    expect(texts(r5)).toContain('Como eu te lembro');
+
+    // (e.5) lembrete: "não" (atalho determinístico) => sem lembrete => resumo final
+    const rL = await m.handleTurn({
+      ...baseInput(),
+      session: s,
+      text: 'não',
+      classified: intent('continuar_fluxo'),
+      reminder: { ok: true, regras: [{ type: 'none' }] },
+    });
     expect(s.step).toBe('confirmacao');
-    expect(texts(r5)).toContain('sem notas');
+    expect(rL.replies[0]).toMatchObject({ kind: 'buttons', buttons: ['confirmar', 'alterar'] });
 
     // (f/g) confirmação única => create
     const r6 = await m.handleTurn({
@@ -115,9 +126,184 @@ describe('SchedulingFlowMachine — fluxo feliz (spec 3+4+6)', () => {
       startsAt: new Date('2026-10-06T17:30:00Z'),
       endsAt: new Date('2026-10-06T18:30:00Z'),
       notes: null,
+      notificationRules: [],
       timezone: 'America/Sao_Paulo',
     });
     expect(texts(r6)).toContain('14:30'); // exibe no tz do usuário, não UTC (spec 14)
+  });
+
+  it('lembrete: atalho "3 dias antes" vira before_days:3 no create (Fase 3, spec regra 2)', async () => {
+    const m = machine();
+    const s: FlowSession = {
+      step: 'lembrete',
+      candidate: {
+        title: 'Consulta',
+        day: { year: 2026, month: 10, day: 9 },
+        startMinutes: 14 * 60,
+        startUtc: new Date('2026-10-09T17:00:00Z'),
+        endUtc: new Date('2026-10-09T18:00:00Z'),
+        notes: null,
+        conflictTries: 0,
+      },
+      lastActivityAt: NOW.getTime(),
+    };
+    const out = await m.handleTurn({
+      ...baseInput(),
+      session: s,
+      text: '3 dias antes',
+      reminder: { ok: true, regras: [{ type: 'before_days', value: 3 }] },
+    });
+    expect(s.step).toBe('confirmacao');
+    expect(texts(out)).toContain('3 dias'); // linha ⏰ no resumo final
+    const yes = await m.handleTurn({
+      ...baseInput(),
+      session: s,
+      text: 'confirmar',
+      classified: intent('continuar_fluxo'),
+    });
+    expect(yes.create?.notificationRules).toEqual([{ type: 'before_days', value: 3 }]);
+  });
+
+  it('lembrete: multi-regra do LLM passa inteira para o create (Fase 3, decisao #2)', async () => {
+    const m = machine();
+    const s: FlowSession = {
+      step: 'lembrete',
+      candidate: {
+        title: 'Prova',
+        day: { year: 2026, month: 10, day: 20 },
+        startMinutes: 13 * 60,
+        startUtc: new Date('2026-10-20T16:00:00Z'),
+        endUtc: new Date('2026-10-20T19:00:00Z'),
+        notes: null,
+        conflictTries: 0,
+      },
+      lastActivityAt: NOW.getTime(),
+    };
+    await m.handleTurn({
+      ...baseInput(),
+      session: s,
+      text: '2 horas antes e 1 dia antes',
+      reminder: {
+        ok: true,
+        regras: [
+          { type: 'before_hours', value: 2 },
+          { type: 'before_days', value: 1 },
+        ],
+      },
+    });
+    const yes = await m.handleTurn({
+      ...baseInput(),
+      session: s,
+      text: 'confirmar',
+      classified: intent('continuar_fluxo'),
+    });
+    expect(yes.create?.notificationRules).toEqual([
+      { type: 'before_hours', value: 2 },
+      { type: 'before_days', value: 1 },
+    ]);
+  });
+
+  it('lembrete: veredito !ok (parse falho) RE-PERGUNTA e nao grava nada (Fase 3, spec regra 4)', async () => {
+    const m = machine();
+    const s: FlowSession = {
+      step: 'lembrete',
+      candidate: {
+        title: 'X',
+        startUtc: new Date('2026-10-09T17:00:00Z'),
+        endUtc: new Date('2026-10-09T18:00:00Z'),
+        conflictTries: 0,
+      },
+      lastActivityAt: NOW.getTime(),
+    };
+    const out = await m.handleTurn({
+      ...baseInput(),
+      session: s,
+      text: 'blablabla',
+      reminder: { ok: false, reason: 'unparseable' },
+    });
+    expect(s.step).toBe('lembrete');
+    expect(s.candidate.reminderRules).toBeUndefined();
+    expect(out.done).toBeUndefined();
+    expect(out.create).toBeUndefined();
+  });
+
+  it('lembrete: regra retroativa avisa no resumo mas mantem a regra (Fase 3, spec regra 7)', async () => {
+    const m = machine();
+    // agora = 06/10 12:00 local; compromisso 07/10 14:00 => "3 dias antes" ja passou
+    const s: FlowSession = {
+      step: 'lembrete',
+      candidate: {
+        title: 'Almoco',
+        day: { year: 2026, month: 10, day: 7 },
+        startMinutes: 14 * 60,
+        startUtc: new Date('2026-10-07T17:00:00Z'),
+        endUtc: new Date('2026-10-07T18:00:00Z'),
+        notes: null,
+        conflictTries: 0,
+      },
+      lastActivityAt: NOW.getTime(),
+    };
+    const out = await m.handleTurn({
+      ...baseInput(),
+      session: s,
+      text: '3 dias antes',
+      reminder: { ok: true, regras: [{ type: 'before_days', value: 3 }] },
+    });
+    expect(s.step).toBe('confirmacao');
+    expect(texts(out)).toContain('3 dias'); // regra continua no resumo
+    expect(texts(out)).toContain('não vai disparar'); // aviso de gatilho retroativo
+  });
+
+  it('lembrete: "sem lembrete" grava none e o create vem sem regras (Fase 3, spec regra 3)', async () => {
+    const m = machine();
+    const s: FlowSession = {
+      step: 'lembrete',
+      candidate: {
+        title: 'X',
+        startUtc: new Date('2026-10-09T17:00:00Z'),
+        endUtc: new Date('2026-10-09T18:00:00Z'),
+        notes: null,
+        conflictTries: 0,
+      },
+      lastActivityAt: NOW.getTime(),
+    };
+    await m.handleTurn({
+      ...baseInput(),
+      session: s,
+      text: 'sem lembrete',
+      reminder: { ok: true, regras: [{ type: 'none' }] },
+    });
+    const yes = await m.handleTurn({
+      ...baseInput(),
+      session: s,
+      text: 'confirmar',
+      classified: intent('continuar_fluxo'),
+    });
+    expect(yes.create?.notificationRules).toEqual([]);
+  });
+
+  it('confirmacao: "alterar o lembrete" volta ao passo lembrete (rewind Fase 3)', async () => {
+    const m = machine();
+    const s: FlowSession = {
+      step: 'confirmacao',
+      candidate: {
+        title: 'X',
+        startUtc: new Date('2026-10-09T17:00:00Z'),
+        endUtc: new Date('2026-10-09T18:00:00Z'),
+        notes: null,
+        reminderRules: [{ type: 'none' }],
+        conflictTries: 0,
+      },
+      lastActivityAt: NOW.getTime(),
+    };
+    const out = await m.handleTurn({
+      ...baseInput(),
+      session: s,
+      text: 'alterar o lembrete',
+      classified: intent('continuar_fluxo'),
+    });
+    expect(s.step).toBe('lembrete');
+    expect(out.replies[0]).toMatchObject({ kind: 'buttons' });
   });
 
   it('notas: "anotar: levar o orçamento" salva só o texto (spec regra 5)', async () => {
@@ -140,6 +326,14 @@ describe('SchedulingFlowMachine — fluxo feliz (spec 3+4+6)', () => {
       session: s,
       text: 'anotar: levar o orçamento',
       classified: intent('continuar_fluxo'),
+    });
+    // passo `lembrete` no meio (Fase 3): "sem lembrete" fecha o passo
+    await m.handleTurn({
+      ...baseInput(),
+      session: s,
+      text: 'sem lembrete',
+      classified: intent('continuar_fluxo'),
+      reminder: { ok: true, regras: [{ type: 'none' }] },
     });
     const out = await m.handleTurn({
       ...baseInput(),
@@ -332,8 +526,9 @@ describe('SchedulingFlowMachine — validações e cancelamento (spec 12–13)',
       classified: { ok: false, reason: 'low_confidence' },
     });
     // sem intencao aceita, o texto e tratado como DADO do passo (vira nota) — o fluxo
-    // continua e nada e descartado no chute; a confirmacao ainda vem (spec: nunca no chute).
-    expect(s.step).toBe('confirmacao');
+    // continua e nada e descartado no chute; o proximo passo (lembrete, Fase 3) vem e
+    // a confirmacao so chega depois dela (spec: nunca no chute).
+    expect(s.step).toBe('lembrete');
     expect(s.candidate.notes).toBe('deixa quieta');
     expect(out.done).toBeUndefined();
     expect(out.create).toBeUndefined();

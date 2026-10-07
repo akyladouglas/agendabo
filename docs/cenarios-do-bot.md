@@ -23,13 +23,23 @@ bot:   Que horas termina? Ou me diz a duração.
 você:  1h
 bot:   Tem algo pra eu anotar? (senão, "não")
 você:  levar exame de imagem
+bot:   Quer lembretes desse compromisso? Pode escolher:
+       [30 min antes] [1 hora antes] [2 horas antes] [1 dia antes] [vários] [não]
+       (ou digite, ex: "30min e 2h antes")
+você:  30 min antes e 1 dia antes
 bot:   Fechando: Consulta dentista — qui 08/10 14:30–15:30 📝 levar exame
+       🕐 30min antes · 1 dia antes
        [confirmar] [alterar]
 você:  confirmar
 bot:   Prontinho! Criei "Consulta dentista" de qui 08/10 14:30–15:30 ✅
 ```
 
 Funciona como duração: `1h` · `1h30` · `15min` · `90` · ou o horário de fim (`15:30`).
+
+Depois do "Prontinho", cada antecedência escolhida virou um lembrete agendado (pode ter
+mais de um por compromisso). Ele chega sozinho no horário certo — detalhes na
+**seção C1**. Escolheu "não"? Nada de lembrete; o resumo diário (**C2**) chega de qualquer
+jeito, se estiver ligado.
 
 ### A2. Conflito de horário ✅
 
@@ -116,6 +126,44 @@ você: tanto faz  → ele encerra, sem insistir
 
 Máximo 2 perguntas. Depois ele desiste com educação.
 
+### B5. Etapa `lembrete` — escolha de lembretes (Fase 3)
+
+Quando o fluxo chega na etapa `lembrete` (depois das notas), o bot pergunta assim:
+
+```
+bot:  Quer lembretes desse compromisso? Pode escolher:
+      [30 min antes] [1 hora antes] [2 horas antes] [1 dia antes] [vários] [não]
+      (ou digite, ex: "30min e 2h antes")
+```
+
+| Você responde                             | O que acontece                                          |
+| ----------------------------------------- | ------------------------------------------------------- |
+| um botão (ex.: `30 min antes`)            | esse lembrete, e só ele                                 |
+| `vários`                                  | pergunta livre: "30min e 2h antes", "1h e 1 dia antes"… |
+| `não` / `sem lembrete`                    | zero lembretes                                          |
+| frase livre direto ("me lembra 2h antes") | o LLM extrai as antecedências                           |
+
+Regras que valem aqui:
+
+- **Atalhos determinísticos** (não passam pelo LLM): `não`/`sem lembrete` → zero; os
+  4 botões → exatamente a antecedência do botão; "1 dia antes" → 24h. O resto vai ao
+  LLM, que devolve `{rules, confidence}`; parse falho ou confiança baixa → o compromisso
+  entra **em revisão** (fila da web) e o bot avisa — nada de lembrete inventado.
+- **"2 horas antes" é EXATAS 2h** (`before_hours: 2`), não "2 slots de 1h".
+- **Antecedência maior que o compromisso** (ex.: 1 dia antes de algo em 4h) → o bot avisa
+  na escolha e descarta essa antecedência; as outras continuam. Múltiplas inválidas são
+  listadas de uma vez.
+- **"agora"/"já"** → o lembrete fica **retrasado e não dispara** (a regra vale para outros
+  compromissos).
+- **Na etapa `lembrete` nada vira cancelamento**: "cancela", "deixa pra lá"… são tratados
+  como resposta do passo (inválida → repete a pergunta, máx. 2 tentativas). Pra desistir
+  de vez, diga com as palavras: "cancelar agendamento" / "abandonar agendamento" /
+  "cancelar este agendamento".
+- **"alterar lembretes"** na confirmação → volta pra essa etapa, com as escolhas atuais
+  preenchidas. Repetir a mesma antecedência não duplica.
+- No **web** não tem aviso de atraso: regra retrassada é guardada silenciosamente e nunca
+  dispara (o aviso é só no bot).
+
 ---
 
 ## C. Sem cadastro ✅
@@ -128,25 +176,74 @@ Qualquer mensagem → só o passo a passo de cadastro. Nada mais funciona.
 
 | Falta                                                             | Vem na    |
 | ----------------------------------------------------------------- | --------- |
-| Lembrete ("me lembra 1 dia antes")                                | Fase 3    |
-| Resumo diário automático (07:00)                                  | Fase 3    |
 | Marcar solto: "quinzena que vem uns 14h" (hoje o quando é guiado) | Fase 4    |
 | Editar/cancelar compromisso já criado pelo chat                   | Fase 4    |
 | Site: calendário, revisão, cadastro                               | Fases 5–7 |
+
+(Já faz desde a Fase 3: lembretes com escolha no chat — **C1** — e resumo diário
+automático — **C2**. Editar/criar pelo web e regra `needs_review` na fila recalculam
+os lembretes sozinhos.)
+
+---
+
+## C1. Lembrete chegou sozinho ✅ (Fase 3)
+
+Na hora marcada (ex.: 30min antes), você recebe:
+
+```
+bot:  ⏰ Lembrete: "Consulta dentista" — qui 08/10 14:30–15:30
+      Falta(m) 30min.
+```
+
+- A **conta de quando** dispara é determinística (`schedule-core`): `start − antecedência`.
+  Sem LLM nessa parte.
+- **Compromisso em revisão nunca lembrete**: se a reavaliação mudou o quando/notas e o
+  levou pra fila, os lembretes param até você aprovar na web.
+- Cancelou/apagou o compromisso (ou mudou o horário) → os lembretes antigos somem; novos
+  são criados no lugar.
+- Bot fora do ar na hora do lembrete → ele chega atrasado; mais de `NOTIFY_STALE_MINUTES`
+  de atraso (default 30) → o lembrete vence sem enviar (você não recebe coisa velha).
+- Reenvio automático até 3x em backoff; depois vira `failed` com o erro guardado.
+
+## C2. Resumo diário automático ✅ (Fase 3)
+
+Todo dia, no horário que **você escolheu no seu perfil** (web; default 07:00 — pode
+desligar), chega:
+
+```
+bot:  📋 Resumo de 08/10 — seu dia (fuso America/Sao_Paulo):
+      • 08:30–09:15 — Entrega relatório mensal
+      • 14:00–16:00 — Aula de inglês
+      Até mais!
+```
+
+Dia vazio:
+
+```
+bot:  ☀️ Hoje você está livre! Bom dia.
+```
+
+- São os compromissos do **SEU dia local** (data local com `utcOffset`), mesmo critério
+  da web. Compromissos `needs_review` não entram.
+- Se o bot estava fora, o resumo atrasado é enviado quando ele volta (dentro da janela
+  de atraso); nunca sai duplicado.
+- Mudou o fuso/timezone do perfil? O resumo daquele dia ainda usa o horário já marcado.
 
 ---
 
 ## E. Como o bot classifica sua fala
 
-| Você fala                              | Ele entende                      |
-| -------------------------------------- | -------------------------------- |
-| "quero marcar X"                       | começar agendamento              |
-| "o que tenho amanhã?"                  | listar agenda                    |
-| "deixa pra lá"                         | cancelar o que estava fazendo    |
-| "e às 16h?" (no conflito)              | remarcar                         |
-| "marca outra coisa" (com fluxo aberto) | começa novo, perguntando antes   |
-| qualquer resposta ao passo             | seguir o fluxo                   |
-| "me conta uma piada"                   | fora do escopo → resposta padrão |
+| Você fala                              | Ele entende                       |
+| -------------------------------------- | --------------------------------- |
+| "quero marcar X"                       | começar agendamento               |
+| "o que tenho amanhã?"                  | listar agenda                     |
+| "deixa pra lá"                         | cancelar o que estava fazendo     |
+| "e às 16h?" (no conflito)              | remarcar                          |
+| "marca outra coisa" (com fluxo aberto) | começa novo, perguntando antes    |
+| "alterar lembretes" (na confirmação)   | volta a etapa de lembretes        |
+| qualquer resposta ao passo             | seguir o fluxo                    |
+| qualquer coisa na etapa `lembrete`     | resposta do passo (NUNCA cancela) |
+| "me conta uma piada"                   | fora do escopo → resposta padrão  |
 
 ---
 
@@ -154,9 +251,14 @@ Qualquer mensagem → só o passo a passo de cadastro. Nada mais funciona.
 
 ```bash
 pnpm infra:up                              # Postgres + Redis
-pnpm dev:api                               # API em :3001
+pnpm dev:api                               # API em :3001 (inclui o cron do resumo)
 pnpm --filter @agendabo/api run dev:bot    # o bot
+pnpm dev:worker                            # worker de notificações (Fase 3)
 ```
+
+> Os três processos de cima são separados de propósito: long-polling único (gotcha 5)
+> e o worker pode viver tanto quanto um lembrete (ADR-009). Sem o worker, lembretes e
+> resumo ficam na fila sem sair.
 
 1. Confirme sua conta (signup + código, ou direto no banco em dev).
 2. Mande os cenários ✅ na ordem: **C0 → A1 → A2 → B1 → B2 → B3 → A3**.

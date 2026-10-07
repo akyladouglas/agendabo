@@ -32,6 +32,14 @@ enum NotificationOutboxStatus {
   pending
   sent
   failed
+  /// Invalidada: compromisso editado/deletado, needs_review no disparo ou conta sem gate (Fase 3)
+  cancelled
+}
+
+/// Tipo de disparo do outbox (Fase 3): lembrete de compromisso ou resumo diario (2.1)
+enum NotificationKind {
+  reminder
+  daily_digest
 }
 
 model User {
@@ -49,6 +57,8 @@ model User {
 
   appointments  Appointment[]
   refreshTokens RefreshToken[]
+  /// Linhas de outbox do usuario (digest diario nao tem compromisso — Fase 3)
+  notificationOutbox NotificationOutbox[]
 
   @@map("users")
 }
@@ -92,21 +102,35 @@ model NotificationRule {
 }
 
 /// Outbox pattern: cada disparo vira uma linha; worker BullMQ so consome o id.
+/// A linha e a fonte de verdade da idempotencia (pending -> sent condicional).
 model NotificationOutbox {
   id        String                   @id @default(uuid()) @db.Uuid
   firesAt   DateTime
   status    NotificationOutboxStatus @default(pending)
+  /// reminder = lembrete de compromisso; daily_digest = resumo diario (2.1)
+  kind      NotificationKind         @default(reminder)
   attempts  Int                      @default(0)
   lastError String?
   sentAt    DateTime?
 
-  appointmentId String      @db.Uuid
-  appointment   Appointment @relation(fields: [appointmentId], references: [id], onDelete: Cascade)
+  /// Digest nao tem compromisso: nullable desde a Fase 3
+  appointmentId String?      @db.Uuid
+  appointment   Appointment? @relation(fields: [appointmentId], references: [id], onDelete: Cascade)
 
-  /// Regra que gerou este disparo (referencia informativa; payload vai no job)
-  ruleType NotificationRuleType
+  /// Dono da notificacao (digest materializa sem compromisso; gate de conta no worker)
+  userId String @db.Uuid
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  /// Regra que gerou este disparo (referencia informativa; payload vai no job).
+  /// Null apenas no digest (nenhuma regra o gerou).
+  ruleType NotificationRuleType?
 
   @@index([status, firesAt])
+  /// Idempotencia do digest: 1 linha por (usuario, kind, dia). `@@unique` do Prisma
+  /// nao expressa indice PARCIAL — a constraint real e o CREATE UNIQUE INDEX ...
+  /// WHERE "appointmentId" IS NULL criado no SQL da migração fase3_outbox_kind.
+  /// (Nao declarar @@unique aqui: `prisma migrate` tentaria recria-la como total.)
+  @@index([userId, kind, firesAt])
   @@map("notification_outbox")
 }
 

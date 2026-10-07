@@ -62,6 +62,9 @@ function make() {
     prisma as never,
     config,
     agendaQuery as never,
+    // reminderInterpreter: passos de lembrete neste spec usam atalho determinístico
+    // ("sem lembrete" etc.), nunca chegam ao LLM (resolveReminderShortcut responde antes).
+    { interpretar: jest.fn().mockResolvedValue({ ok: false, reason: 'unparseable' }) } as never,
   );
   // relogio do servico congelado (determinismo do atalho "hoje"/datas UTC)
   (svc as unknown as { now: () => Date }).now = () => new Date(`${TODAY_LOCAL}T10:00:00Z`);
@@ -134,6 +137,7 @@ describe('SchedulingFlowService (bordas)', () => {
     );
 
     await m.svc.handleText('111', 'não'); // notas => null
+    await m.svc.handleText('111', 'sem lembrete'); // passo lembrete (Fase 3): atalho determinístico
     await m.svc.handleText('111', 'confirmar');
 
     expect(m.appointments.create).toHaveBeenCalledTimes(1);

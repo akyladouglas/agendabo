@@ -14,6 +14,11 @@ const envSchema = z.object({
   DATABASE_URL: z.string().min(1, REQUIRED),
   REDIS_URL: z.string().min(1, REQUIRED),
 
+  /** Fase 3: tentativas de envio do worker antes de `failed` (spec regras 12/14). */
+  NOTIFY_MAX_ATTEMPTS: z.coerce.number().int().positive().default(3),
+  /** Fase 3: atraso máximo tolerado no disparo; acima disso a linha vai a `failed`. */
+  NOTIFY_STALE_MINUTES: z.coerce.number().int().positive().default(30),
+
   JWT_SECRET: z.string().min(16, REQUIRED),
   ACCESS_TOKEN_TTL: z.string().default('15m'),
   REFRESH_TOKEN_TTL_DAYS: z.coerce.number().int().positive().default(30),

@@ -1,29 +1,36 @@
 import {
   findConflict,
+  rulesLabelsPtBr,
   utcToZonedParts,
   zonedTimeToUtc,
+  computeTriggers,
   type AppointmentLike,
+  type NotificationRule,
 } from '@agendabo/schedule-core';
 import {
   appointmentInputSchema,
   classifyIntentSchema,
   type BotIntent,
   type ClassifyIntentOutput,
+  type NotificationRuleInput,
 } from '@agendabo/contracts';
 import { BOT_MESSAGES, givesUp, parseNotesAnswer, parseYesNo } from './messages';
 import type { BotUser } from './bot-access.service';
 
 /**
- * Maquina de estados do fluxo de agendamento (spec criar-compromisso-bot).
+ * Maquina de estados do fluxo de agendamento (spec criar-compromisso-bot + Fase 3).
  *
  * Domínio PURO e determinístico (roda no vitest): sem Nest, sem Prisma, sem Telegraf,
  * sem SDK. As bordas (LLM, Telegram, banco, relógio) entram por parâmetros/injeção:
  *  - `classify`: o que o LLM disse sobre o turno (IntentClassifierService na borda);
+ *  - `reminder`: o que o interpretador de lembrete disse no passo `lembrete`
+ *    (atalho determinístico OU LLM — ReminderInterpreterService na borda; spec Fase 3);
  *  - `existing`: compromissos confirmed futuros do usuário (query fica no service);
  *  - `now`: injetável (testing.md — nunca `new Date()` em regra de domínio).
  *
  * O LLM só dirige QUAL transição roda (ADR-008); conflito é 100% findConflict
- * (schedule-core) e o payload final passa por appointmentInputSchema antes de sair.
+ * (schedule-core), gatilhos de lembrete são 100% computeTriggers (schedule-core) e o
+ * payload final passa por appointmentInputSchema antes de sair.
  */
 
 export type FlowStep =
@@ -33,6 +40,7 @@ export type FlowStep =
   | 'fim'
   | 'conflito'
   | 'notas'
+  | 'lembrete'
   | 'confirmacao'
   | 'confirmar_cancelamento'
   | 'confirmar_substituicao';
@@ -45,6 +53,11 @@ export interface FlowCandidate {
   startUtc?: Date;
   endUtc?: Date;
   notes?: string | null;
+  /**
+   * Esquema de lembrete entendido no passo `lembrete` (Fase 3). `[]` = ainda não
+   * respondido; `[{type:'none'}]` = sem lembrete. Persistido como N NotificationRule.
+   */
+  reminderRules?: NotificationRuleInput[];
   /** Tentativas de remarcar já usadas (decisão de produto #4: máx 3). */
   conflictTries: number;
   /** Snapshot p/ intenção `substituir_atual` (decisão de produto #9). */
@@ -72,10 +85,16 @@ export interface FlowOutcome {
     startsAt: Date;
     endsAt: Date;
     notes: string | null;
+    /** Regras entendidas no passo `lembrete` (Fase 3); `[{none}]` vira zero regras no create. */
+    notificationRules: NotificationRuleInput[];
     /** tz do usuário no instante da criação (metadata — banco guarda só UTC, ADR-002). */
     timezone: string;
   };
 }
+
+/** O que a borda (ReminderInterpreterService) diz sobre a fala do passo `lembrete`. */
+export type ReminderClassified =
+  { ok: true; regras: NotificationRuleInput[] } | { ok: false; reason: string };
 
 export interface HandleTurnInput {
   session: FlowSession;
@@ -83,6 +102,11 @@ export interface HandleTurnInput {
   text: string;
   /** Classificação LLM do turno (borda). `undefined` = não chamar o LLM neste turno. */
   classified?: { ok: true; intent: BotIntent; confidence: number } | { ok: false; reason: string };
+  /**
+   * Resultado do interpretador de lembrete p/ o passo `lembrete` (borda; padrão do
+   * `classified`: a borda chama o interpretador, a máquina só consome o veredito).
+   */
+  reminder?: ReminderClassified;
   /** Compromissos confirmed futuros do usuário p/ findConflict (borda). */
   existing?: AppointmentLike[];
   /** Offset do tz do usuário (minutos leste de UTC) — medido na borda (ADR-002). */
@@ -391,12 +415,71 @@ export class SchedulingFlowMachine {
         }
         const notes = parseNotesAnswer(text);
         c.notes = notes;
+        session.step = 'lembrete';
+        return {
+          replies: [
+            {
+              kind: 'buttons',
+              text: BOT_MESSAGES.pedeLembrete(this.resumo(c, input)),
+              buttons: [...BOT_MESSAGES.lembreteAtalhos],
+            },
+          ],
+        };
+      }
+
+      case 'lembrete': {
+        // Fase 3 (spec regras 1–5): a fala do passo é roteada pela borda ANTES de
+        // chegar aqui (atalho determinístico > interpretador). A máquina consome o
+        // veredito em `input.reminder`; duvida => re-pergunta, nunca grava no chute.
+        const text = input.text.trim();
+        if (!text) {
+          return {
+            replies: [
+              {
+                kind: 'buttons',
+                text: BOT_MESSAGES.pedeLembrete(this.resumo(c, input)),
+                buttons: [...BOT_MESSAGES.lembreteAtalhos],
+              },
+            ],
+          };
+        }
+        const reminder = input.reminder;
+        if (!reminder) {
+          // borda sem veredito (ex.: replay de passo): re-pergunta com os atalhos.
+          return {
+            replies: [
+              {
+                kind: 'buttons',
+                text: BOT_MESSAGES.pedeLembrete(this.resumo(c, input)),
+                buttons: [...BOT_MESSAGES.lembreteAtalhos],
+              },
+            ],
+          };
+        }
+        if (!reminder.ok) {
+          // spec 4: parse falho / confiança baixa => RE-PERGUNTA (sem contador: "não"
+          // sempre resolve determinístico na borda, então a saída existe sempre).
+          return {
+            replies: [
+              {
+                kind: 'buttons',
+                text: BOT_MESSAGES.lembreteNaoEntendido,
+                buttons: [...BOT_MESSAGES.lembreteAtalhos],
+              },
+            ],
+          };
+        }
+        c.reminderRules = reminder.regras;
         session.step = 'confirmacao';
         return {
           replies: [
             {
               kind: 'buttons',
-              text: BOT_MESSAGES.resumoFinal(this.resumo(c, input), notes ? notes : 'sem notas'),
+              text: BOT_MESSAGES.resumoFinal(
+                this.resumo(c, input),
+                c.notes ? c.notes : 'sem notas',
+                this.lembreteResumo(c, input),
+              ),
               buttons: ['confirmar', 'alterar'],
             },
           ],
@@ -547,11 +630,13 @@ export class SchedulingFlowMachine {
   /** Valida o payload final com zod (spec #18) e devolve o create p/ o service aplicar. */
   private buildCreate(session: FlowSession, input: HandleTurnInput): FlowOutcome {
     const c = session.candidate;
+    const rules = (c.reminderRules ?? []).filter((r) => r.type !== 'none');
     const parsed = appointmentInputSchema.safeParse({
       title: c.title,
       startsAt: c.startUtc,
       endsAt: c.endUtc,
       notes: c.notes ?? undefined,
+      notificationRules: c.reminderRules ?? [],
     });
     if (!parsed.success || !c.title || !c.startUtc || !c.endUtc) {
       // maquina de estados nao deveria chegar aqui; loga e re-pergunta (spec nota tecnica).
@@ -575,6 +660,7 @@ export class SchedulingFlowMachine {
         startsAt: parsed.data.startsAt,
         endsAt: parsed.data.endsAt,
         notes: parsed.data.notes ?? null,
+        notificationRules: rules,
         timezone: input.user.timezone,
       },
     };
@@ -584,7 +670,7 @@ export class SchedulingFlowMachine {
   /** "alterar X" no resumo final: volta ao passo correspondente mantendo o resto. */
   private rewindTo(
     session: FlowSession,
-    target: 'titulo' | 'dia' | 'hora' | 'fim' | 'notas',
+    target: 'titulo' | 'dia' | 'hora' | 'fim' | 'notas' | 'lembrete',
     input: HandleTurnInput,
   ): FlowOutcome {
     const c = session.candidate;
@@ -616,10 +702,22 @@ export class SchedulingFlowMachine {
         return { replies: [{ kind: 'text', text: BOT_MESSAGES.pedeFim }] };
       case 'notas':
         return { replies: [{ kind: 'text', text: BOT_MESSAGES.pedeNotas(this.resumo(c, input)) }] };
+      case 'lembrete':
+        return {
+          replies: [
+            {
+              kind: 'buttons',
+              text: BOT_MESSAGES.pedeLembrete(this.resumo(c, input)),
+              buttons: [...BOT_MESSAGES.lembreteAtalhos],
+            },
+          ],
+        };
     }
   }
 
-  private alterTarget(text: string): 'titulo' | 'dia' | 'hora' | 'fim' | 'notas' | null {
+  private alterTarget(
+    text: string,
+  ): 'titulo' | 'dia' | 'hora' | 'fim' | 'notas' | 'lembrete' | null {
     const t = text
       .toLowerCase()
       .normalize('NFD')
@@ -663,6 +761,31 @@ export class SchedulingFlowMachine {
     return `${c.title ?? ''} — ${this.formatRange(c.startUtc, c.endUtc, input.offsetMinutes)}`;
   }
 
+  /**
+   * Linha `⏰` do resumo final (spec regra 1) + aviso de gatilho retroativo (regra 7 /
+   * decisão #1): se alguma regra não gerou gatilho com o `now` atual, avisa QUAL
+   * (rótulos schedule-core) mas mantém as regras gravadas.
+   */
+  private lembreteResumo(c: FlowCandidate, input: HandleTurnInput): string {
+    const rules = c.reminderRules ?? [];
+    if (rules.length === 0 || rules.every((r) => r.type === 'none'))
+      return BOT_MESSAGES.lembreteResumoNenhum;
+    const labels = rulesLabelsPtBr(rules.map(toCoreRuleFromInput));
+    const fired = c.startUtc
+      ? computeTriggers(c.startUtc, rules.map(toCoreRuleFromInput), { now: input.now })
+      : [];
+    const firedTypes = new Set(fired.map((t) => `${t.ruleType}`));
+    const retroativos = rules
+      .map((r, i) => ({ r, label: labels[i] ?? r.type }))
+      .filter(({ r }) => !firedTypes.has(r.type))
+      .map(({ label }) => `o lembrete de ${label}`);
+    const line = BOT_MESSAGES.lembreteResumo(labels.join(' · '));
+    if (retroativos.length > 0 && c.startUtc) {
+      return `${line}\n${BOT_MESSAGES.lembreteRetroativo(retroativos)}`;
+    }
+    return line;
+  }
+
   private formatRange(startsAt: Date, endsAt: Date, offsetMinutes: number): string {
     const s = utcToZonedParts(startsAt, offsetMinutes);
     const e = utcToZonedParts(endsAt, offsetMinutes);
@@ -685,6 +808,20 @@ export class SchedulingFlowMachine {
 function parseTime(text: string): number | null {
   const m = text.trim().match(MINUTES_RE);
   return m ? Number(m[1]) * 60 + Number(m[2]) : null;
+}
+
+/** Input de regra (contracts) -> regra do domínio schedule-core (rótulos/computeTriggers). */
+function toCoreRuleFromInput(rule: NotificationRuleInput): NotificationRule {
+  switch (rule.type) {
+    case 'none':
+      return { type: 'none' };
+    case 'before_hours':
+      return { type: 'before_hours', hours: rule.value ?? 0 };
+    case 'before_days':
+      return { type: 'before_days', days: rule.value ?? 0 };
+    case 'countdown_3_2_1':
+      return { type: 'countdown_3_2_1' };
+  }
 }
 
 function pad(n: number): string {

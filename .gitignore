@@ -4,6 +4,7 @@ build/
 coverage/
 .turbo/
 *.tsbuildinfo
+*.log
 
 # Segredos — nunca commitar
 .env

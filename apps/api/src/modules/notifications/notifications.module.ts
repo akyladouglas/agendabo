@@ -1,21 +1,30 @@
 import { BullModule } from '@nestjs/bullmq';
 import { Module } from '@nestjs/common';
-
-/** Nome da fila de disparos de lembrete (outbox). Consumido pelo worker da Fase 4. */
-export const NOTIFICATIONS_QUEUE = 'notifications-dispatch';
-/** Fila auxiliar: criacao das linhas de outbox apos criacao do compromisso (Fase 3/4). */
-export const OUTBOX_SCHEDULING_QUEUE = 'notifications-schedule';
+import { DigestSchedulingService } from './digest-scheduling.service';
+import { DispatchService } from './dispatch.service';
+import { OutboxService } from './outbox.service';
+import { NOTIFICATIONS_QUEUE } from './notifications.queue';
 
 /**
- * Notificacoes (Fases 3-4):
- * - computeTriggers (schedule-core) decide QUANDO;
- * - este modulo materializa NotificationOutbox e enfileira jobs BullMQ;
- * - worker envia via TelegramClientService com retry/backoff e marca sent/failed;
- * - digest diario (2.1) via @nestjs/schedule com idempotencia por usuario/dia.
+ * Notificações (Fase 3 — spec lembretes-e-resumo-diario):
+ * - computeTriggers (schedule-core) decide QUANDO; OutboxService materializa as linhas
+ *   do outbox (mesma tx de quem cria) e enfileira jobs `{ outboxId }` pós-commit;
+ * - DigestSchedulingService (cron fino, processo do bot) materializa o resumo diário
+ *   idempotente por única parcial (userId, kind, firesAt);
+ * - DispatchService é a lógica do WORKER (`src/workers/notifications-worker.ts`,
+ *   processo próprio via `dev:worker` — gotcha 5/ADR-009): idempotência pela linha,
+ *   gate de conta, needs_review→cancelled, stale→failed, retry limitado;
+ * - envio via shared/telegram (TelegramClientService.sendMessage, escape HTML na origem).
  */
 @Module({
-  imports: [
-    BullModule.registerQueue({ name: NOTIFICATIONS_QUEUE }, { name: OUTBOX_SCHEDULING_QUEUE }),
+  imports: [BullModule.registerQueue({ name: NOTIFICATIONS_QUEUE })],
+  providers: [
+    DigestSchedulingService,
+    DispatchService,
+    // A fila BullMQ vista pela camada de aplicação é a shape mínima `DispatchQueueLike`
+    // (mock plano nos testes — testing.md). O worker usa o BullMQ diretamente.
+    OutboxService,
   ],
+  exports: [OutboxService, DigestSchedulingService, DispatchService],
 })
 export class NotificationsModule {}

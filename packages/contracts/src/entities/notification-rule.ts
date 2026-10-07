@@ -42,5 +42,13 @@ export const notificationRuleSchema = z.object({
 });
 export type NotificationRuleDto = z.infer<typeof notificationRuleSchema>;
 
-export const notificationOutboxStatusSchema = z.enum(['pending', 'sent', 'failed']);
+/**
+ * Ciclo de vida da linha de outbox (Fase 3): `cancelled` = invalidada (compromisso
+ * editado/deletado, needs_review na hora do disparo ou conta sem gate) — nunca envia.
+ */
+export const notificationOutboxStatusSchema = z.enum(['pending', 'sent', 'failed', 'cancelled']);
 export type NotificationOutboxStatus = z.infer<typeof notificationOutboxStatusSchema>;
+
+/** Tipo de disparo do outbox (2.1): lembrete de compromisso ou resumo diario (2.1). */
+export const notificationKindSchema = z.enum(['reminder', 'daily_digest']);
+export type NotificationKind = z.infer<typeof notificationKindSchema>;
