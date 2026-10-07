@@ -1,105 +1,90 @@
-# Cenários do bot — onboarding e roteiro de testes
+# O que o bot entende 🤖
 
-> O que o bot **já entende hoje** e como cada fluxo se comporta. Atualizado ao fim de
-> cada fase do roadmap (Fase 1: criar compromisso · Fase 2: consultar agenda).
-> Serve como roteiro de smoke-test: rode os cenários marcados com ✅ na ordem.
-> Lembrete: o bot só atende telegramId **cadastrado com email confirmado** — sem isso,
-> ele só responde com a orientação de cadastro (cenário A0).
+> Guia rápido + roteiro de teste. Fale normal — **nada de /comando**.
+> Precisa de conta confirmada primeiro. Sem ela, o bot só manda o link de cadastro.
 
----
-
-## Regra de ouro (vale para tudo)
-
-**Nada de comando de barra.** Você fala normal; o bot classifica a intenção. Se ele não
-tiver certeza do que você quis, ele **pergunta** em vez de agir no chute (ADR-008). E o
-que ele **decide** (conflito, datas, lembretes) é regra determinística — o LLM só
-interpreta (ADR-004).
+**Única regra pra lembrar:** se o bot não entendeu, ele **pergunta**. Ele nunca chuta.
 
 ---
 
-## A. Criar compromisso (Fase 1)
+## A. Marcar compromisso
 
 ### A1. Fluxo feliz ✅
 
 ```
 você:  quero marcar uma consulta com a dentista
-bot:  Bora marcar! Como eu chamo esse compromisso?   (ou usa a própria fala como título)
-você: Consulta dentista
-bot:  Em que dia vai ser?  [Hoje] [Amanhã] [08/10] [09/10] ...
-você: Amanhã            (ou clica no botão, ou digita 08/10)
-bot:  Que horas começa?  [09:00] [10:00] ... (ou digite 14:30)
-você: 14:30
-bot:  Que horas termina? Ou me diz a duração ("1h30", "15min").
-você: 1h                (ou "15:30" — aceita os dois; fim antes do início re-pergunta)
-bot:  Tem alguma informação importante pra eu anotar? (senão, "não")
-você: levar exame de imagem
-bot:  Fechando então: Consulta dentista — qui 08/10 14:30–15:30, 📝 levar exame...
-      Confirmo? [confirmar] [alterar]
-você: confirmar
-bot:  Prontinho! Criei "Consulta dentista" de qui 08/10 14:30–15:30 ✅
+bot:   Como eu chamo esse compromisso?
+você:  Consulta dentista
+bot:   Em que dia?  [Hoje] [Amanhã] [08/10] [09/10] ...
+você:  Amanhã
+bot:   Que horas começa?  [14:00] [15:00] ... (ou digite 14:30)
+você:  14:30
+bot:   Que horas termina? Ou me diz a duração.
+você:  1h
+bot:   Tem algo pra eu anotar? (senão, "não")
+você:  levar exame de imagem
+bot:   Fechando: Consulta dentista — qui 08/10 14:30–15:30 📝 levar exame
+       [confirmar] [alterar]
+você:  confirmar
+bot:   Prontinho! Criei "Consulta dentista" de qui 08/10 14:30–15:30 ✅
 ```
 
-Também funcionam como duração: `1h`, `1h30`, `15min`, `90`, ou o horário de fim.
+Funciona como duração: `1h` · `1h30` · `15min` · `90` · ou o horário de fim (`15:30`).
 
-### A2. Deu conflito (1.1) ✅
-
-```
-você:  quero marcar um café com a Ana
-... (título, hoje, 14:30, 1h)
-bot:  Deu conflito com o que você já tem 😬
-      Você já tem "Consulta dentista" de qui 08/10 14:30–15:30.
-      Quer remarcar pra outro horário ou abortar?  [remarcar] [abortar]
-você: remarcar → escolhe outro horário → ele checa de novo
-você: abortar  → "Nada foi salvo."
-```
-
-- O horário é sempre exibido **no seu fuso**; guardado em UTC.
-- Encostado **não** é conflito (termina 15:00 / começa 15:00 → pode).
-- Compromisso já passado não bloqueia nada.
-- Até **3 tentativas** de remarcar; depois ele sugere abortar (mas você pode insistir).
-
-### A3. Desistir no meio (fala natural, sem comando) ✅
+### A2. Conflito de horário ✅
 
 ```
-você: deixa pra lá        → cancela na hora, nada é salvo
-você: melhor não          → idem
-bot (se ficou na dúvida): "Quero cancelar este compromisso, certo? (sim/não)"
-você: não                 → volta exatamente de onde parou (nada se perde)
+você:  (escolhe 14:30 às 15:30, mas já tem algo às 14:00)
+bot:   Deu conflito 😬 Você já tem "Consulta dentista" de qui 08/10 14:30–15:30.
+       [remarcar] [abortar]
+você:  remarcar → escolhe outro horário → ele confere de novo
+você:  abortar  → nada é salvo
 ```
+
+- Encostado **pode**: termina 15:00 / começa 15:00 → sem conflito.
+- Compromisso passado não bloqueia.
+- 3 tentativas de remarcar → ele sugere abortar. Você pode insistir.
+- Você vê no seu fuso; ele guarda em UTC.
+
+### A3. Desistir no meio ✅
+
+Fale: `deixa pra lá` · `melhor não` · `cancela` · `para` → nada é salvo.
+
+Ele ficou na dúvida? Pergunta: _"Quero cancelar, certo?"_
+Responda `não` → volta **exatamente** de onde parou, nada se perde.
 
 ### A4. Começar outro sem terminar o atual
 
 ```
 (meio do fluxo) você: na verdade quero marcar outra coisa
-bot:  Você já tem um compromisso em andamento aqui.
-      Quer descartar ele e começar um novo? (sim/não)
+bot:  Já tem um em andamento. Descartar e começar novo? (sim/não)
 ```
 
-### A5. Errar dados no meio
+### A5. Errar no meio
 
-- Fim antes do início → re-pergunta só o fim.
-- Resposta que ele não entendeu no passo → repete a pergunta do passo.
-- No resumo final: `alterar o título` / `alterar o dia` / `alterar o horário` /
-  `alterar as notas` → ele volta direto naquele passo, mantendo o resto.
+| Errou                    | Ele faz                                                                          |
+| ------------------------ | -------------------------------------------------------------------------------- |
+| fim antes do início      | re-pergunta só o fim                                                             |
+| resposta sem sentido     | repete a pergunta do passo                                                       |
+| quer mudar algo no final | `alterar o título` / `o dia` / `o horário` / `as notas` → volta só naquele passo |
 
 ---
 
-## B. Consultar agenda (Fase 2)
+## B. Consultar agenda
 
-### B1. Perguntas que ele entende ✅
+### B1. Perguntas que funcionam ✅
 
-| Você diz                                                       | Ele mostra                                             |
-| -------------------------------------------------------------- | ------------------------------------------------------ |
-| "o que tenho hoje?" / "minha agenda de hoje"                   | o **dia inteiro** (até o que já passou)                |
-| "amanhã?"                                                      | amanhã                                                 |
-| "depois de amanhã"                                             | depois de amanhã                                       |
-| "esta semana" / "semana que vem"                               | semana civil (segunda a domingo)                       |
-| "este mês" / "mês que vem"                                     | mês civil                                              |
-| "ano que vem"                                                  | ano inteiro (resumo com contagem se tiver muita coisa) |
-| "e no fim de semana?"                                          | sábado + domingo                                       |
-| "o que tenho dia 12?" / "de 10 a 12?" / "dia 5 do mês que vem" | datas explícitas                                       |
+| Fale                             | Ele mostra                           |
+| -------------------------------- | ------------------------------------ |
+| "o que tenho hoje?"              | o dia inteiro (até o que já passou)  |
+| "amanhã?"                        | amanhã                               |
+| "esta semana" / "semana que vem" | segunda a domingo                    |
+| "este mês" / "mês que vem"       | o mês                                |
+| "e no fim de semana?"            | sábado + domingo                     |
+| "dia 12?" / "de 10 a 12?"        | as datas ditas                       |
+| "ano que vem"                    | contagem geral, aí você pede detalhe |
 
-### B2. Como vem a resposta ✅
+### B2. A resposta vem assim ✅
 
 ```
 você: o que tenho amanhã?
@@ -108,80 +93,73 @@ bot:  Isto é o que você tem em qui 08/10:
       • 14:30–15:30 — Consulta dentista 📝 levar exame
 ```
 
-- Ordenado por horário, agrupado por dia quando o período pega vários dias.
-- Compromisso que o bot ainda não confirmou aparece com ⚠️ _conferindo_.
-- Vazio: "Você não tem nada nesse período" — e **só** isso (ele nunca inventa).
-- Passou de 10 itens: lista 10 e pergunta se quer o resto / período menor.
-- Período gigante (ex.: "ano que vem") com muita coisa: contagem + oferta de detalhar.
+- Ordenado por horário. Vários dias → agrupado por dia.
+- ⚠️ _conferindo_ = ele não entendeu direito, vale revisar no site.
+- Vazio = "Você não tem nada nesse período". **Só isso.** Ele nunca inventa compromisso.
+- Passou de 10 → lista 10 e oferece o resto.
 
-### B3. Perguntar no meio de um agendamento ✅
+### B3. Consultar no meio de um agendamento ✅
 
 ```
-(meio do criar, passo das notas) você: aliás, o que tenho amanhã?
+(meio do fluxo) você: aliás, o que tenho amanhã?
 bot:  Isto é o que você tem em qui 08/10: ...
-bot:  (volta sozinho) Tem alguma informação importante pra eu anotar?
+bot:  (volta sozinho) Tem algo pra eu anotar?
 ```
 
-### B4. Ele não entendeu o período
+### B4. Ele não pegou o período
 
 ```
 você: meus compromissos
-bot:  Para qual período você quer ver? Ex.: hoje, amanhã, semana que vem, dia 10 a 12
-você: tanto faz          → "beleza, encerro aqui" (não fica insistindo)
+bot:  Pra qual período? Ex.: hoje, amanhã, semana que vem, dia 10 a 12
+você: tanto faz  → ele encerra, sem insistir
 ```
 
-(ele no máximo pergunta 2 vezes, depois encerra educadamente)
+Máximo 2 perguntas. Depois ele desiste com educação.
 
 ---
 
-## C. Quem não pode usar o bot
+## C. Sem cadastro ✅
 
-### C0. Sem cadastro ✅
-
-```
-qualquer mensagem → "passa no site e cria sua conta" (e nada mais acontece)
-```
+Qualquer mensagem → só o passo a passo de cadastro. Nada mais funciona.
 
 ---
 
-## D. O que o bot ainda NÃO faz (próximas fases)
+## D. Ainda NÃO faz (próximas fases)
 
-| Ainda não                                                                         | Vem na fase                           |
-| --------------------------------------------------------------------------------- | ------------------------------------- |
-| Lembretes ("me lembra 1 dia antes")                                               | Fase 3 (notificações + resumo diário) |
-| Resumo diário automático (ex.: 07:00)                                             | Fase 3                                |
-| Marcar em data 100% livre ("quinzena que vem uns 14h") — hoje o "quando" é guiado | Fase 4 (LLM avançado)                 |
-| Editar/cancelar compromisso **já criado** pelo chat                               | Fase 4                                |
-| Site: calendário, tela de revisão, cadastro web                                   | Fases 5–7                             |
-
----
-
-## E. Tabela rápida de intenções (como o bot classifica)
-
-| Intenção         | Exemplo de fala                              | O que acontece                |
-| ---------------- | -------------------------------------------- | ----------------------------- |
-| criar            | "quero marcar X", "bora agendar Y"           | abre o fluxo guiado           |
-| consultar        | "o que tenho amanhã?", "minha semana"        | lista o período               |
-| cancelar         | "deixa pra lá", "cancela", "para"            | descarta o que estava fazendo |
-| remarcar         | "e às 16h?", "melhor de manhã" (no conflito) | re-checa conflito             |
-| substituir_atual | "não, marca outra coisa"                     | pergunta antes de descartar   |
-| continuar_fluxo  | responder a pergunta atual do bot            | avança o passo                |
-| fora_do_escopo   | "me conta uma piada"                         | resposta padrão, sem efeitos  |
-
-**Dica de teste:** se o bot parecer "burro" numa frase, não é o modelo decidindo — é
-ele seguindo a regra. Rode o cenário de novo ou pergunte "o que tenho hoje?" pra ver o
-estado da sua agenda.
+| Falta                                                             | Vem na    |
+| ----------------------------------------------------------------- | --------- |
+| Lembrete ("me lembra 1 dia antes")                                | Fase 3    |
+| Resumo diário automático (07:00)                                  | Fase 3    |
+| Marcar solto: "quinzena que vem uns 14h" (hoje o quando é guiado) | Fase 4    |
+| Editar/cancelar compromisso já criado pelo chat                   | Fase 4    |
+| Site: calendário, revisão, cadastro                               | Fases 5–7 |
 
 ---
 
-## F. Como testar na sua máquina
+## E. Como o bot classifica sua fala
+
+| Você fala                              | Ele entende                      |
+| -------------------------------------- | -------------------------------- |
+| "quero marcar X"                       | começar agendamento              |
+| "o que tenho amanhã?"                  | listar agenda                    |
+| "deixa pra lá"                         | cancelar o que estava fazendo    |
+| "e às 16h?" (no conflito)              | remarcar                         |
+| "marca outra coisa" (com fluxo aberto) | começa novo, perguntando antes   |
+| qualquer resposta ao passo             | seguir o fluxo                   |
+| "me conta uma piada"                   | fora do escopo → resposta padrão |
+
+---
+
+## F. Testar na sua máquina (≈5 min)
 
 ```bash
 pnpm infra:up                              # Postgres + Redis
-pnpm --filter @agendabo/api prisma:migrate # se ainda não rodou
 pnpm dev:api                               # API em :3001
-pnpm --filter @agendabo/api run dev:bot    # o bot (long-polling)
+pnpm --filter @agendabo/api run dev:bot    # o bot
 ```
 
-Contas: cadastre seu telegramId pela API (signup + código) ou pelo banco em dev.
-Depois rode os cenários ✅ acima, na ordem: **C0 → A1 → A2 → B1 → B2 → B3 → A3**.
+1. Confirme sua conta (signup + código, ou direto no banco em dev).
+2. Mande os cenários ✅ na ordem: **C0 → A1 → A2 → B1 → B2 → B3 → A3**.
+
+**Deu esquisito?** Não é o modelo decidindo — é regra. Rode de novo ou mande
+"o que tenho hoje?" pra ver o estado da agenda.
