@@ -16,6 +16,25 @@ import {
 } from '@agendabo/contracts';
 import { BOT_MESSAGES, givesUp, parseNotesAnswer, parseYesNo } from './messages';
 import type { BotUser } from './bot-access.service';
+import {
+  classificarExtracao,
+  classificarEdicao,
+  dayFromResolvedUtc,
+  type ExtracaoInput,
+  type ExtracaoPayloadBruto,
+  type ExtracaoVeredito,
+  type EdicaoPayloadBruto,
+  type EdicaoVeredito,
+} from './extraction-ruler';
+
+export { classificarExtracao, classificarEdicao, dayFromResolvedUtc };
+export type {
+  ExtracaoVeredito,
+  EdicaoVeredito,
+  ExtracaoInput,
+  ExtracaoPayloadBruto,
+  EdicaoPayloadBruto,
+};
 
 /**
  * Maquina de estados do fluxo de agendamento (spec criar-compromisso-bot + Fase 3).
@@ -34,6 +53,12 @@ import type { BotUser } from './bot-access.service';
  */
 
 export type FlowStep =
+  /**
+   * Fase 4: criar ABERTO pela fala (intent `criar` aceita off-flow) mas ainda SEM fala
+   * consumida — a fala é dada ao service, que roda o extrator + a régua e chama a máquina
+   * com `extracted`. Nenhum turno vive neste passo: ele é o portão do atalho.
+   */
+  | 'criar_aberto'
   | 'titulo'
   | 'dia'
   | 'hora'
@@ -43,7 +68,17 @@ export type FlowStep =
   | 'lembrete'
   | 'confirmacao'
   | 'confirmar_cancelamento'
-  | 'confirmar_substituicao';
+  | 'confirmar_substituicao'
+  /** Fase 4: diff legível da edição + "sim" antes de alterar qualquer coisa (spec C12). */
+  | 'edit_propor'
+  /** Fase 4: qual compromisso mudar; resposta livre (borda localiza com schedule-core). */
+  | 'edit_descricao'
+  /** Fase 4: 2–N candidatas casaram; escolha "1/2/..." determinística (zero LLM). */
+  | 'escolher_candidata'
+  /** Fase 4: "Vou cancelar X de ... Posso? (sim/não)" (spec D14). */
+  | 'confirmar_cancelamento_compromisso'
+  /** Fase 4: mesmo diff da proposta, após conflito reportado no "sim" (spec C13). */
+  | 'confirmar_edicao';
 
 export interface FlowCandidate {
   title?: string;
@@ -60,9 +95,56 @@ export interface FlowCandidate {
   reminderRules?: NotificationRuleInput[];
   /** Tentativas de remarcar já usadas (decisão de produto #4: máx 3). */
   conflictTries: number;
+  /**
+   * Fase 4 (atalho do criar): o dia veio do instante do modelo (calendário resolvido na
+   * BORDA — o LLM ancora no "hoje" do prompt). Guarda o dia no calendário local do
+   * usuário para o ramo de remarcação NÃO perder o candidato se `startMinutes` faltar.
+   */
+  startDayLocal?: { year: number; month: number; day: number };
+  /** Fase 4: evidência da data extraída (log de debug da fila — spec regra 7). */
+  dateEvidence?: string;
   /** Snapshot p/ intenção `substituir_atual` (decisão de produto #9). */
   prev?: FlowCandidate;
   prevStep?: FlowStep;
+  /**
+   * Estado do fluxo editar/cancelar pelo chat (Fase 4). Vive no candidato para sobreviver
+   * aos turnos (escolha de candidata, proposta, confirmação) sem estado no service.
+   */
+  edit?: EditFlowState;
+}
+
+/** Candidata retornada pela localização determinística (schedule-core, via service). */
+export interface EditCandidateLike {
+  id: string;
+  title: string;
+  startsAt: Date;
+  endsAt: Date;
+  status?: string;
+}
+
+/** O que se sabe do pedido de edição/cancelamento enquanto a conversa não fecha. */
+export interface EditFlowState {
+  action: 'editar' | 'cancelar';
+  /** Compromisso escolhido (após localização unívoca ou escolha numerada). */
+  appointmentId?: string;
+  /** Snapshot do compromisso-alvo p/ o diff legível e o fallback (nunca re-perguntar "qual?"). */
+  fromTitle?: string;
+  fromStartUtc?: Date;
+  fromEndUtc?: Date;
+  /** Nova proposta (aceita pela régua; delta já resolvido via applyShift na borda). */
+  toStartUtc?: Date;
+  toEndUtc?: Date;
+  /** Título novo (se o pedido mexeu no título; patch só inclui o que mudou). */
+  toTitle?: string;
+  /** Novas regras de lembrete? Fase 4 não edita lembretes pelo chat (fora de escopo). */
+  /** Filtro de localização ainda não resolvido (2–N candidatas / 0 candidatas). */
+  descricao?: string;
+  intervalRange?: { start: Date; end: Date };
+  candidates?: EditCandidateLike[];
+  /** Tentativas de horário novo que deram conflito no "sim" (máx 3 — spec C13). */
+  tries: number;
+  /** Último conflito reportado pela borda (mensagem de limite do passo `edit_propor`). */
+  lastConflict?: EditConflictReport;
 }
 
 export interface FlowSession {
@@ -71,6 +153,13 @@ export interface FlowSession {
   lastActivityAt: number;
   /** Passo "real" antes das perguntas sim/não de proteção (cancelar/substituir). */
   prevStep?: FlowStep;
+  /** Modo do fluxo de edição (Fase 4): editar ou cancelar um compromisso existente. */
+  editMode?: 'edit' | 'cancel';
+  /**
+   * Fase 4: fala livre em `edit_antes_depois` que ainda NÃO é "antes/depois"
+   * (descrição do alvo) — a borda re-interpreta no próximo turno.
+   */
+  editRedefine?: boolean;
 }
 
 export type BotReply =
@@ -90,11 +179,75 @@ export interface FlowOutcome {
     /** tz do usuário no instante da criação (metadata — banco guarda só UTC, ADR-002). */
     timezone: string;
   };
+  /**
+   * Fase 4 (spec E16): needs_review nascido da régua — o service persiste com
+   * `rawText`/`reviewReason`, ZERO outbox, e a sessão termina (decisão #6).
+   */
+  needsReview?: {
+    title: string;
+    startsAt: Date;
+    endsAt: Date;
+    rawText: string;
+    reviewReason: string;
+    timezone: string;
+  };
+  /**
+   * Fase 4 (spec C12/D5): o "sim" GRAVA, então a resposta também afirma o que mudou
+   * ("Feito!") além de emitir o patch p/ o service aplicar `AppointmentsService.update`.
+   */
+  update?: {
+    appointmentId: string;
+    patch: { title?: string; startsAt?: Date; endsAt?: Date };
+    /** Título final da edição (mensagem de confirmação do service). */
+    title: string;
+  };
+  /** Fase 4 (spec D14): "sim" do cancelar — o service aplica `remove` + invalida outbox. */
+  cancelAppointment?: {
+    appointmentId: string;
+    /** Snapshot p/ a mensagem "Cancelado: X (range)" e o aviso dos lembretes apagados. */
+    title: string;
+    startsAt: Date;
+    endsAt: Date;
+  };
 }
 
 /** O que a borda (ReminderInterpreterService) diz sobre a fala do passo `lembrete`. */
 export type ReminderClassified =
   { ok: true; regras: NotificationRuleInput[] } | { ok: false; reason: string };
+
+/**
+ * Fase 4: veredito da RÉGUA (extraction-ruler) sobre a fala do criar, calculado na borda
+ * com o payload do extrator. A máquina só consome — mesmo desenho do `classified` de
+ * ADR-008. `falhou` = parse/timeout do extrator (cai no guiado com o que extraiu).
+ */
+export type ExtractedClassified =
+  | { kind: 'aceito'; data: { title: string; startUtc: Date; endUtc: Date; dateEvidence?: string } }
+  | {
+      kind: 'quando_parcial';
+      data: { title?: string; day: { year: number; month: number; day: number } };
+    }
+  | {
+      kind: 'fraco' | 'suspeito';
+      data: { title: string; startUtc: Date; endUtc: Date; dateEvidence?: string };
+      reviewReason: string;
+      rawText: string;
+    }
+  | { kind: 'sem_quando' }
+  | { kind: 'falhou'; reason: string; titleHint?: string }
+  /**
+   * Borda CHAMOU o extrator neste turno (portão do atalho) — a máquina sabe que a fala
+   * já foi processada e não deve re-classificar/engolir de novo. `consume: false` é o
+   * caso raro em que a borda quer que a fala siga como DADO do passo (ex.: nada a
+   * extrair); hoje a borda sempre consome no portão.
+   */
+  | { kind: 'consumida'; consume: false };
+
+/** Conflito reportado pela borda após o "sim" da edição (update lançou ConflictError). */
+export interface EditConflictReport {
+  title: string;
+  startsAt: Date;
+  endsAt: Date;
+}
 
 export interface HandleTurnInput {
   session: FlowSession;
@@ -107,6 +260,36 @@ export interface HandleTurnInput {
    * `classified`: a borda chama o interpretador, a máquina só consome o veredito).
    */
   reminder?: ReminderClassified;
+  /** Fase 4: veredito da régua do extrator (borda) no turno que ABRE o criar com fala solta. */
+  extracted?: ExtractedClassified;
+  /**
+   * Fase 4: localização concluída pela borda (schedule-core `findMatchingAppointments`)
+   * para um pedido de editar/cancelar: `candidates` = entrada do `escolher_candidata`;
+   * `candidate` = candidata única (vai direto à proposta/confirmação); `none` = "não
+   * encontrei". A máquina nunca busca nem escolhe sozinha.
+   */
+  editLocation?:
+    | { kind: 'candidate'; data: EditCandidateLike }
+    | { kind: 'candidates'; data: EditCandidateLike[] }
+    | { kind: 'none' }
+    | { kind: 'ask_descricao' };
+  /**
+   * Fase 4: candidata ÚNICA localizada durante um turno de DESCRIPTION (resposta ao
+   * "qual deles?") — a máquina apresenta direto (confirmar cancelar / pedir a mudança).
+   */
+  editPicked?: EditCandidateLike;
+  /**
+   * Fase 4: veredito da régua do QUANDO do editar + delta já resolvido em datas
+   * (`applyShift` na borda). `null` = fala sem mudança de horário (só título).
+   */
+  editChange?:
+    | (
+        | { kind: 'ok'; toStartUtc: Date; toEndUtc: Date; toTitle?: string }
+        | { kind: 'reperguntar'; reason: string }
+      )
+    | null;
+  /** Fase 4: conflito reportado pelo update depois do "sim" (volta à proposta). */
+  editConflict?: EditConflictReport;
   /** Compromissos confirmed futuros do usuário p/ findConflict (borda). */
   existing?: AppointmentLike[];
   /** Offset do tz do usuário (minutos leste de UTC) — medido na borda (ADR-002). */
@@ -205,6 +388,44 @@ export class SchedulingFlowMachine {
     if (session.step === 'hora' && input.timeChoice)
       return this.setStart(session, input.timeChoice, input);
 
+    // ---------- Fase 4: atalho do criar — veredito da régua calculado na borda ----------
+    // Aceito ⇒ pula dia/hora/fim E a confirmação final (a fala já é a confirmação — D2);
+    // parcial/falha ⇒ cai no guiado com o que extraiu (spec A4/A5). O portão é duplo:
+    // (1) O SERVICE só anexa `extracted` no turno que ABRE o criar com fala solta —
+    // falas de passos em curso (ex.: o título digitado em `titulo`) são DADO, nunca
+    // hipótese do extrator; (2) a sessão tem que estar intocada (`criar_aberto` ou o
+    // passo inicial `titulo` sem candidato), cinto de segurança contra borda ansiosa.
+    if (
+      input.extracted &&
+      (session.step === 'criar_aberto' || (session.step === 'titulo' && !session.candidate.title))
+    ) {
+      if (input.extracted.kind === 'consumida') {
+        // a fala foi processada pela borda mas não rendeu veredito utilizável: segue
+        // como DADO do passo normal (título vazio → re-pergunta educada).
+        session.step = 'titulo';
+        return { replies: [{ kind: 'text', text: BOT_MESSAGES.pedeTitulo }] };
+      }
+      return await this.applyShortcut(session, input.extracted, input);
+    }
+
+    // ---------- Fase 4: localização/editar/cancelar pelo chat (vereditos da borda) ----------
+    // A máquina NÃO decide localização (schedule-core decide no service); ela apresenta:
+    // 1 candidata ⇒ proposta/confirmação; 2–N ⇒ escolha determinística; 0 ⇒ "não encontrei".
+    if (input.editLocation) return this.applyEditLocation(session, input);
+    // Conflito reportado pela borda depois do "sim" ⇒ re-pergunta o horário novo (C13).
+    if (input.editConflict) return this.reportEditConflict(session, input);
+    // Candidata ÚNICA achada na fala da descrição (borda localizou — spec B11/D): a
+    // máquina apresenta sem re-perguntar (C2).
+    if (input.editPicked) return this.pickCandidate(session, input.editPicked, input);
+    // "Espero re-interpretação" é predicado da BORDA (que roda o interpretador e
+    // marca `editRedefine=true` no turno da chamada); os sim/não ("1", "sim", "não")
+    // são DADO do passo e nunca chegam com a flag (zero LLM, regra 22).
+    if (!this.isEditStep(session.step)) session.editRedefine = false;
+    // Mudança de horário pronta (régua + applyShift na borda) ⇒ diff + confirmação (C12).
+    if (input.editChange && session.editRedefine && this.isEditStep(session.step)) {
+      return this.applyEditChange(session, input);
+    }
+
     const intent = acceptedIntent(input.classified, this.minConfidence);
     if (intent) {
       const routed = await this.routeIntent(session, intent.intent, input);
@@ -233,14 +454,38 @@ export class SchedulingFlowMachine {
         session.step = 'confirmar_cancelamento';
         return { replies: [{ kind: 'text', text: BOT_MESSAGES.confirmarCancelamento }] };
 
+      case 'editar_compromisso':
+      case 'cancelar_compromisso':
+        // Fase 4 (spec regra 9): com o criar ABERTO, editar/cancelar um Compromisso NÃO
+        // descarta o candidato em andamento no chute — abre a sessão do editar com a
+        // MESMA proteção "descartar o atual? (sim/não)".
+        if (this.isCreatingFlowStep(session.step)) {
+          return this.openEditWithProtection(session, intent, input);
+        }
+        if (session.step === 'confirmar_substituicao') {
+          // re-classificou durante a pergunta de proteção: re-posta a pergunta (a resposta
+          // "sim"/"não" dela é dada como DADO do passo — nada é descartado no chute).
+          return { replies: [{ kind: 'text', text: BOT_MESSAGES.confirmarSubstituicao }] };
+        }
+        if (session.step === 'criar_aberto' && session.editMode) {
+          // sessão do editar/cancelar recém-aberta pelo service: re-posta a pergunta de
+          // qual compromisso (a fala é DADO do passo; a borda localiza no próximo turno).
+          session.editRedefine = true;
+          return { replies: [{ kind: 'text', text: BOT_MESSAGES.pedeDescricaoEdicao }] };
+        }
+        return null;
+
       case 'criar':
-        if (session.step === 'confirmar_substituicao') return this.cancel();
-        // decisao de produto #9: descarta o atual SOMENTE com "sim" do usuário.
+        // com a pergunta de proteção aberta (das duas famílias), "criar" é a resposta
+        // "sim" implícita à pergunta (decisão #9: só com "sim" o atual é descartado).
+        if (session.step === 'confirmar_substituicao' || session.step === 'criar_aberto')
+          return this.cancel();
         session.step = 'confirmar_substituicao';
         return { replies: [{ kind: 'text', text: BOT_MESSAGES.confirmarSubstituicao }] };
 
       case 'substituir_atual':
-        if (session.step === 'confirmar_substituicao') return this.cancel();
+        if (session.step === 'confirmar_substituicao' || session.step === 'criar_aberto')
+          return this.cancel();
         session.step = 'confirmar_substituicao';
         return { replies: [{ kind: 'text', text: BOT_MESSAGES.confirmarSubstituicao }] };
 
@@ -281,12 +526,679 @@ export class SchedulingFlowMachine {
     return null;
   }
 
+  /**
+   * Fase 4: veredito da régua no turno que abriu o criar com fala solta (spec A4/A5).
+   * A sessão já foi criada pelo service (openFlow) — aqui só se preenche o candidato.
+   */
+  private async applyShortcut(
+    session: FlowSession,
+    extracted: ExtractedClassified,
+    input: HandleTurnInput,
+  ): Promise<FlowOutcome> {
+    const c = session.candidate;
+    if (extracted.kind === 'consumida') {
+      // unreachable (gate trata antes) — narrowing total para o switch abaixo.
+      session.step = 'titulo';
+      return { replies: [{ kind: 'text', text: BOT_MESSAGES.pedeTitulo }] };
+    }
+    switch (extracted.kind) {
+      case 'aceito': {
+        c.title = extracted.data.title;
+        c.startUtc = extracted.data.startUtc;
+        c.endUtc = extracted.data.endUtc;
+        c.startMinutes = undefined;
+        c.day = undefined;
+        if (extracted.data.dateEvidence) c.dateEvidence = extracted.data.dateEvidence;
+        // Atalho da Fase 4 (spec A4): o dia veio do instante do modelo (calendário
+        // resolvido na borda) — guarda o dia local p/ o ramo de remarcação não perder o
+        // candidato se a fala nova só trouxer a hora.
+        const parts = utcToZonedParts(extracted.data.startUtc, input.offsetMinutes);
+        c.startDayLocal = { year: parts.year, month: parts.month, day: parts.day };
+        session.step = 'conflito';
+        // retoma no passo `conflito`: findConflict roda contra os confirmed futuros e o
+        // bot responde com o resumo + notas (sem conflito) ou a pergunta de conflito
+        // (spec A4). O resumo do atalho diz "Entendi" (pedeNotasAtalho em checkConflict).
+        return this.checkConflict(session, input);
+      }
+      case 'quando_parcial': {
+        if (extracted.data.title) c.title = extracted.data.title;
+        c.day = extracted.data.day;
+        c.startMinutes = undefined;
+        c.startUtc = undefined;
+        c.endUtc = undefined;
+        session.step = 'hora'; // pula o que tem, pergunta só o que falta (decisão #5)
+        return {
+          replies: [
+            {
+              kind: 'buttons',
+              text: BOT_MESSAGES.pedeHora(
+                BOT_MESSAGES.diaLabel(
+                  extracted.data.day,
+                  utcToZonedParts(input.now, input.offsetMinutes).year,
+                ),
+              ),
+              buttons: this.hourButtons(),
+            },
+          ],
+        };
+      }
+      case 'fraco':
+      case 'suspeito': {
+        // needs_review de verdade (spec E16/E17): o service persiste (rawText/reviewReason,
+        // zero outbox) e o aviso cita o que foi entendido + a evidência. Sessão encerra
+        // SEM notas/lembrete (decisão #6); nada de create/outbox aqui.
+        const d = extracted.data;
+        const when = this.formatRange(d.startUtc, d.endUtc, input.offsetMinutes);
+        return {
+          replies: [
+            {
+              kind: 'text',
+              text: BOT_MESSAGES.avisoNeedsReview({
+                title: d.title,
+                when,
+                evidence: d.dateEvidence ?? null,
+              }),
+            },
+          ],
+          done: true,
+          needsReview: {
+            title: d.title,
+            startsAt: d.startUtc,
+            endsAt: d.endUtc,
+            rawText: extracted.rawText,
+            reviewReason: extracted.reviewReason,
+            timezone: input.user.timezone,
+          },
+        };
+      }
+      case 'sem_quando': {
+        // falou de quando mas não há quando utilizável: guiado do ponto do título
+        if (c.title) {
+          session.step = 'dia';
+          return {
+            replies: [
+              {
+                kind: 'buttons',
+                text: BOT_MESSAGES.pedeDia(c.title),
+                buttons: this.dayButtons(input.offsetMinutes, input.now),
+              },
+            ],
+          };
+        }
+        session.step = 'titulo';
+        return { replies: [{ kind: 'text', text: BOT_MESSAGES.pedeTitulo }] };
+      }
+      case 'falhou': {
+        // parse/timeout NUNCA persiste hipótese (régua D1): segue o guiado com o que a
+        // fala trouxe (spec A5).
+        if (extracted.titleHint && extracted.titleHint.trim()) {
+          c.title = extracted.titleHint.trim();
+          session.step = 'dia';
+          return {
+            replies: [
+              {
+                kind: 'buttons',
+                text: BOT_MESSAGES.pedeDia(c.title),
+                buttons: this.dayButtons(input.offsetMinutes, input.now),
+              },
+            ],
+          };
+        }
+        session.step = 'titulo';
+        return { replies: [{ kind: 'text', text: BOT_MESSAGES.pedeTitulo }] };
+      }
+    }
+  }
+
+  /** Passo do criar que PODE ser substituído pela sessão do editar (spec regra 9). */
+  private isCreatingFlowStep(step: FlowStep): boolean {
+    return (
+      step === 'titulo' ||
+      step === 'dia' ||
+      step === 'hora' ||
+      step === 'fim' ||
+      step === 'conflito' ||
+      step === 'notas' ||
+      step === 'lembrete' ||
+      step === 'confirmacao'
+    );
+  }
+
+  /**
+   * Fase 4 (spec regra 9): falou de editar/cancelar COM o criar aberto → pergunta de
+   * proteção ANTES de descartar; o candidato da edição fica lado-a-lado em
+   * `candidate.edit` (snapshots `prev*`). "sim" descarta o criar e segue o editar;
+   * "não" volta exatamente ao passo do criar em curso.
+   */
+  private openEditWithProtection(
+    session: FlowSession,
+    intent: 'editar_compromisso' | 'cancelar_compromisso',
+    input: HandleTurnInput,
+  ): FlowOutcome {
+    const edit: EditFlowState = {
+      action: intent === 'cancelar_compromisso' ? 'cancelar' : 'editar',
+      descricao: input.text.trim() || undefined,
+      tries: 0,
+    };
+    session.editMode = intent === 'cancelar_compromisso' ? 'cancel' : 'edit';
+    const c = session.candidate;
+    if (c.title) edit.fromTitle = c.title;
+    if (c.startUtc && c.endUtc) {
+      edit.fromStartUtc = c.startUtc;
+      edit.fromEndUtc = c.endUtc;
+    }
+    session.candidate.edit = edit;
+    if (session.step === 'titulo' && !session.candidate.title) {
+      // Nada concreto em andamento (criar recém-aberto sem título): não há o que
+      // proteger (spec regra 9 protege o CANDIDATO) — abre direto o editar.
+      session.step = 'edit_descricao';
+      session.editRedefine = true;
+      return { replies: [{ kind: 'text', text: BOT_MESSAGES.pedeDescricaoEdicao }] };
+    }
+    session.prevStep = session.step;
+    session.step = 'confirmar_substituicao';
+    return { replies: [{ kind: 'text', text: BOT_MESSAGES.confirmarSubstituicao }] };
+  }
+
+  /**
+   * Fase 4: resultado da localização determinística (schedule-core) no service
+   * (spec B11). A máquina só apresenta: 1 ⇒ proposta/confirmação; N ⇒ lista numerada
+   * com escolha determinística; 0 ⇒ "não encontrei" e a sessão morre (spec D da
+   * consulta continua disponível — o service já ofereceu a consulta na mensagem).
+   */
+  private applyEditLocation(session: FlowSession, input: HandleTurnInput): FlowOutcome {
+    const loc = input.editLocation!;
+    if (loc.kind === 'ask_descricao') {
+      // sem descrição E sem quando: re-pergunta qual compromisso (risco do plano —
+      // nunca listar o mundo). A sessão de edição espera a resposta em `edit_descricao`.
+      session.step = 'edit_descricao';
+      session.editRedefine = true;
+      return { replies: [{ kind: 'text', text: BOT_MESSAGES.pedeDescricaoEdicao }] };
+    }
+    if (loc.kind === 'none') {
+      return {
+        replies: [{ kind: 'text', text: BOT_MESSAGES.naoEncontreiCandidato }],
+        done: true,
+      };
+    }
+    if (loc.kind === 'candidates') {
+      const list = loc.data.slice(0, BOT_MESSAGES.maxCandidatas);
+      session.step = 'escolher_candidata';
+      session.candidate.edit = {
+        action: session.candidate.edit?.action ?? 'editar',
+        descricao: session.candidate.edit?.descricao,
+        intervalRange: session.candidate.edit?.intervalRange,
+        candidates: list,
+        tries: session.candidate.edit?.tries ?? 0,
+      };
+      return {
+        replies: [
+          {
+            kind: 'text',
+            text: BOT_MESSAGES.listaCandidatas(this.candidateLines(list, input).join('\n')),
+          },
+        ],
+      };
+    }
+    // candidata única (o ramo `candidates` já devolveu acima; narrowing explícito)
+    if (loc.kind !== 'candidate') {
+      return { replies: [{ kind: 'text', text: BOT_MESSAGES.pediuEsclarecimento }] };
+    }
+    const appt = loc.data;
+    const edit = session.candidate.edit ?? { action: 'editar' as const, tries: 0 };
+    session.editRedefine = false;
+    session.candidate.edit = {
+      ...edit,
+      action: edit.action,
+      appointmentId: appt.id,
+      fromTitle: appt.title,
+      fromStartUtc: appt.startsAt,
+      fromEndUtc: appt.endsAt,
+    };
+    // needs_review não é editável/cancelável pelo chat? Cancelar PODE (apagar é sempre
+    // possível e derruba a fila); EDITAR em revisão ⇒ aponta o site (decisão #3).
+    if (edit.action === 'editar' && appt.status === 'needs_review') {
+      return { replies: [{ kind: 'text', text: BOT_MESSAGES.needsReviewNoChat }], done: true };
+    }
+    if (edit.action === 'cancelar') {
+      session.step = 'confirmar_cancelamento_compromisso';
+      return {
+        replies: [
+          {
+            kind: 'text',
+            text: BOT_MESSAGES.perguntaCancelarCompromisso(
+              appt.title,
+              this.formatRange(appt.startsAt, appt.endsAt, input.offsetMinutes),
+            ),
+          },
+        ],
+      };
+    }
+    if (edit.action === 'editar') {
+      // guarda o snapshot; a fala do próximo turno é a MUDANÇA (interpretador edit) OU
+      // um "dd/mm HH:MM" resolvido deterministicamente pela própria máquina.
+      session.editRedefine = true;
+      return { replies: [{ kind: 'text', text: BOT_MESSAGES.pedeOQueMudar(appt.title) }] };
+    }
+    return { replies: [{ kind: 'text', text: BOT_MESSAGES.pediuEsclarecimento }] };
+  }
+
+  /** Linhas "1. Título — qui 08/10 11:00–12:00" (escape é de quem renderiza — gotcha 6). */
+  private candidateLines(list: EditCandidateLike[], input: HandleTurnInput): string[] {
+    return list.map(
+      (a, i) =>
+        `${i + 1}. ${a.title} — ${this.formatRange(a.startsAt, a.endsAt, input.offsetMinutes)}`,
+    );
+  }
+
+  /**
+   * Fase 4: passos de edição onde a fala do usuário é HIPÓTESE para o interpretador
+   * (a máquina marca `editRedefine`). Os passos de confirmação sim/não NUNCA entram
+   * (a resposta "sim"/"1" é DADO do passo — zero LLM; spec regra 22).
+   */
+  private awaitsEditReinterpret(step: FlowStep): boolean {
+    return step === 'edit_descricao' || step === 'edit_propor';
+  }
+
+  /** Fase 4: fala livre nos passos do editar/cancelar (zero LLM — spec regra 22). */
+  private isEditStep(step: FlowStep): boolean {
+    return (
+      step === 'edit_propor' ||
+      step === 'edit_descricao' ||
+      step === 'escolher_candidata' ||
+      step === 'confirmar_edicao' ||
+      step === 'confirmar_cancelamento_compromisso'
+    );
+  }
+
+  /** Fase 4: fala LIVRE nos passos de edição/cancelamento — tudo determinístico. */
+  private answerEditStep(session: FlowSession, input: HandleTurnInput): FlowOutcome {
+    const text = input.text.trim();
+    const edit = session.candidate.edit;
+
+    switch (session.step) {
+      // ---------- passo `edit_propor`: re-pergunta do quando novo APÓS um conflito ----------
+      case 'edit_propor': {
+        if (!edit?.appointmentId || !edit.fromStartUtc || !edit.fromEndUtc) {
+          return {
+            replies: [{ kind: 'text', text: BOT_MESSAGES.pediuEsclarecimento }],
+            done: true,
+          };
+        }
+        if (edit.tries >= MAX_RESCHEDULE_TRIES) {
+          const limite = BOT_MESSAGES.conflitoEdicao({
+            title: edit.toTitle ?? edit.fromTitle ?? 'o compromisso',
+            range: this.formatRange(
+              edit.toStartUtc ?? edit.fromStartUtc,
+              edit.toEndUtc ?? edit.fromEndUtc,
+              input.offsetMinutes,
+            ),
+            conflictTitle: edit.lastConflict?.title ?? 'outro compromisso',
+            conflictRange: edit.lastConflict
+              ? this.formatRange(
+                  edit.lastConflict.startsAt,
+                  edit.lastConflict.endsAt,
+                  input.offsetMinutes,
+                )
+              : this.formatRange(edit.fromStartUtc, edit.fromEndUtc, input.offsetMinutes),
+          });
+          return {
+            replies: [
+              { kind: 'text', text: `${limite}\n\n${BOT_MESSAGES.conflitoLimiteAtingido}` },
+            ],
+          };
+        }
+        const whenText = this.resolveWhenText(text, input);
+        if (whenText) {
+          edit.toStartUtc = whenText.startUtc;
+          edit.toEndUtc = new Date(
+            whenText.startUtc.getTime() + (edit.fromEndUtc.getTime() - edit.fromStartUtc.getTime()),
+          );
+          session.step = 'confirmar_edicao';
+          return {
+            replies: [
+              {
+                kind: 'text',
+                text: BOT_MESSAGES.diffEdicao({
+                  title: edit.fromTitle ?? 'o compromisso',
+                  from: this.formatRange(edit.fromStartUtc, edit.fromEndUtc, input.offsetMinutes),
+                  to: this.formatRange(edit.toStartUtc, edit.toEndUtc, input.offsetMinutes),
+                }),
+              },
+            ],
+          };
+        }
+        // fala sem quando utilizável: re-posta a pergunta do conflito (o "desistir" da
+        // regra 13 é reconhecido na entrada do turno; aqui a fala não foi entendida).
+        return {
+          replies: [{ kind: 'text', text: BOT_MESSAGES.reperguntaHorarioNovo }],
+        };
+      }
+
+      case 'edit_descricao': {
+        if (!text) return { replies: [{ kind: 'text', text: BOT_MESSAGES.pedeDescricaoEdicao }] };
+        // candidata já achada e a fala é o QUANDO novo em texto simples ("sexta 16h"):
+        // resolve deterministicamente só os formatos que o teclado de dias usa
+        // ("dd/mm" e "HH:MM") — o resto volta ao interpretador (borda) no service.
+        const resolved = this.resolveWhenText(text, input);
+        if (resolved && edit?.appointmentId && edit.fromStartUtc && edit.fromEndUtc) {
+          edit.toStartUtc = resolved.startUtc;
+          edit.toEndUtc = new Date(
+            resolved.startUtc.getTime() + (edit.fromEndUtc.getTime() - edit.fromStartUtc.getTime()),
+          );
+          session.step = 'confirmar_edicao';
+          return {
+            replies: [
+              {
+                kind: 'text',
+                text: BOT_MESSAGES.diffEdicao({
+                  title: edit.fromTitle ?? 'o compromisso',
+                  from: this.formatRange(edit.fromStartUtc, edit.fromEndUtc, input.offsetMinutes),
+                  to: this.formatRange(edit.toStartUtc, edit.toEndUtc, input.offsetMinutes),
+                }),
+              },
+            ],
+          };
+        }
+        // com candidata escolhida e texto que NÃO é quando utilizável: a fala é outro
+        // pedido de mudança — mantém a candidata e deixa a borda reinterpretar.
+        if (edit?.appointmentId) {
+          return { replies: [{ kind: 'text', text: BOT_MESSAGES.procurandoMudanca }] };
+        }
+        // sem candidata: a fala é a DESCRIÇÃO do compromisso procurado (spec B11).
+        if (edit) edit.descricao = text;
+        else session.candidate.edit = { action: 'editar', descricao: text, tries: 0 };
+        return { replies: [{ kind: 'text', text: BOT_MESSAGES.procurandoCandidato }] };
+      }
+
+      case 'escolher_candidata': {
+        const list = edit?.candidates ?? [];
+        if (!text || list.length === 0) {
+          return {
+            replies: [
+              {
+                kind: 'text',
+                text: BOT_MESSAGES.listaCandidatas(this.candidateLines(list, input).join('\n')),
+              },
+            ],
+          };
+        }
+        // escolha determinística: "1".."N" OU texto que identifique UMA candidata
+        // (título normalizado casa com um só item) — zero LLM (spec B11/22). A lista
+        // resolveu o alvo: nada de re-localização a partir daqui (dono da fala é o passo).
+        session.editRedefine = false;
+        let picked: EditCandidateLike | undefined;
+        const num = /^(\d{1,2})$/.exec(text);
+        if (num) {
+          const idx = Number(num[1]) - 1;
+          picked = list[idx];
+        } else {
+          const t = this.normalize(text);
+          const hits = list.filter((a) => {
+            const title = this.normalize(a.title);
+            return title.includes(t) || t.includes(title);
+          });
+          if (hits.length === 1) picked = hits[0];
+        }
+        if (!picked) {
+          return {
+            replies: [
+              {
+                kind: 'text',
+                text:
+                  BOT_MESSAGES.naoEntendi +
+                  BOT_MESSAGES.listaCandidatas(this.candidateLines(list, input).join('\n')),
+              },
+            ],
+          };
+        }
+        return this.pickCandidate(session, picked, input);
+      }
+
+      case 'confirmar_edicao': {
+        const yes = parseYesNo(text);
+        if (yes === true) {
+          if (!edit?.appointmentId || !edit.toStartUtc || !edit.toEndUtc) {
+            return {
+              replies: [{ kind: 'text', text: BOT_MESSAGES.reperguntaHorarioNovo }],
+            };
+          }
+          const patch: { title?: string; startsAt?: Date; endsAt?: Date } = {
+            startsAt: edit.toStartUtc,
+            endsAt: edit.toEndUtc,
+          };
+          if (edit.toTitle && edit.toTitle !== edit.fromTitle) patch.title = edit.toTitle;
+          const title = edit.toTitle ?? edit.fromTitle ?? 'o compromisso';
+          return {
+            replies: [
+              {
+                kind: 'text',
+                text: BOT_MESSAGES.edicaoFeita(
+                  title,
+                  this.formatRange(edit.toStartUtc, edit.toEndUtc, input.offsetMinutes),
+                ),
+              },
+            ],
+            done: true,
+            update: { appointmentId: edit.appointmentId, patch, title },
+          };
+        }
+        if (yes === false || givesUp(text)) {
+          return { replies: [{ kind: 'text', text: BOT_MESSAGES.edicaoNegada }], done: true };
+        }
+        // texto ambíguo: re-posta a pergunta COM o diff (a pergunta de confirmação)
+        return {
+          replies: [
+            {
+              kind: 'text',
+              text: BOT_MESSAGES.diffEdicao({
+                title: edit?.toTitle ?? edit?.fromTitle ?? 'o compromisso',
+                from: this.formatRange(
+                  edit?.fromStartUtc ?? new Date(0),
+                  edit?.fromEndUtc ?? new Date(0),
+                  input.offsetMinutes,
+                ),
+                to: this.formatRange(
+                  edit?.toStartUtc ?? new Date(0),
+                  edit?.toEndUtc ?? new Date(0),
+                  input.offsetMinutes,
+                ),
+              }),
+            },
+          ],
+        };
+      }
+
+      case 'confirmar_cancelamento_compromisso': {
+        const yes = parseYesNo(text);
+        if (yes === true) {
+          if (!edit?.appointmentId) {
+            return {
+              replies: [{ kind: 'text', text: BOT_MESSAGES.pediuEsclarecimento }],
+              done: true,
+            };
+          }
+          const from = edit.fromStartUtc ?? new Date(0);
+          const to = edit.fromEndUtc ?? new Date(0);
+          const title = edit.fromTitle ?? 'o compromisso';
+          return {
+            replies: [
+              {
+                kind: 'text',
+                text: BOT_MESSAGES.cancelamentoFeito(
+                  title,
+                  this.formatRange(from, to, input.offsetMinutes),
+                ),
+              },
+            ],
+            done: true,
+            cancelAppointment: {
+              appointmentId: edit.appointmentId,
+              title,
+              startsAt: from,
+              endsAt: to,
+            },
+          };
+        }
+        if (yes === false || givesUp(text)) {
+          return { replies: [{ kind: 'text', text: BOT_MESSAGES.edicaoNegada }], done: true };
+        }
+        // ambíguo: re-posta a pergunta de cancelar
+        return {
+          replies: [
+            {
+              kind: 'text',
+              text: BOT_MESSAGES.perguntaCancelarCompromisso(
+                edit?.fromTitle ?? 'o compromisso',
+                this.formatRange(
+                  edit?.fromStartUtc ?? new Date(0),
+                  edit?.fromEndUtc ?? new Date(0),
+                  input.offsetMinutes,
+                ),
+              ),
+            },
+          ],
+        };
+      }
+    }
+    return { replies: [{ kind: 'text', text: BOT_MESSAGES.pediuEsclarecimento }] };
+  }
+
+  /** Fase 4: candidata escolhida ⇒ cancelar pede confirmação; editar espera a mudança. */
+  private pickCandidate(
+    session: FlowSession,
+    appt: EditCandidateLike,
+    input: HandleTurnInput,
+  ): FlowOutcome {
+    const edit = session.candidate.edit!;
+    edit.appointmentId = appt.id;
+    edit.fromTitle = appt.title;
+    edit.fromStartUtc = appt.startsAt;
+    edit.fromEndUtc = appt.endsAt;
+    if (edit.action === 'editar' && appt.status === 'needs_review') {
+      return { replies: [{ kind: 'text', text: BOT_MESSAGES.needsReviewNoChat }], done: true };
+    }
+    if (edit.action === 'cancelar') {
+      session.step = 'confirmar_cancelamento_compromisso';
+      return {
+        replies: [
+          {
+            kind: 'text',
+            text: BOT_MESSAGES.perguntaCancelarCompromisso(
+              appt.title,
+              this.formatRange(appt.startsAt, appt.endsAt, input.offsetMinutes),
+            ),
+          },
+        ],
+      };
+    }
+    session.step = 'edit_descricao';
+    return { replies: [{ kind: 'text', text: BOT_MESSAGES.pedeOQueMudar(appt.title) }] };
+  }
+
+  /** Fase 4: "dd/mm [HH:MM]" / "HH:MM" falados no passo de edição (determinístico). */
+  private resolveWhenText(text: string, input: HandleTurnInput): { startUtc: Date } | null {
+    const t = text.toLowerCase().replace(/\s+/g, ' ').trim();
+    const day = this.resolveDayShortcut(t, input);
+    const time = parseTime(t);
+    if (day && time === null) {
+      return { startUtc: zonedTimeToUtc({ ...day, hour: 9, minute: 0 }, input.offsetMinutes) };
+    }
+    if (day && time !== null) {
+      return {
+        startUtc: zonedTimeToUtc(
+          { ...day, hour: Math.floor(time / 60), minute: time % 60 },
+          input.offsetMinutes,
+        ),
+      };
+    }
+    if (time !== null) {
+      // só a hora: mantém o dia do alvo no calendário local do usuário
+      const base = input.now;
+      const parts = utcToZonedParts(base, input.offsetMinutes);
+      const candidate = zonedTimeToUtc(
+        { ...parts, hour: Math.floor(time / 60), minute: time % 60 },
+        input.offsetMinutes,
+      );
+      return { startUtc: candidate };
+    }
+    return null;
+  }
+
+  /** Fase 4: régua do quando do editar consumida (spec C12/C13). */
+  private applyEditChange(session: FlowSession, input: HandleTurnInput): FlowOutcome {
+    const change = input.editChange!;
+    const edit = session.candidate.edit;
+    if (!edit?.appointmentId || !edit.fromStartUtc || !edit.fromEndUtc) {
+      // estado perdido (sessão velha): melhor caminho é recomeçar o pedido
+      return { replies: [{ kind: 'text', text: BOT_MESSAGES.pediuEsclarecimento }], done: true };
+    }
+    if (change.kind === 'reperguntar') {
+      session.editRedefine = true;
+      return {
+        replies: [{ kind: 'text', text: BOT_MESSAGES.reperguntaHorarioNovo }],
+      };
+    }
+    edit.toStartUtc = change.toStartUtc;
+    edit.toEndUtc = change.toEndUtc;
+    if (change.toTitle) edit.toTitle = change.toTitle;
+    session.editRedefine = false;
+    session.step = 'confirmar_edicao';
+    return {
+      replies: [
+        {
+          kind: 'text',
+          text: BOT_MESSAGES.diffEdicao({
+            title: edit.toTitle ?? edit.fromTitle ?? 'o compromisso',
+            from: this.formatRange(edit.fromStartUtc, edit.fromEndUtc, input.offsetMinutes),
+            to: this.formatRange(change.toStartUtc, change.toEndUtc, input.offsetMinutes),
+          }),
+        },
+      ],
+    };
+  }
+
+  /** Fase 4: o "sim" estourou conflito no update — mostra o conflitante e re-pergunta (C13). */
+  private reportEditConflict(session: FlowSession, input: HandleTurnInput): FlowOutcome {
+    const edit = session.candidate.edit;
+    if (!edit)
+      return { replies: [{ kind: 'text', text: BOT_MESSAGES.pediuEsclarecimento }], done: true };
+    edit.tries += 1;
+    const conflict = input.editConflict!;
+    edit.lastConflict = conflict;
+    session.step = 'edit_propor';
+    const text = BOT_MESSAGES.conflitoEdicao({
+      title: edit.toTitle ?? edit.fromTitle ?? conflict.title,
+      range: this.formatRange(
+        edit.toStartUtc ?? conflict.startsAt,
+        edit.toEndUtc ?? conflict.endsAt,
+        input.offsetMinutes,
+      ),
+      conflictTitle: conflict.title,
+      conflictRange: this.formatRange(conflict.startsAt, conflict.endsAt, input.offsetMinutes),
+    });
+    const finalText =
+      edit.tries >= MAX_RESCHEDULE_TRIES
+        ? `${text}\n\n${BOT_MESSAGES.conflitoLimiteAtingido}`
+        : text;
+    return { replies: [{ kind: 'text', text: finalText }] };
+  }
+
   /** Resposta ao passo atual: o texto do usuario e interpretado como DADO do passo. */
   private async answerStep(session: FlowSession, input: HandleTurnInput): Promise<FlowOutcome> {
     const text = input.text.trim();
     const c = session.candidate;
 
     switch (session.step) {
+      // ---------- Fase 4: passos do editar/cancelar (fala livre determinística) ----------
+
+      case 'edit_propor':
+      case 'edit_descricao':
+      case 'escolher_candidata':
+      case 'confirmar_edicao':
+      case 'confirmar_cancelamento_compromisso':
+        return this.answerEditStep(session, input);
+
       case 'confirmar_cancelamento': {
         const yes = parseYesNo(text);
         if (yes === true || givesUp(text)) return this.cancel();
@@ -331,6 +1243,10 @@ export class SchedulingFlowMachine {
       case 'dia': {
         const day = this.resolveDayShortcut(text, input);
         if (day) return this.setDay(session, day, input);
+        // Atalho do criar (Fase 4): horário livre em texto ("14:00") no dia já extraído
+        // pelo modelo — mesmo atalho determinístico do teclado de horas (zero LLM).
+        if (c.startDayLocal && !c.startUtc && parseTime(text) !== null)
+          return this.setStart(session, text, input);
         // texto livre de dia é Fase 3: re-pergunta o teclado (spec fora de escopo).
         return {
           replies: [
@@ -500,6 +1416,12 @@ export class SchedulingFlowMachine {
           replies: [{ kind: 'text', text: BOT_MESSAGES.naoEntendi + BOT_MESSAGES.alterarPergunta }],
         };
       }
+
+      case 'criar_aberto':
+        // portao do atalho: o service roda a borda (extrator + regua) antes de chamar a
+        // maquina; se chegou aqui sem veredito, re-pergunta o titulo (nada se perde).
+        session.step = 'titulo';
+        return { replies: [{ kind: 'text', text: BOT_MESSAGES.pedeTitulo }] };
     }
   }
 
@@ -611,7 +1533,20 @@ export class SchedulingFlowMachine {
     const result = findConflict(candidate, input.existing ?? [], { now: input.now });
     if (!result.conflict || !result.with) {
       session.step = 'notas';
-      return { replies: [{ kind: 'text', text: BOT_MESSAGES.pedeNotas(this.resumo(c, input)) }] };
+      // Atalho da Fase 4: a fala já é a confirmação (spec A4), então o resumo que abre a
+      // pergunta de notas diz "Entendi" (não "Anotado", que é o passo do fluxo guiado).
+      const isShortcut = !c.day && c.startMinutes === undefined && !!c.startDayLocal;
+      const resumo = this.resumo(c, input);
+      return {
+        replies: [
+          {
+            kind: 'text',
+            text: isShortcut
+              ? BOT_MESSAGES.pedeNotasAtalho(resumo)
+              : BOT_MESSAGES.pedeNotas(resumo),
+          },
+        ],
+      };
     }
     c.conflictTries += 1;
     session.step = 'conflito';

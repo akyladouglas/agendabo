@@ -22,7 +22,12 @@ function make() {
   const classifier = {
     classify: jest.fn().mockResolvedValue({ ok: false, reason: 'no_tool_use' }),
   };
-  const appointments = { create: jest.fn().mockResolvedValue({ id: 'a1' }) };
+  const appointments = {
+    create: jest.fn().mockResolvedValue({ id: 'a1' }),
+    listOverlapping: jest.fn().mockResolvedValue([]),
+    update: jest.fn().mockResolvedValue({ id: 'a1' }),
+    remove: jest.fn().mockResolvedValue(undefined),
+  };
   const telegram = {
     sendMessage: jest.fn(async (_id: string, text: string) => {
       sent.push(text);
@@ -35,12 +40,25 @@ function make() {
       },
     }),
   };
-  const prisma = { appointment: { findMany: jest.fn().mockResolvedValue([]) } };
+  const prisma = {
+    appointment: {
+      findMany: jest.fn().mockResolvedValue([]),
+      create: jest.fn().mockResolvedValue({ id: 'nr1' }),
+    },
+  };
   const agendaQuery = {
     run: jest
       .fn()
       .mockResolvedValue({ replies: ['Isto é o que você tem hoje:'], awaitingPeriod: false }),
     closePolitely: jest.fn(() => 'Tanto faz, encerro aqui então 😊'),
+  };
+  // extrator do criar: por padrão falha (o guiado continua o caminho clássico deste
+  // spec); testes do atalho sobrescrevem. Interpretador de edição idem.
+  const schedulingInterpreter = {
+    interpretar: jest.fn().mockResolvedValue({ ok: false, reason: 'no_tool_use' }),
+  };
+  const editInterpreter = {
+    interpretar: jest.fn().mockResolvedValue({ ok: false, reason: 'no_tool_use' }),
   };
   const config = {
     get: (key: keyof Env) =>
@@ -65,13 +83,25 @@ function make() {
     // reminderInterpreter: passos de lembrete neste spec usam atalho determinístico
     // ("sem lembrete" etc.), nunca chegam ao LLM (resolveReminderShortcut responde antes).
     { interpretar: jest.fn().mockResolvedValue({ ok: false, reason: 'unparseable' }) } as never,
+    schedulingInterpreter as never,
+    editInterpreter as never,
   );
   // relogio do servico congelado (determinismo do atalho "hoje"/datas UTC)
   (svc as unknown as { now: () => Date }).now = () => new Date(`${TODAY_LOCAL}T10:00:00Z`);
-  return { svc, sent, access, classifier, appointments, prisma, agendaQuery };
+  return {
+    svc,
+    sent,
+    access,
+    classifier,
+    appointments,
+    prisma,
+    agendaQuery,
+    schedulingInterpreter,
+    editInterpreter,
+  };
 }
 
-/** Abre o fluxo com intencao `criar` aceita; a fala "Consulta" vira o titulo. */
+/** Abre o fluxo com intencao `criar` aceita; o extrator falha => a fala vira o titulo. */
 async function openFlow(m: ReturnType<typeof make>): Promise<void> {
   m.classifier.classify.mockResolvedValue({ ok: true, intent: 'criar', confidence: 0.9 });
   await m.svc.handleText('111', 'Consulta');
@@ -120,6 +150,333 @@ describe('SchedulingFlowService (bordas)', () => {
     await m2.svc.handleText('111', 'hmmm');
     expect(m2.sent.at(-1)).toContain('não tenho certeza');
     expect(m2.appointments.create).not.toHaveBeenCalled();
+  });
+
+  // ---------- Fase 4: bordas do atalho, needs_review e editar/cancelar pelo chat ----------
+
+  it('atalho (spec A1/A4): fala solta aceita pula dia/hora/fim e cria sem "confirmo?" extra', async () => {
+    const m = make();
+    m.classifier.classify.mockResolvedValue({ ok: true, intent: 'criar', confidence: 0.9 });
+    m.schedulingInterpreter.interpretar.mockResolvedValue({
+      ok: true,
+      rawText: 'consulta dia 08/10 às 14h',
+      data: {
+        title: 'consulta',
+        startsAt: '2026-10-08T14:00:00-03:00',
+        confidence: 0.95,
+        dateEvidence: 'dia 08/10 às 14h',
+      },
+    });
+    await m.svc.handleText('111', 'consulta dia 08/10 às 14h');
+    // foi direto às notas (atalho): nada de teclado de dia/hora
+    expect(m.sent.at(-1)).toContain('informação importante');
+    expect(m.classifier.classify).toHaveBeenCalledTimes(1); // só a intenção (1 LLM/turno)
+    expect(m.schedulingInterpreter.interpretar).toHaveBeenCalledTimes(1);
+
+    // no fluxo, o stub universal não identifica intenção (a fala é DADO do passo)
+    m.classifier.classify.mockResolvedValue({ ok: false, reason: 'no_tool_use' });
+    await m.svc.handleText('111', 'não'); // notas
+    await m.svc.handleText('111', 'sem lembrete');
+    await m.svc.handleText('111', 'confirmar');
+    expect(m.appointments.create).toHaveBeenCalledTimes(1);
+    const [, payload] = m.appointments.create.mock.calls[0] as [string, Record<string, unknown>];
+    expect(payload.title).toBe('consulta');
+    expect((payload.startsAt as Date).toISOString()).toBe('2026-10-08T17:00:00.000Z');
+    expect((payload.endsAt as Date).toISOString()).toBe('2026-10-08T18:00:00.000Z');
+  });
+
+  it('needs_review da régua (spec E16/E17): persiste direto com rawText/reviewReason e ZERO outbox', async () => {
+    const m = make();
+    m.classifier.classify.mockResolvedValue({ ok: true, intent: 'criar', confidence: 0.9 });
+    m.schedulingInterpreter.interpretar.mockResolvedValue({
+      ok: true,
+      rawText: 'talvez uma reunião amanhã',
+      data: {
+        title: 'reunião',
+        startsAt: '2026-10-07T09:00:00-03:00',
+        confidence: 0.4, // abaixo do limiar 0.7 => fraco
+        dateEvidence: 'amanhã',
+      },
+    });
+    await m.svc.handleText('111', 'talvez uma reunião amanhã');
+
+    expect(m.sent.at(-1)).toContain('PENDENTE DE REVISÃO');
+    expect(m.sent.at(-1)).toContain('amanhã'); // cita a evidência (spec regra 7)
+    const create = m.prisma.appointment.create;
+    expect(create).toHaveBeenCalledTimes(1);
+    const data = (create.mock.calls[0] as [{ data: Record<string, unknown> }])[0].data;
+    expect(data.status).toBe('needs_review');
+    expect(data.origin).toBe('bot');
+    expect(data.rawText).toBe('talvez uma reunião amanhã');
+    expect(data.reviewReason).toBe('confianca_baixa');
+    // needs_review NUNCA passa pelo AppointmentsService (que materializa outbox — regra 7)
+    expect(m.appointments.create).not.toHaveBeenCalled();
+    // sessão encerra sem notas/lembrete (decisão #6)
+    const internals = m.svc as unknown as { sessions: Map<string, unknown> };
+    expect(internals.sessions.get('111')).toBeUndefined();
+  });
+
+  it('cancelar pelo chat (spec D11/D14): localização única + "sim" apaga via remove', async () => {
+    const m = make();
+    m.classifier.classify.mockResolvedValue({
+      ok: true,
+      intent: 'cancelar_compromisso',
+      confidence: 0.9,
+    });
+    m.appointments.listOverlapping = jest.fn().mockResolvedValue([
+      {
+        id: 'a1',
+        title: 'Consulta dentista',
+        startsAt: new Date('2026-10-09T18:00:00Z'),
+        endsAt: new Date('2026-10-09T19:00:00Z'),
+        status: 'confirmed',
+      },
+    ]);
+    m.appointments.remove = jest.fn().mockResolvedValue(undefined);
+    m.editInterpreter.interpretar.mockResolvedValue({
+      ok: true,
+      rawText: 'cancela a consulta do dentista',
+      data: { acao: 'cancelar', descricao: 'consulta dentista', confidence: 0.9 },
+    });
+
+    await m.svc.handleText('111', 'cancela a consulta do dentista');
+    expect(m.sent.at(-1)).toContain('Vou CANCELAR');
+    expect(m.appointments.remove).not.toHaveBeenCalled(); // só depois do "sim"
+
+    await m.svc.handleText('111', 'sim');
+    expect(m.appointments.remove).toHaveBeenCalledWith('u1', 'a1');
+    expect(m.sent.at(-1)).toContain('Cancelado');
+  });
+
+  it('localização ambígua (spec B12): 2 candidatas listam numeradas; escolha "1" é determinística', async () => {
+    const m = make();
+    m.classifier.classify.mockResolvedValue({
+      ok: true,
+      intent: 'cancelar_compromisso',
+      confidence: 0.9,
+    });
+    m.appointments.listOverlapping = jest.fn().mockResolvedValue([
+      {
+        id: 'a1',
+        title: 'Reunião de time',
+        startsAt: new Date('2026-10-08T14:00:00Z'),
+        endsAt: new Date('2026-10-08T15:00:00Z'),
+        status: 'confirmed',
+      },
+      {
+        id: 'a2',
+        title: 'Reunião com cliente',
+        startsAt: new Date('2026-10-09T16:00:00Z'),
+        endsAt: new Date('2026-10-09T17:00:00Z'),
+        status: 'confirmed',
+      },
+    ]);
+    m.appointments.remove = jest.fn().mockResolvedValue(undefined);
+    m.editInterpreter.interpretar.mockResolvedValue({
+      ok: true,
+      rawText: 'cancela a reunião',
+      data: { acao: 'cancelar', descricao: 'reunião', confidence: 0.9 },
+    });
+
+    await m.svc.handleText('111', 'cancela a reunião');
+    expect(m.sent.at(-1)).toContain('Encontrei mais de um');
+    expect(m.sent.at(-1)).toContain('1. Reunião de time');
+    expect(m.sent.at(-1)).toContain('2. Reunião com cliente');
+    // escolha determinística: SEM novo LLM
+    const classifyBefore = m.classifier.classify.mock.calls.length;
+    const editBefore = m.editInterpreter.interpretar.mock.calls.length;
+    await m.svc.handleText('111', '1');
+    expect(m.classifier.classify.mock.calls.length).toBe(classifyBefore);
+    expect(m.editInterpreter.interpretar.mock.calls.length).toBe(editBefore);
+    expect(m.sent.at(-1)).toContain('Vou CANCELAR "Reunião de time"');
+  });
+
+  it('localização 0 candidatas (spec B11): "não encontrei" + oferece consulta; nada é apagado', async () => {
+    const m = make();
+    m.classifier.classify.mockResolvedValue({
+      ok: true,
+      intent: 'cancelar_compromisso',
+      confidence: 0.9,
+    });
+    m.appointments.listOverlapping = jest.fn().mockResolvedValue([]);
+    m.editInterpreter.interpretar.mockResolvedValue({
+      ok: true,
+      rawText: 'cancela a aula de piano',
+      data: { acao: 'cancelar', descricao: 'aula de piano', confidence: 0.9 },
+    });
+
+    await m.svc.handleText('111', 'cancela a aula de piano');
+    expect(m.sent.at(-1)).toContain('Não encontrei esse compromisso');
+    const internals = m.svc as unknown as { sessions: Map<string, unknown> };
+    expect(internals.sessions.get('111')).toBeUndefined();
+  });
+
+  it('editar pelo chat (spec C12): diff + "sim" grava via AppointmentsService.update', async () => {
+    const m = make();
+    m.classifier.classify.mockResolvedValue({
+      ok: true,
+      intent: 'editar_compromisso',
+      confidence: 0.9,
+    });
+    m.appointments.listOverlapping = jest.fn().mockResolvedValue([
+      {
+        id: 'a1',
+        title: 'Consulta dentista',
+        startsAt: new Date('2026-10-09T18:00:00Z'),
+        endsAt: new Date('2026-10-09T19:00:00Z'),
+        status: 'confirmed',
+      },
+    ]);
+    m.appointments.update = jest.fn().mockResolvedValue({ id: 'a1' });
+    m.editInterpreter.interpretar
+      .mockResolvedValueOnce({
+        ok: true,
+        rawText: 'muda a consulta do dentista',
+        data: { acao: 'editar', descricao: 'consulta dentista', confidence: 0.9 },
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        rawText: 'adianta 2 horas',
+        data: { acao: 'editar', deslocamentoMin: -120, confidence: 0.95 },
+      });
+
+    await m.svc.handleText('111', 'muda a consulta do dentista');
+    expect(m.sent.at(-1)).toContain('Achei "Consulta dentista"');
+
+    await m.svc.handleText('111', 'adianta 2 horas');
+    expect(m.sent.at(-1)).toContain('Vou mudar');
+    expect(m.sent.at(-1)).toContain('Confirmo');
+    expect(m.appointments.update).not.toHaveBeenCalled();
+
+    await m.svc.handleText('111', 'sim');
+    expect(m.appointments.update).toHaveBeenCalledWith('u1', 'a1', {
+      startsAt: new Date('2026-10-09T16:00:00Z'),
+      endsAt: new Date('2026-10-09T17:00:00Z'),
+    });
+    expect(m.sent.at(-1)).toContain('Feito!');
+  });
+
+  it('conflito ao gravar a edição (spec C13): re-pergunta o quando em vez de falhar calado', async () => {
+    const m = make();
+    const { AppointmentConflictError } = await import('../appointments/appointments.service');
+    m.classifier.classify.mockResolvedValue({
+      ok: true,
+      intent: 'editar_compromisso',
+      confidence: 0.9,
+    });
+    m.appointments.listOverlapping = jest.fn().mockResolvedValue([
+      {
+        id: 'a1',
+        title: 'Consulta dentista',
+        startsAt: new Date('2026-10-09T18:00:00Z'),
+        endsAt: new Date('2026-10-09T19:00:00Z'),
+        status: 'confirmed',
+      },
+    ]);
+    m.appointments.update = jest.fn().mockRejectedValue(
+      new AppointmentConflictError({
+        id: 'a2',
+        title: 'Reunião de time',
+        startsAt: new Date('2026-10-09T15:00:00Z'),
+        endsAt: new Date('2026-10-09T16:00:00Z'),
+      }),
+    );
+    m.editInterpreter.interpretar
+      .mockResolvedValueOnce({
+        ok: true,
+        rawText: 'muda a consulta do dentista',
+        data: { acao: 'editar', descricao: 'consulta dentista', confidence: 0.9 },
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        rawText: 'joga 2 horas pra mais cedo',
+        data: { acao: 'editar', deslocamentoMin: -120, confidence: 0.95 },
+      });
+
+    await m.svc.handleText('111', 'muda a consulta do dentista');
+    await m.svc.handleText('111', 'joga 2 horas pra mais cedo');
+    await m.svc.handleText('111', 'sim');
+
+    expect(m.appointments.update).toHaveBeenCalledTimes(1);
+    expect(m.sent.at(-1)).toContain('colide com "Reunião de time"');
+    // sessão reaberta no passo de re-pergunta (próxima fala é o horário novo)
+    const internals = m.svc as unknown as { sessions: Map<string, { step: string }> };
+    expect(internals.sessions.get('111')?.step).toBe('edit_propor');
+  });
+
+  it('needs_review não é editável pelo chat (spec regra 7/decisão #3): aponta a fila da web', async () => {
+    const m = make();
+    m.classifier.classify.mockResolvedValue({
+      ok: true,
+      intent: 'editar_compromisso',
+      confidence: 0.9,
+    });
+    m.appointments.listOverlapping = jest.fn().mockResolvedValue([
+      {
+        id: 'a1',
+        title: 'Consulta suspeita',
+        startsAt: new Date('2026-10-09T18:00:00Z'),
+        endsAt: new Date('2026-10-09T19:00:00Z'),
+        status: 'needs_review',
+      },
+    ]);
+    m.appointments.update = jest.fn().mockResolvedValue({ id: 'a1' });
+    m.editInterpreter.interpretar.mockResolvedValue({
+      ok: true,
+      rawText: 'muda a consulta suspeita',
+      data: { acao: 'editar', descricao: 'consulta suspeita', confidence: 0.9 },
+    });
+
+    await m.svc.handleText('111', 'muda a consulta suspeita');
+    expect(m.sent.at(-1)).toContain('fila de revisão da web');
+    expect(m.appointments.update).not.toHaveBeenCalled();
+    const internals = m.svc as unknown as { sessions: Map<string, unknown> };
+    expect(internals.sessions.get('111')).toBeUndefined();
+  });
+
+  it('editar nunca vira needs_review (spec regra 20): confiança baixa re-pergunta, nada persiste', async () => {
+    const m = make();
+    m.classifier.classify.mockResolvedValue({
+      ok: true,
+      intent: 'editar_compromisso',
+      confidence: 0.9,
+    });
+    m.appointments.listOverlapping = jest.fn().mockResolvedValue([
+      {
+        id: 'a1',
+        title: 'Consulta dentista',
+        startsAt: new Date('2026-10-09T18:00:00Z'),
+        endsAt: new Date('2026-10-09T19:00:00Z'),
+        status: 'confirmed',
+      },
+    ]);
+    m.editInterpreter.interpretar
+      .mockResolvedValueOnce({
+        ok: true,
+        rawText: 'muda a consulta do dentista',
+        data: { acao: 'editar', descricao: 'consulta dentista', confidence: 0.9 },
+      })
+      .mockResolvedValueOnce({ ok: false, reason: 'low_confidence' });
+
+    await m.svc.handleText('111', 'muda a consulta do dentista');
+    await m.svc.handleText('111', 'muda aí sei lá');
+    expect(m.sent.at(-1)).toContain('Não entendi o horário novo');
+    expect(m.prisma.appointment.create).not.toHaveBeenCalled();
+    expect(m.appointments.update).not.toHaveBeenCalled();
+  });
+
+  it('portão do atalho não re-extrai nas falas seguintes (1 LLM/turno — spec regra 22)', async () => {
+    const m = make();
+    m.classifier.classify.mockResolvedValue({ ok: true, intent: 'criar', confidence: 0.9 });
+    m.schedulingInterpreter.interpretar.mockResolvedValue({
+      ok: true,
+      rawText: 'consulta dia 08/10 às 14h',
+      data: { title: 'consulta', startsAt: '2026-10-08T14:00:00-03:00', confidence: 0.95 },
+    });
+    await m.svc.handleText('111', 'consulta dia 08/10 às 14h');
+    const extractions = m.schedulingInterpreter.interpretar.mock.calls.length;
+    await m.svc.handleText('111', 'não'); // notas: NÃO re-extrai
+    expect(m.schedulingInterpreter.interpretar.mock.calls.length).toBe(extractions);
   });
 
   it('fluxo guiado completo: cria via AppointmentsService com origin bot e datas UTC (spec 4/6/14)', async () => {

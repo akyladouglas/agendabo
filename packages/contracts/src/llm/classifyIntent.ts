@@ -24,6 +24,18 @@ export const INTENTS = [
   'substituir_atual',
   /** Quer VER a agenda ("o que tenho hoje?", "semana que vem?") — so leitura, Fase 2. */
   'consultar',
+  /**
+   * Quer MUDAR um compromisso já criado ("muda a reunião pra sexta 16h", "adianta 1h").
+   * Fase 4 (spec llm-avancado regra 9): NAO fundir com `remarcar` (ramo de conflito do
+   * criar) nem com `cancelar` (desistir do fluxo aberto) — fundir destruiria a regra
+   * "nunca descarta no chute" da Fase 1.
+   */
+  'editar_compromisso',
+  /**
+   * Quer CANCELAR/APAGAR um compromisso já criado ("cancela a consulta de quinta").
+   * Fase 4: distinto de `cancelar` (= desistir do que esta EM ANDAMENTO no chat).
+   */
+  'cancelar_compromisso',
   /** Nao e sobre agenda (o bot responde padrao, sem criar nem alterar nada). */
   'fora_do_escopo',
 ] as const;
@@ -54,11 +66,14 @@ export const classifyIntentTool = {
         type: 'string',
         enum: [...INTENTS],
         description:
-          'criar = quer marcar algo novo; cancelar = quer cancelar/desistir; ' +
-          'continuar_fluxo = resposta ao passo atual do fluxo; remarcar = oferecer outro ' +
-          'horario apos conflito; substituir_atual = quer comecar um agendamento novo com ' +
-          'fluxo ja aberto; consultar = quer ver/listar seus compromissos ("o que tenho ' +
-          'hoje?", "semana que vem?"); fora_do_escopo = qualquer outra coisa',
+          'criar = quer marcar algo novo; cancelar = quer cancelar/desistir do que esta em ' +
+          'andamento; continuar_fluxo = resposta ao passo atual do fluxo; remarcar = oferecer ' +
+          'outro horario apos conflito; substituir_atual = quer comecar um agendamento novo ' +
+          'com fluxo ja aberto; consultar = quer ver/listar seus compromissos ("o que tenho ' +
+          'hoje?", "semana que vem?"); editar_compromisso = quer mudar um compromisso ja ' +
+          'criado ("muda a reuniao pra sexta 16h", "adianta 1 hora a reuniao"); ' +
+          'cancelar_compromisso = quer cancelar/apagar um compromisso ja criado ("cancela a ' +
+          'consulta de quinta"); fora_do_escopo = qualquer outra coisa',
       },
       confidence: { type: 'number', description: 'Confianca da classificacao, 0 a 1' },
     },

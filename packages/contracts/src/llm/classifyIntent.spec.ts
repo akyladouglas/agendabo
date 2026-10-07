@@ -42,4 +42,22 @@ describe('classifyIntentSchema', () => {
     expect(classifyIntentTool.input_schema.required).toEqual(['intent', 'confidence']);
     expect(classifyIntentTool.input_schema.properties.intent.enum).toEqual([...INTENTS]);
   });
+
+  // ---------- Fase 4 (spec llm-avancado regra 9): intents novas ----------
+
+  it('intents novas parseiam: editar_compromisso e cancelar_compromisso (Fase 4)', () => {
+    expect(
+      classifyIntentSchema.safeParse({ intent: 'editar_compromisso', confidence: 0.9 }).success,
+    ).toBe(true);
+    expect(
+      classifyIntentSchema.safeParse({ intent: 'cancelar_compromisso', confidence: 0.85 }).success,
+    ).toBe(true);
+  });
+
+  it('tool espelha o zod tambem para as intents novas (enum inclui as duas)', () => {
+    const enumValues = classifyIntentTool.input_schema.properties.intent.enum as string[];
+    expect(enumValues).toContain('editar_compromisso');
+    expect(enumValues).toContain('cancelar_compromisso');
+    expect(enumValues).toEqual([...INTENTS]);
+  });
 });

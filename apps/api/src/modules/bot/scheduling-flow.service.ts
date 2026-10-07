@@ -1,6 +1,12 @@
 import { ForbiddenException, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { type AppointmentLike } from '@agendabo/schedule-core';
+import {
+  applyShift,
+  findMatchingAppointments,
+  isValidDate,
+  zonedTimeToUtc,
+  type AppointmentLike,
+} from '@agendabo/schedule-core';
 import { z } from 'zod';
 import {
   AppointmentConflictError,
@@ -16,18 +22,30 @@ import {
   ReminderInterpreterService,
   resolveReminderShortcut,
 } from '../ai/reminder-interpreter.service';
+import { SchedulingInterpreterService } from '../ai/scheduling-interpreter.service';
+import { AppointmentEditInterpreterService } from '../ai/appointment-edit-interpreter.service';
 import {
   AgendaQueryService,
   AGENDA_QUERY_MAX_PERIOD_PROMPTS,
   type AgendaQueryResult,
 } from './agenda-query.service';
+import { resolveIntervaloRange, resolveSimboloRange, type SimboloConsulta } from './agenda-query';
 import {
   SchedulingFlowMachine,
   type BotReply,
+  type EditCandidateLike,
+  type ExtractedClassified,
   type FlowSession,
   type HandleTurnInput,
   type ReminderClassified,
 } from './scheduling-flow.machine';
+import {
+  classificarEdicao,
+  classificarExtracao,
+  dayFromResolvedUtc,
+  type EdicaoPayloadBruto,
+  type ExtracaoPayloadBruto,
+} from './extraction-ruler';
 
 /** Borda zod dos callbacks de teclado (callback_data nao e confiavel por natureza). */
 const dayChoiceSchema = z.object({
@@ -71,6 +89,8 @@ export function tzOffsetMinutes(timeZone: string, at: Date): number {
 export class SchedulingFlowService {
   private readonly logger = new Logger(SchedulingFlowService.name);
   private readonly sessions = new Map<string, FlowSession>();
+  /** Turnos de abertura de edição: a próxima fala é DADO do passo (não re-classificar). */
+  private readonly consumedTurns = new Map<string, boolean>();
   /**
    * Estado do turno de consulta (Fase 2): `true` = a última mensagem do bot foi a
    * pergunta de período; `count` = quantas vezes perguntamos (máx 2 — spec #14).
@@ -93,6 +113,8 @@ export class SchedulingFlowService {
     private readonly config: ConfigService<Env, true>,
     private readonly agendaQuery: AgendaQueryService,
     private readonly reminderInterpreter: ReminderInterpreterService,
+    private readonly schedulingInterpreter: SchedulingInterpreterService,
+    private readonly editInterpreter: AppointmentEditInterpreterService,
   ) {
     this.ttlMs = this.config.get('BOT_SESSION_TTL_MINUTES', { infer: true }) * 60_000; // decisao D2 do plano (30 min)
     this.minConfidence = this.config.get('MIN_CONFIDENCE_TO_ACCEPT', { infer: true });
@@ -149,7 +171,7 @@ export class SchedulingFlowService {
     await this.turn(user, { timeChoice: time, text: time });
   }
 
-  /** Abre o fluxo de agendamento (intencao `criar` confirmada acima do limiar). */
+  /** Abre o fluxo de agendamento no guiado clássico (pergunta o título primeiro). */
   private openFlow(user: BotUser, now: Date): void {
     const fresh = this.machine.newSession(now);
     this.sessions.set(user.telegramId, fresh);
@@ -200,8 +222,49 @@ export class SchedulingFlowService {
       !deterministic && session.step === 'lembrete'
         ? await this.interpretReminder(partial.text ?? '')
         : undefined;
+    // Portão do atalho (Fase 4): a 1ª fala solta do criar é extração livre + régua
+    // (spec regra 8). O portão é a máquina: `criar_aberto` OU `titulo` intocado (só
+    // quando a fala chegou vazia de processamento — teclado/nada vira texto do passo).
+    const openCreate =
+      !deterministic &&
+      Boolean(partial.text && partial.text.trim()) &&
+      (session.step === 'criar_aberto' || (session.step === 'titulo' && !session.candidate.title));
+    // Fala livre em criar_aberto/titulo (Fase 4): extração livre + régua (regra 8).
+    const extracted = openCreate
+      ? await this.runExtraction(partial.text ?? '', user, offsetMinutes, now)
+      : undefined;
+    // Fala livre nos passos de edição QUANDO o passo espera re-interpretação:
+    // localização pendente (sem alvo) ou mudança de horário em `edit_propor`
+    // (1 chamada LLM/turno). `edit_descricao` COM alvo é a confirmação de cancelar
+    // (DADO); `escolher_candidata` é escolha numérica (DADO).
+    const editStep = session.step === 'edit_descricao' || session.step === 'edit_propor';
+    const hasTarget = Boolean(session.candidate.edit?.appointmentId);
+    const editFree =
+      !deterministic &&
+      editStep &&
+      (session.step === 'edit_propor' ||
+        // alvo achado em edit_descricao: a fala é a MUDANÇA (modo change), não re-localização
+        (session.step === 'edit_descricao' && hasTarget && session.editMode !== 'cancel') ||
+        (!hasTarget && (session.candidate.edit?.candidates?.length ?? 0) === 0)) &&
+      Boolean(partial.text && partial.text.trim()) &&
+      !reminder &&
+      !extracted;
+    const editMode: 'target' | 'change' = hasTarget ? 'change' : 'target';
+    const editVerdict = editFree
+      ? await this.runEditInterpret(
+          partial.text ?? '',
+          session,
+          existing,
+          user,
+          offsetMinutes,
+          now,
+          editMode,
+        )
+      : undefined;
+    const justOpenedEdit = this.consumedTurns.get(user.telegramId) === true;
+    this.consumedTurns.delete(user.telegramId);
     const classified =
-      reminder || deterministic
+      reminder || deterministic || extracted || editVerdict || justOpenedEdit
         ? undefined
         : await this.classifier.classify(partial.text ?? '', context);
 
@@ -218,7 +281,18 @@ export class SchedulingFlowService {
       );
       await this.telegram.sendMessage(user.telegramId, result.replies[0] ?? '');
       // volta à pergunta do passo atual, sem reclassificar (1 chamada LLM/turno).
-      await this.replayCurrentStep(user, session, offsetMinutes, now);
+      if (session.step === 'criar_aberto') {
+        await this.replayCreateGate(
+          user,
+          session,
+          partial.text ?? '',
+          existing,
+          offsetMinutes,
+          now,
+        );
+      } else {
+        await this.replayCurrentStep(user, session, offsetMinutes, now);
+      }
       return;
     }
 
@@ -228,6 +302,10 @@ export class SchedulingFlowService {
       text: partial.text ?? '',
       classified,
       reminder,
+      extracted,
+      editLocation: editVerdict?.location,
+      editPicked: editVerdict?.picked,
+      editChange: editVerdict?.change,
       existing,
       offsetMinutes,
       now,
@@ -240,6 +318,12 @@ export class SchedulingFlowService {
 
     if (outcome.create) {
       await this.persist(user, outcome.create);
+    }
+    // ações de escrita pedidas pela máquina (Fase 4: needs_review / editar / cancelar)
+    if (outcome.needsReview) await this.persistNeedsReview(user, session, outcome.needsReview);
+    if (outcome.update) await this.applyUpdate(user, outcome.update);
+    if (outcome.cancelAppointment) {
+      await this.applyCancelAppointment(user, outcome.cancelAppointment.appointmentId);
     }
   }
 
@@ -254,6 +338,345 @@ export class SchedulingFlowService {
     const result = await this.reminderInterpreter.interpretar(text);
     if (result.ok) return { ok: true, regras: result.regras };
     return { ok: false, reason: result.reason };
+  }
+
+  /** Data de hoje no tz do usuário — bloco volátil do prompt (llm.md #4). */
+  private todayLocal(user: BotUser, now: Date): string {
+    return new Intl.DateTimeFormat('pt-BR', {
+      timeZone: user.timezone,
+      weekday: 'long',
+      day: 'numeric',
+      month: 'long',
+      year: 'numeric',
+    }).format(now);
+  }
+
+  /**
+   * Borda do atalho do CRIAR (Fase 4, spec regra 5/6): extrator LLM → RÉGUA pura →
+   * veredito que a máquina consome. O modelo não faz calendário: um ISO sem hora com o
+   * offset da conta é "dia entendido, hora faltando" (quando_parcial) — a régua só
+   * deriva o dia do instante que a borda materializou (ADR-002).
+   */
+  private async runExtraction(
+    text: string,
+    user: BotUser,
+    offsetMinutes: number,
+    now: Date,
+  ): Promise<ExtractedClassified> {
+    const result = await this.schedulingInterpreter.interpretar(text, {
+      todayLocal: this.todayLocal(user, now),
+    });
+    if (!result.ok) {
+      return { kind: 'falhou', reason: result.reason, titleHint: text.trim().slice(0, 200) };
+    }
+    const data = result.data;
+    const dayOnly = /^\d{4}-\d{2}-\d{2}T09:00(?::00(?:\.000)?)?(Z|[+-]\d{2}:\d{2})$/.test(
+      data.startsAt,
+    );
+    if (dayOnly) {
+      // hora 09:00 é o marcador do prompt ("não disse a hora"); o CALENDÁRIO do ISO é o
+      // dia local do usuário (ADR-002) — materializamos no offset real da conta e a
+      // régua deriva o dia de volta. Offset do ISO ≠ tz da conta ⇒ sem confiança no
+      // calendário: cai na régua cheia e vira needs_review "parse_falho".
+      const m = /^(\d{4})-(\d{2})-(\d{2})T09:00(?::00(?:\.000)?)?(Z|[+-]\d{2}:\d{2})$/.exec(
+        data.startsAt,
+      );
+      const embedded = m ? this.offsetOfIso(m[7]!) : null;
+      if (m && embedded === offsetMinutes) {
+        const inst = zonedTimeToUtc(
+          { year: Number(m[1]), month: Number(m[2]), day: Number(m[3]) },
+          offsetMinutes,
+        );
+        const day = dayFromResolvedUtc(inst, offsetMinutes);
+        if (day) {
+          this.logger.log(`bot: extracao quando_parcial (dia ${day.day}) p/ ${user.id}`);
+          return { kind: 'quando_parcial', data: { title: data.title, day } };
+        }
+      }
+    }
+    const payload: ExtracaoPayloadBruto = {
+      title: data.title,
+      startsAt: data.startsAt,
+      ...(data.durationMinutes !== undefined ? { durationMinutes: data.durationMinutes } : {}),
+      confidence: data.confidence,
+      ...(data.dateEvidence ? { dateEvidence: data.dateEvidence } : {}),
+    };
+    const v = classificarExtracao(payload, {
+      minConfidence: this.minConfidence,
+      now,
+      offsetMinutes,
+    });
+    this.logger.log(
+      `bot: extracao ${v.verdict} p/ ${user.id} (conf ${data.confidence}, modelo ok)`,
+    );
+    switch (v.verdict) {
+      case 'aceito':
+        return {
+          kind: 'aceito',
+          data: {
+            title: v.candidate.title,
+            startUtc: v.candidate.startUtc,
+            endUtc: v.candidate.endUtc,
+            ...(v.candidate.dateEvidence ? { dateEvidence: v.candidate.dateEvidence } : {}),
+          },
+        };
+      case 'fraco':
+      case 'suspeito':
+        return {
+          kind: v.verdict,
+          data: {
+            title: v.candidate.title,
+            startUtc: v.candidate.startUtc,
+            endUtc: v.candidate.endUtc,
+            ...(v.candidate.dateEvidence ? { dateEvidence: v.candidate.dateEvidence } : {}),
+          },
+          reviewReason: v.reviewReason,
+          rawText: result.rawText,
+        };
+      case 'sem_quando':
+      case 'invalido':
+        return { kind: 'sem_quando' };
+      case 'quando_parcial': {
+        // o modelo marcou 09:00 mas o offset era da conta e o materializou a cima;
+        // este ramo só pega ISO dia-cheio que a régua derivou (impossível hoje — mantém
+        // a tipologia total): converte o dia direto.
+        return { kind: 'quando_parcial', data: { title: v.title, day: v.day } };
+      }
+    }
+  }
+
+  /** Offset (minutos) embutido num sufixo ISO ("Z" | "+HH:MM" | "-HH:MM"); null = ilegível. */
+  private offsetOfIso(tz: string): number | null {
+    if (tz === 'Z') return 0;
+    const m = /^([+-])(\d{2}):(\d{2})$/.exec(tz);
+    if (!m) return null;
+    const sign = m[1] === '-' ? -1 : 1;
+    return sign * (Number(m[2]) * 60 + Number(m[3]));
+  }
+
+  /**
+   * Borda dos passos de edição (Fase 4, spec regras 10/11): interpretador edit →
+   * localização 100% determinística (`findMatchingAppointments` + símbolos do
+   * schedule-core) → régua do quando + `applyShift`. O LLM NUNCA escolhe o compromisso
+   * nem calcula data final (ADR-003). `mode` vem da SESSÃO (máquina decidiu o passo):
+   * `target` = procurar o compromisso; `change` = a fala é a mudança na candidata.
+   */
+  private async runEditInterpret(
+    text: string,
+    session: FlowSession,
+    existing: AppointmentLike[],
+    user: BotUser,
+    offsetMinutes: number,
+    now: Date,
+    mode: 'target' | 'change',
+  ): Promise<{
+    location?: NonNullable<HandleTurnInput['editLocation']>;
+    picked?: EditCandidateLike;
+    change?: NonNullable<HandleTurnInput['editChange']>;
+  }> {
+    const result = await this.editInterpreter.interpretar(text, {
+      todayLocal: this.todayLocal(user, now),
+    });
+    const edit = session.candidate.edit;
+    if (!result.ok) {
+      // editar NUNCA vira needs_review (spec regra 20): re-pergunta.
+      this.logger.log(`bot: interpretacao de edicao falhou (${result.reason}) p/ ${user.id}`);
+      return mode === 'change'
+        ? { change: { kind: 'reperguntar', reason: result.reason } }
+        : { location: { kind: 'ask_descricao' } };
+    }
+    const data = result.data;
+
+    // ---- mudança de horário na candidata já achada (esperada: mode change) ----
+    if (mode === 'change' && edit?.appointmentId && edit.fromStartUtc && edit.fromEndUtc) {
+      const payload: EdicaoPayloadBruto = {
+        acao: data.acao,
+        confidence: data.confidence,
+        ...(data.novoInicio ? { novoInicio: data.novoInicio } : {}),
+        ...(data.novaDuracaoMin !== undefined ? { novaDuracaoMin: data.novaDuracaoMin } : {}),
+        ...(data.deslocamentoMin !== undefined ? { deslocamentoMin: data.deslocamentoMin } : {}),
+        ...(data.evidence ? { evidence: data.evidence } : {}),
+      };
+      const v = classificarEdicao(payload, {
+        minConfidence: this.minConfidence,
+        now,
+        offsetMinutes,
+      });
+      if (v.verdict === 'reperguntar') {
+        return { change: { kind: 'reperguntar', reason: v.reason } };
+      }
+      let toStart = edit.fromStartUtc;
+      let toEnd = edit.fromEndUtc;
+      if (v.deslocamentoMin !== undefined) {
+        const shifted = applyShift(toStart, toEnd, v.deslocamentoMin);
+        toStart = shifted.startsAt;
+        toEnd = shifted.endsAt;
+      }
+      if (v.novoStartUtc) {
+        const durMs =
+          v.novaDuracaoMin !== undefined
+            ? v.novaDuracaoMin * 60_000
+            : toEnd.getTime() - toStart.getTime();
+        toStart = v.novoStartUtc;
+        toEnd = new Date(v.novoStartUtc.getTime() + durMs);
+      } else if (v.novaDuracaoMin !== undefined) {
+        toEnd = new Date(toStart.getTime() + v.novaDuracaoMin * 60_000);
+      }
+      return {
+        change: {
+          kind: 'ok',
+          toStartUtc: toStart,
+          toEndUtc: toEnd,
+          ...(data.descricao?.trim() ? { toTitle: data.descricao.trim() } : {}),
+        },
+      };
+    }
+
+    // ---- localização do alvo (100% determinística — spec regra 11) ----
+    const rawRange = this.resolveAlvoRange(data.alvoData, offsetMinutes, now);
+    const unresolvedAlvo = Boolean(data.alvoData) && rawRange === undefined;
+    const descricao = (data.descricao?.trim() || edit?.descricao || '').trim() || undefined;
+    const horizon = new Date(now.getTime() + 90 * 24 * 60 * 60_000);
+    const rows = await this.appointments.listOverlapping(user.id, now, horizon, [
+      'confirmed',
+      'needs_review',
+    ]);
+    // Filtro determinístico: o texto só casa com o TÍTULO (findMatchingAppointments);
+    // a data só estreita quando o modelo deu um período RESOLVÍVEL. "consulta de
+    // quinta" com `from` horário não resolvesível ⇒ busca pelo título e apresenta.
+    const candidates = findMatchingAppointments(rows, {
+      ...(descricao ? { texto: descricao } : {}),
+      ...(rawRange ? { intervalo: rawRange } : {}),
+    });
+    // "de quinta" que não resolveu NADA: não listar o mundo — perguntar qual (ask).
+    const resolvedRange = descricao ? undefined : rawRange;
+    this.logger.log(
+      `bot: localizacao p/ ${user.id}: ${candidates.length} candidata(s) ` +
+        `(descricao="${descricao ?? ''}", alvoData=${data.alvoData ? 'sim' : 'nao'})`,
+    );
+    if (candidates.length === 0) {
+      if (!descricao && (!resolvedRange || unresolvedAlvo)) {
+        return { location: { kind: 'ask_descricao' } };
+      }
+      return { location: { kind: 'none' } };
+    }
+    if (candidates.length === 1) {
+      const only = candidates[0]!;
+      if (edit && edit.appointmentId !== only.id) {
+        // resposta ao "qual deles?"/descrição refinada: a máquina apresenta direto.
+        // (candidate só no turno que ABRIU a edição — nunca para re-apresentar.)
+        return { picked: this.toEditCandidate(only) };
+      }
+      return { location: { kind: 'candidate', data: this.toEditCandidate(only) } };
+    }
+    if (edit?.appointmentId) {
+      // candidata já apresentada (sessão em confirmação/escolha): não re-localizar —
+      // a fala é DADO do passo; a máquina trata (escolher_candidata/confirmar_*).
+      return {};
+    }
+    return {
+      location: {
+        kind: 'candidates',
+        data: candidates.slice(0, BOT_MESSAGES.maxCandidatas).map((a) => this.toEditCandidate(a)),
+      },
+    };
+  }
+
+  /** Row do Prisma → candidata vista pela máquina (id/title/quando/status). */
+  private toEditCandidate(row: {
+    id: string;
+    title: string;
+    startsAt: Date;
+    endsAt: Date;
+    status: string;
+  }): EditCandidateLike {
+    return {
+      id: row.id,
+      title: row.title,
+      startsAt: row.startsAt,
+      endsAt: row.endsAt,
+      status: row.status,
+    };
+  }
+
+  /** `alvoData` do interpretador → intervalo UTC (símbolos: agenda-query puro). */
+  private resolveAlvoRange(
+    alvoData: { simbolo?: string; from?: string; to?: string } | undefined,
+    offsetMinutes: number,
+    now: Date,
+  ): { start: Date; end: Date } | undefined {
+    if (!alvoData) return undefined;
+    if (alvoData.simbolo) {
+      return resolveSimboloRange(alvoData.simbolo as SimboloConsulta, now, offsetMinutes);
+    }
+    if (alvoData.from && alvoData.to) {
+      const r = resolveIntervaloRange({ from: alvoData.from, to: alvoData.to }, offsetMinutes);
+      if (r) return r;
+      // ISO com hora em vez de dia-cheio: usa os instantes crus (meio-aberto preservado).
+      const start = new Date(alvoData.from);
+      const end = new Date(alvoData.to);
+      if (isValidDate(start) && isValidDate(end) && end.getTime() > start.getTime()) {
+        return { start, end };
+      }
+    }
+    return undefined;
+  }
+
+  /**
+   * Abre a sessão de editar/cancelar a partir da classificação off-flow (Fase 4):
+   * a fala vira a primeira descrição do alvo; localização é a borda que faz.
+   * Em `edit_descricao` a máquina já espera a descrição (editRedefine) — sem a
+   * pergunta de proteção, que só existe com um criar em curso (spec regra 9).
+   */
+  private async offFlowLocate(
+    user: BotUser,
+    text: string,
+    action: 'edit' | 'cancel',
+    now: Date,
+  ): Promise<void> {
+    const offsetMinutes = tzOffsetMinutes(user.timezone, now);
+    const session = this.machine.newSession(now);
+    session.step = 'edit_descricao';
+    session.editMode = action;
+    session.editRedefine = true;
+    session.candidate.edit = {
+      action: action === 'cancel' ? 'cancelar' : 'editar',
+      descricao: text.trim() || undefined,
+      tries: 0,
+    };
+    this.sessions.set(user.telegramId, session);
+    // O turno que ABRIU a edição já gastou a classificação de intenção do usuário;
+    // a sessão abre com [editResumed=true] para o próximo turno (escolha "1", "sim")
+    // não re-classificar a fala (que é DADO do passo — regra 22).
+    this.consumedTurns.set(user.telegramId, true);
+    // sem re-classificar: este turno é a descrição inicial do alvo (1 chamada LLM).
+    const existing = await this.existingConfirmedFuture(user.id, now);
+    const verdict = await this.runEditInterpret(
+      text,
+      session,
+      existing,
+      user,
+      offsetMinutes,
+      now,
+      'target',
+    );
+    const outcome = await this.machine.handleTurn({
+      session,
+      user,
+      text,
+      existing,
+      offsetMinutes,
+      now,
+      editLocation: verdict.location,
+      editPicked: verdict.picked,
+      editChange: verdict.change,
+    });
+    if (outcome.done) this.sessions.delete(user.telegramId);
+    await this.send(user.telegramId, outcome.replies);
+    if (outcome.update) await this.applyUpdate(user, outcome.update);
+    if (outcome.cancelAppointment) {
+      await this.applyCancelAppointment(user, outcome.cancelAppointment.appointmentId);
+    }
   }
 
   /** Carga p/ findConflict: confirmed, endsAt>now, janela futura de 90 dias (spec). */
@@ -312,23 +735,56 @@ export class SchedulingFlowService {
       }
       case 'criar':
       case 'substituir_atual': {
-        this.openFlow(user, now);
-        // O turno atual ja e a resposta do passo titulo: processa a fala como dado
-        // (UX: "marca uma consulta" vira titulo), sem re-classificar (1 chamada LLM/turno).
-        const fresh = this.sessions.get(user.telegramId)!;
+        // Fase 4 (spec regra 8): o criar abre no portão do atalho SOMENTE se a fala solta
+        // trouxer um candidato (extração livre + régua). Sem candidato, o criar abre no
+        // guiado clássico perguntando o título (spec A5/Fase 1: a fala de intenção que
+        // abriu o fluxo ainda pode ser o título — nada se perde).
+        const existing = await this.existingConfirmedFuture(user.id, now);
+        const extracted = await this.runExtraction(text, user, offsetMinutes, now);
+        const openable =
+          extracted.kind === 'aceito' ||
+          extracted.kind === 'quando_parcial' ||
+          extracted.kind === 'fraco' ||
+          extracted.kind === 'suspeito';
+        const fresh = this.machine.newSession(now);
+        if (!openable) {
+          this.openFlow(user, now);
+          // a fala vira o passo título (UX "marca uma consulta" ⇒ título), sem re-classificar
+          const opened = this.sessions.get(user.telegramId)!;
+          const outcome = await this.machine.handleTurn({
+            session: opened,
+            user,
+            text,
+            existing,
+            offsetMinutes,
+            now,
+          });
+          if (outcome.done) this.sessions.delete(user.telegramId);
+          await this.send(user.telegramId, outcome.replies);
+          return;
+        }
+        fresh.step = 'criar_aberto';
+        this.sessions.set(user.telegramId, fresh);
         const outcome = await this.machine.handleTurn({
           session: fresh,
           user,
           text,
-          classified: undefined,
-          existing: [],
-          offsetMinutes: tzOffsetMinutes(user.timezone, now),
+          extracted,
+          existing,
+          offsetMinutes,
           now,
         });
         if (outcome.done) this.sessions.delete(user.telegramId);
         await this.send(user.telegramId, outcome.replies);
+        if (outcome.needsReview) {
+          await this.persistNeedsReview(user, fresh, outcome.needsReview);
+        }
         return;
       }
+      case 'editar_compromisso':
+        return this.offFlowLocate(user, text, 'edit', now);
+      case 'cancelar_compromisso':
+        return this.offFlowLocate(user, text, 'cancel', now);
       case 'cancelar': {
         await this.telegram.sendMessage(telegramId, BOT_MESSAGES.cancelado);
         return;
@@ -422,6 +878,35 @@ export class SchedulingFlowService {
     await this.send(user.telegramId, outcome.replies);
   }
 
+  /**
+   * Replay do portão do atalho (Fase 4): depois de uma consulta com o criar aberto em
+   * `criar_aberto`, a próxima fala solta é de novo hipótese do extrator (spec regra 8).
+   */
+  private async replayCreateGate(
+    user: BotUser,
+    session: FlowSession,
+    text: string,
+    existing: AppointmentLike[],
+    offsetMinutes: number,
+    now: Date,
+  ): Promise<void> {
+    const extracted = await this.runExtraction(text, user, offsetMinutes, now);
+    const outcome = await this.machine.handleTurn({
+      session,
+      user,
+      text,
+      extracted,
+      existing,
+      offsetMinutes,
+      now,
+    });
+    if (outcome.done) this.sessions.delete(user.telegramId);
+    await this.send(user.telegramId, outcome.replies);
+    if (outcome.needsReview) {
+      await this.persistNeedsReview(user, session, outcome.needsReview);
+    }
+  }
+
   /** Criacao via AppointmentsService (mesmo caminho da web, D7). Falha logada, nunca engolida calada. */
   private async persist(
     user: BotUser,
@@ -468,6 +953,123 @@ export class SchedulingFlowService {
       await this.telegram.sendMessage(
         user.telegramId,
         'Deu um probleminha aqui do meu lado e eu não consegui salvar 😞 Tenta de novo em instantes?',
+      );
+    }
+  }
+
+  /**
+   * needs_review nascido da RÉGUA no criar (spec E16, decisão #6): persistido direto,
+   * NUNCA via AppointmentsService.create (que é o caminho do confirmado e SEMPRE
+   * materializa outbox — a fila de revisão não dispara lembrete: spec regra 7).
+   */
+  private async persistNeedsReview(
+    user: BotUser,
+    _session: FlowSession | undefined,
+    needsReview: NonNullable<
+      Awaited<ReturnType<SchedulingFlowMachine['handleTurn']>>['needsReview']
+    >,
+  ): Promise<void> {
+    try {
+      await this.prisma.appointment.create({
+        data: {
+          userId: user.id,
+          title: needsReview.title,
+          startsAt: needsReview.startsAt,
+          endsAt: needsReview.endsAt,
+          status: 'needs_review',
+          origin: 'bot',
+          rawText: needsReview.rawText,
+          reviewReason: needsReview.reviewReason,
+        },
+      });
+      this.logger.log(
+        `bot: needs_review salvo p/ ${user.id} (${needsReview.reviewReason}) — zero outbox`,
+      );
+    } catch (err) {
+      this.logger.error(`bot: falha ao salvar needs_review p/ ${user.id}: ${String(err)}`);
+      await this.telegram.sendMessage(
+        user.telegramId,
+        'Deu um probleminha aqui do meu lado e eu não consegui anotar pra revisão 😞 Tenta de novo?',
+      );
+    }
+  }
+
+  /**
+   * "sim" da edição (spec C12/C13): AppointmentsService.update faz o resto (conflito,
+   * recálculo dos lembretes). ConflictError ⇒ a máquina re-pergunta o quando (máx 3).
+   */
+  private async applyUpdate(
+    user: BotUser,
+    update: {
+      appointmentId: string;
+      patch: { title?: string; startsAt?: Date; endsAt?: Date };
+      title: string;
+    },
+  ): Promise<void> {
+    try {
+      await this.appointments.update(user.id, update.appointmentId, update.patch);
+    } catch (err) {
+      if (err instanceof AppointmentConflictError) {
+        // A sessão já encerrou com o "Feito!" (a máquina emitiu done). Reabre a sessão
+        // no passo de re-pergunta do quando (spec C13) para o usuário tentar outro horário.
+        this.logger.log(`bot: conflito ao editar ${update.appointmentId} — re-pergunta o quando`);
+        // Estado completo da re-pergunta (spec C13): a máquina monta a mensagem de
+        // conflito a partir de `edit` + `editConflict` no próximo turno (re-posta a
+        // cada fala sem quando; limite de 3 tentativas incluiu esta).
+        const session = this.machine.newSession(new Date());
+        session.editMode = 'edit';
+        session.candidate.edit = {
+          action: 'editar',
+          appointmentId: update.appointmentId,
+          fromTitle: update.title,
+          ...(update.patch.startsAt ? { toStartUtc: update.patch.startsAt } : {}),
+          ...(update.patch.endsAt ? { toEndUtc: update.patch.endsAt } : {}),
+          tries: 2,
+          lastConflict: {
+            title: err.conflictWith.title,
+            startsAt: err.conflictWith.startsAt,
+            endsAt: err.conflictWith.endsAt,
+          },
+        };
+        session.step = 'edit_propor';
+        this.sessions.set(user.telegramId, session);
+        const now2 = new Date();
+        const outcome = await this.machine.handleTurn({
+          session,
+          user,
+          text: '',
+          existing: [],
+          offsetMinutes: tzOffsetMinutes(user.timezone, now2),
+          now: now2,
+          editConflict: {
+            title: err.conflictWith.title,
+            startsAt: err.conflictWith.startsAt,
+            endsAt: err.conflictWith.endsAt,
+          },
+        });
+        await this.send(user.telegramId, outcome.replies);
+        return;
+      }
+      this.logger.error(`bot: falha ao editar compromisso p/ ${user.id}: ${String(err)}`);
+      await this.telegram.sendMessage(
+        user.telegramId,
+        'Deu um probleminha aqui do meu lado e eu não consegui mudar 😞 Tenta de novo?',
+      );
+    }
+  }
+
+  /**
+   * "sim" do cancelar (spec D14, decisão #2 do plano: APAGAR): `remove` do service —
+   * o cascade do Prisma derruba as linhas de outbox e jobs viram no-op (regra 12).
+   */
+  private async applyCancelAppointment(user: BotUser, appointmentId: string): Promise<void> {
+    try {
+      await this.appointments.remove(user.id, appointmentId);
+    } catch (err) {
+      this.logger.error(`bot: falha ao cancelar compromisso p/ ${user.id}: ${String(err)}`);
+      await this.telegram.sendMessage(
+        user.telegramId,
+        'Deu um probleminha aqui do meu lado e eu não consegui cancelar 😞 Tenta de novo?',
       );
     }
   }

@@ -153,6 +153,15 @@ export const BOT_MESSAGES = {
     `Tem alguma informação importante pra eu anotar nesse compromisso? ` +
     `(Se não, responde "não")`,
 
+  /**
+   * Fase 4 (spec A4) — mesma pergunta de notas, mas para o ATALHO do criar: a fala já é
+   * a confirmação, então o resumo diz "Entendi" (o guiado tradicional diz "Anotado").
+   */
+  pedeNotasAtalho: (resumo: string) =>
+    `Entendi: ${resumo}\n\n` +
+    `Tem alguma informação importante pra eu anotar nesse compromisso? ` +
+    `(Se não, responde "não")`,
+
   /** Regra 6 — resumo unico final (decisao de produto #3) + confirmar/alterar.
    *  `lembrete` é a linha `⏰` já formatada (Fase 3, spec regra 1). */
   resumoFinal: (resumo: string, notas: string, lembrete: string) =>
@@ -254,4 +263,72 @@ export const BOT_MESSAGES = {
   resumoVencendoHoje: '⏰ Lembretes que vencem hoje:',
   /** Decisão #5 — dia sem compromisso e sem lembrete vencendo: heartbeat. */
   resumoDiaLivre: '☀️ Hoje você está livre!',
+
+  // ---------- Fase 4: needs_review real, editar/cancelar pelo chat (spec llm-avancado) ----------
+
+  /** Spec E16 — aviso de needs_review: cita o que foi entendido + a evidência. */
+  avisoNeedsReview: (v: { title: string; when: string; evidence: string | null }) =>
+    `⚠️ Entendi "${v.title}" para ${v.when}, mas não tenho certeza (${
+      v.evidence ?? 'interpretação com baixa confiança'
+    }). ` +
+    'Salvei como PENDENTE DE REVISÃO na fila da web e não enviei lembretes. ' +
+    'Se entendi errado, me avise ou revise em Review na web.',
+
+  /** Spec B8 — pergunta de cancelamento (apagar = decisão #2 do plano). */
+  perguntaCancelarCompromisso: (title: string, range: string) =>
+    `Vou CANCELAR "${title}" (${range}) e apagar os lembretes dele. Posso cancelar? (sim / não)`,
+
+  /** Spec B9 — diff da edição: de/para + nota de recalculação dos lembretes. "sim" confirma. */
+  diffEdicao: (v: { title: string; from: string; to: string }) =>
+    `Vou mudar "${v.title}": de ${v.from} para ${v.to}. ` +
+    'Os lembretes são recalculados com o horário novo. Confirmo? (sim/não)',
+
+  edicaoFeita: (title: string, range: string) => `Feito! "${title}" agora é ${range}.`,
+
+  /** Spec B10/B14 — negar a edição: nada é gravado (desistir também nega — regra 13). */
+  edicaoNegada: 'Ok, nada mudei. Seu compromisso continua como estava. (se desistir, é só dizer)',
+
+  /** Spec B13 — cancelamento feito: aviso de que os lembretes foram apagados. */
+  cancelamentoFeito: (title: string, range: string) =>
+    `Cancelado: "${title}" (${range}). Os lembretes desse compromisso foram apagados.`,
+
+  /** Spec B12 — lista numerada de candidatas (máx. maxCandidatas). */
+  listaCandidatas: (lines: string) =>
+    `Encontrei mais de um. Qual deles? Responda com o número:\n${lines}`,
+
+  /** Spec B11 — nenhuma candidata: não invento, ofereço a consulta para ajudar. */
+  naoEncontreiCandidato:
+    'Não encontrei esse compromisso. Quer ver sua agenda para me dizer qual é? (sim/não)',
+
+  /** Spec B11 — sem descrição e sem quando na edição: re-pergunta (nunca listar o mundo). */
+  pedeDescricaoEdicao: 'Qual compromisso você quer mudar? (me diga o título ou quando era)',
+
+  /** Spec B11 — candidata achada pelo alvo, falta o que mudar. */
+  pedeOQueMudar: (title: string) =>
+    `Achei "${title}". O que você quer mudar nele? (data, horário ou título)`,
+
+  procurandoCandidato: 'Deixa eu ver se encontro esse compromisso...',
+  procurandoMudanca: 'Certo, o que exatamente você quer mudar?',
+
+  /** Spec B10 — fala que não contém um quando novo utilizável: re-pergunta. */
+  reperguntaHorarioNovo:
+    'Não entendi o horário novo. Pode me dizer a data e hora? (se desistir, é só dizer)',
+
+  /** Spec B10 — conflito ao GRAVAR a edição: re-pergunta o quando (máx. 3 tentativas). */
+  conflitoEdicao: (v: {
+    title: string;
+    range: string;
+    conflictTitle: string;
+    conflictRange: string;
+  }) =>
+    `Não deu: esse horário novo colide com "${v.conflictTitle}" (${v.conflictRange}). ` +
+    `Me diga outro horário para "${v.title}" (agora é ${v.range}). ` +
+    `(Se preferir desistir desta edição, é só dizer)`,
+
+  /** Spec regra 7 — needs_review não é editável/cancelável pelo chat. */
+  needsReviewNoChat:
+    'Esse compromisso está na fila de revisão da web e não pode ser mudado pelo chat. Revise em Review na web.',
+
+  /** Spec B12 — limite de candidatas listadas no chat. */
+  maxCandidatas: 5,
 } as const;

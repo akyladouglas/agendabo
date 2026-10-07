@@ -36,11 +36,19 @@ não mata job em voo). Postgres = verdade dos disparos (outbox); Redis = só ent
   em memória + refresh 30d cookie httpOnly rotacionado); dono do `MailService` (Resend).
 - `users`: perfil/preferências (timezone, resumoDiarioHora).
 - `appointments`: CRUD + check-conflict (regra em schedule-core; 409 com o compromisso que
-  choca).
+  choca). `ReviewService`/`ReviewController` (Fase 4): fila `needs_review` — `GET /review`,
+  `POST /review/:id/confirm` (conflito ⇒ 409; sem conflito ⇒ `confirmed` + materializa o
+  outbox na MESMA transação, jobs pós-commit) e `POST /review/:id/dismiss` (apaga).
 - `bot`: handler Telegraf fino + máquina de estados do agendamento + `BotAccessService`
   (gate de telegramId confirmado). Único com Telegraf além de `shared/telegram`.
 - `ai`: único com Anthropic SDK; expõe `AnthropicMessagesClient` (interface) + cascata
   haiku→sonnet; prompts com bloco estável cacheável + bloco volatile (hoje/tz).
+  Cinco interpretadores hoje: `IntentClassifierService` (intenções da conversa, ADR-008),
+  `AppointmentInterpreterService` (extração de data/hora guiada, Fase 1),
+  `ReminderInterpreterService` (fala livre da etapa `lembrete`, Fase 3),
+  `SchedulingInterpreterService` (extração LIVRE do criar, Fase 4 — não rejeita confiança
+  baixa: a régua `extraction-ruler.ts` decide) e `AppointmentEditInterpreterService`
+  (editar/cancelar, Fase 4 — rejeita confiança baixa: editar nunca vira needs_review).
 - `notifications`: outbox (linha Postgres = verdade) + fila BullMQ `notifications-dispatch`
   consumida pelo **processo worker próprio** (ADR-009, `src/workers/notifications-worker.ts`).
   `OutboxService` materializa (computeTriggers, transacional)/enfileira/invalida;
@@ -54,9 +62,21 @@ Guard global `JwtAuthGuard` deny-by-default (`@Public()` opt-in). Env tipado via
 
 ## Fluxos-chave
 
-**Agendar (bot)**: fala → LLM `extrair_agendamento` (zod+confiança) → needs_review se fraco
-→ `findConflict` (schedule-core) → pergunta notas → pergunta lembretes → cria `confirmed` +
-materializa `NotificationOutbox` (computeTriggers) → jobs BullMQ.
+**Agendar (bot)**: guiado (Fase 1) ou atalho (Fase 4): fala solta → `SchedulingInterpreter`
+
+- régua `classificarExtracao` (apps/api, pura) — `aceito` pula dia/hora/fim; `fraco`/
+  `suspeito` salva `needs_review` (rawText + reviewReason, ZERO outbox, sessão encerra);
+  sem quando → re-pergunta. Aí `findConflict` (schedule-core) → notas → lembretes → cria
+  `confirmed` + materializa `NotificationOutbox` (computeTriggers) → jobs BullMQ.
+
+**Editar/cancelar pelo chat (Fase 4)**: intent `editar_compromisso`/`cancelar_compromisso`
+→ localização 100% determinística (`findMatchingAppointments` em schedule-core + símbolos
+da Fase 2; 1 ⇒ apresenta, N ⇒ lista numerada com escolha "1/2/…" sem LLM, 0 ⇒ não
+encontrei) → fala da mudança via `AppointmentEditInterpreter` + régua `classificarEdicao`
+
+- `applyShift` → diff + "sim" (`parseYesNo`, zero LLM) → `AppointmentsService.update/remove`
+  (os mesmos da web). Conflito no update re-pergunta o quando (máx 3). Cancelar APAGA
+  (ADR-010).
 
 **Lembrete**: criação do compromisso → `computeTriggers` materializa N linhas de outbox
 (uma por regra) na mesma transação; jobs com `delay` pós-commit. Worker → relê DB →
@@ -76,5 +96,7 @@ login só então.
 ADRs em `ia-docs/decisions/pt-br/` — 0000–0007 cobrem: processo ADR, monolito monorepo sem
 microserviços, UTC+tz, código vs magic link, LLM não decide conflito, CJS nos packages,
 ia-docs único lar dos ADRs, e o grafo de imports (`CROSS_MODULE_EDGES` em
-`apps/api/.dependency-cruiser.cjs`). **0008**: (Fase 2) — revisar. **0009**: worker de
-notificações como processo próprio (Fase 3).
+`apps/api/.dependency-cruiser.cjs`). **0008**: LLM classifica a intenção da conversa;
+regras decidem. **0009**: worker de notificações como processo próprio (Fase 3).
+**0010**: régua do needs_review no criar; cancelar pelo chat apaga; editar nunca vira
+revisão (Fase 4).

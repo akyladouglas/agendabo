@@ -80,6 +80,47 @@ bot:  Já tem um em andamento. Descartar e começar novo? (sim/não)
 
 ---
 
+### A6. Marcar tudo numa frase só ✅ (Fase 4)
+
+> "marca uma consulta no dentista quinta 14h por 1 hora"
+
+O LLM extraiu título + dia + horário + duração; as regras decidiram. Ele pula direto
+para a etapa de lembretes (C1) — sem perguntar dia, hora, fim, nem confirmar de novo.
+Uma fala do tipo "consulta quinta 14h" (sem duração) vira 1h por padrão.
+Conflito? Aí sim ele pergunta (**A2**). Se ele só entendeu o dia ("quinta uma consulta"),
+pergunta só o horário.
+
+### A7. Ele não entendeu direito → fila de revisão ✅ (Fase 4)
+
+> "marca aquela coisa qualquer dia desses" (com pouca confiança)
+
+Ele avisa que salvou como **pendente de revisão**, mostra o que entendeu, e encerra
+o assunto. Esse compromisso aparece na página **Revisão** do site, com a sua fala
+original: você corrige título/data/hora e confirma (aí sim ele vira normal e ganha
+lembretes) ou descarta. Enquanto está na fila: **nenhum lembrete sai** e ele não pode
+ser editado pelo chat (pode ser cancelado).
+
+Data no passado? Ele salva como suspeito na mesma fila, em vez de inventar.
+
+### A8. Editar pelo chat ✅ (Fase 4)
+
+> "muda a consulta do dentista" → "adianta 2 horas" (ou "sexta às 16h") → "sim"
+
+Ele encontra o compromisso (pelo nome / dia — se achar vários, lista numerados:
+responda "1"), mostra o antes–depois e só grava depois do seu "sim". O novo horário
+colide com outra coisa? Ele avisa e pergunta outro (é a mesma regra da criação).
+Se ele não entender o pedido de mudança, ele só re-pergunta — edição nunca vira fila
+de revisão.
+
+### A9. Cancelar pelo chat ✅ (Fase 4)
+
+> "cancela a reunião de amanhã" → "sim"
+
+Mesma localização do **A8** (um, lista numerada, ou "não encontrei"). Ele mostra o
+compromisso e só apaga depois do "sim" — junto vão os lembretes dele.
+
+---
+
 ## B. Consultar agenda
 
 ### B1. Perguntas que funcionam ✅
@@ -172,17 +213,17 @@ Qualquer mensagem → só o passo a passo de cadastro. Nada mais funciona.
 
 ---
 
-## D. Ainda NÃO faz (próximas fases)
+## D. Ainda NÕO faz (próximas fases)
 
-| Falta                                                             | Vem na    |
-| ----------------------------------------------------------------- | --------- |
-| Marcar solto: "quinzena que vem uns 14h" (hoje o quando é guiado) | Fase 4    |
-| Editar/cancelar compromisso já criado pelo chat                   | Fase 4    |
-| Site: calendário, revisão, cadastro                               | Fases 5–7 |
+| Falta                               | Vem na      |
+| ----------------------------------- | ----------- |
+| Site: calendário, revisão, cadastro | Fases 5 a 7 |
+| Recorrência ("toda segunda")        | Roadmap     |
 
 (Já faz desde a Fase 3: lembretes com escolha no chat — **C1** — e resumo diário
 automático — **C2**. Editar/criar pelo web e regra `needs_review` na fila recalculam
-os lembretes sozinhos.)
+os lembretes sozinhos. Desde a Fase 4: marcar solto (**A6**), editar (**A8**) e
+cancelar (**A9**) um compromisso pelo chat, e a fila de revisão é real (**A7**).)
 
 ---
 
@@ -233,17 +274,19 @@ bot:  ☀️ Hoje você está livre! Bom dia.
 
 ## E. Como o bot classifica sua fala
 
-| Você fala                              | Ele entende                       |
-| -------------------------------------- | --------------------------------- |
-| "quero marcar X"                       | começar agendamento               |
-| "o que tenho amanhã?"                  | listar agenda                     |
-| "deixa pra lá"                         | cancelar o que estava fazendo     |
-| "e às 16h?" (no conflito)              | remarcar                          |
-| "marca outra coisa" (com fluxo aberto) | começa novo, perguntando antes    |
-| "alterar lembretes" (na confirmação)   | volta a etapa de lembretes        |
-| qualquer resposta ao passo             | seguir o fluxo                    |
-| qualquer coisa na etapa `lembrete`     | resposta do passo (NUNCA cancela) |
-| "me conta uma piada"                   | fora do escopo → resposta padrão  |
+| Você fala                              | Ele entende                        |
+| -------------------------------------- | ---------------------------------- |
+| "quero marcar X"                       | começar agendamento                |
+| "o que tenho amanhã?"                  | listar agenda                      |
+| "deixa pra lá"                         | cancelar o que estava fazendo      |
+| "e às 16h?" (no conflito)              | remarcar                           |
+| "marca outra coisa" (com fluxo aberto) | começa novo, perguntando antes     |
+| "alterar lembretes" (na confirmação)   | volta a etapa de lembretes         |
+| qualquer resposta ao passo             | seguir o fluxo                     |
+| qualquer coisa na etapa `lembrete`     | resposta do passo (NUNCA cancela)  |
+| “muda/adianta o compromisso X”         | começa edição pelo chat (A8)       |
+| “cancela a reunião de amanhã”          | começa cancelamento pelo chat (A9) |
+| "me conta uma piada"                   | fora do escopo → resposta padrão   |
 
 ---
 

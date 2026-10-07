@@ -7,5 +7,6 @@ export * from './api/appointments';
 export * from './api/review';
 export * from './llm/extrairAgendamento';
 export * from './llm/interpretarConsulta';
+export * from './llm/interpretarEdicao';
 export * from './llm/classifyIntent';
 export * from './llm/extrairLembrete';
