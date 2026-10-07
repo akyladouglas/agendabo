@@ -18,5 +18,10 @@
    resumo, revisão). Nome do domínio no código = nome no glossário.
 7. Ao fim de **cada fase** do roadmap: atualizar `ia-docs/plans/<fase>.plan.md` (status)
    e registrar ADR de decisão nova não-óbvia.
-8. Nunca duplicar verdade: decisão mora no ADR; comportamento no código; armadilha no
-   gotchas. Referência cruzada por link, não cópia.
+8. `docs/cenarios-do-bot.md` é o onboarding/roteiro de smoke do bot (o que o usuário
+   consegue fazer no chat, com exemplos de fala). Ao fim de cada fase que mudar
+   **comportamento visível no chat** (novos fluxos, novas falas, novas intenções):
+   adicionar/atualizar os cenários no mesmo commit, marcar os roteáveis como ✅ e mover
+   o que foi implementado da tabela "ainda NÃO faz".
+9. Nunca duplicar verdade: decisão mora no ADR; comportamento no código; armadilha no
+   gotchas; cenários de chat no cenários-do-bot. Referência cruzada por link, não cópia.
