@@ -84,23 +84,34 @@ bot:  Já tem um em andamento. Descartar e começar novo? (sim/não)
 
 > "marca uma consulta no dentista quinta 14h por 1 hora"
 
-O LLM extraiu título + dia + horário + duração; as regras decidiram. Ele pula direto
-para a etapa de lembretes (C1) — sem perguntar dia, hora, fim, nem confirmar de novo.
-Uma fala do tipo "consulta quinta 14h" (sem duração) vira 1h por padrão.
-Conflito? Aí sim ele pergunta (**A2**). Se ele só entendeu o dia ("quinta uma consulta"),
-pergunta só o horário.
+Ele extraiu título + dia + horário + duração de uma vez; as regras decidiram. Ele pula
+dia, hora, fim e a confirmação final — e vai direto perguntar **notas e lembretes**.
+Depois vem o resumo igual ao **A1**.
+
+- Uma fala sem duração ("consulta quinta 14h") vira 1h por padrão.
+- Conflito no horário entendido? Aí ele mostra o conflito (**A2**) antes de salvar.
+- Entendeu só parte ("quinta uma consulta")? Pula o dia e pergunta só o que falta.
 
 ### A7. Ele não entendeu direito → fila de revisão ✅ (Fase 4)
 
 > "marca aquela coisa qualquer dia desses" (com pouca confiança)
 
-Ele avisa que salvou como **pendente de revisão**, mostra o que entendeu, e encerra
-o assunto. Esse compromisso aparece na página **Revisão** do site, com a sua fala
-original: você corrige título/data/hora e confirma (aí sim ele vira normal e ganha
-lembretes) ou descarta. Enquanto está na fila: **nenhum lembrete sai** e ele não pode
-ser editado pelo chat (pode ser cancelado).
+Ele responde **exatamente assim**:
 
-Data no passado? Ele salva como suspeito na mesma fila, em vez de inventar.
+```
+bot:  ⚠️ Entendi "aquela coisa" para sex 09/10 14:00, mas não tenho certeza
+      ("qualquer dia desses"). Salvei como PENDENTE DE REVISÃO na fila da web
+      e não enviei lembretes. Se entendi errado, me avise ou revise em Review na web.
+```
+
+Ou seja: salvou **sem** lembrete, **sem** perguntar notas, citando a parte da sua fala
+que embasou. Data no passado? Cai na mesma fila como suspeito, em vez de inventar.
+
+**O que fazer com ele:** você pode mandar ele corrigir pelo chat — "não, é sexta às
+16h" — (edição e cancelamento valem para ele, veja **A8**). Se ignorar, a fila da web
+(**Review**) resolve: lá você corrige título/data/hora e confirma — aí sim ele vira
+normal, entra na agenda e ganha lembretes. Ou descarta. Enquanto está na fila:
+**nenhum lembrete sai** e ele não aparece no resumo diário.
 
 ### A8. Editar pelo chat ✅ (Fase 4)
 
@@ -108,16 +119,34 @@ Data no passado? Ele salva como suspeito na mesma fila, em vez de inventar.
 
 Ele encontra o compromisso (pelo nome / dia — se achar vários, lista numerados:
 responda "1"), mostra o antes–depois e só grava depois do seu "sim". O novo horário
-colide com outra coisa? Ele avisa e pergunta outro (é a mesma regra da criação).
-Se ele não entender o pedido de mudança, ele só re-pergunta — edição nunca vira fila
-de revisão.
+colide com outra coisa? Ele avisa e pergunta outro (mesma regra da criação, máx. 3
+tentativas). Se ele não entender o pedido de mudança, ele só re-pergunta — edição
+nunca vira fila de revisão.
+
+```
+bot:  Vou mudar "Consulta dentista": de qui 08/10 14:30–15:30 para
+      sex 09/10 16:00–17:00. Os lembretes são recalculados com o horário novo.
+      Confirmo? (sim/não)
+você: sim
+bot:  Feito! "Consulta dentista" agora é sex 09/10 16:00–17:00.
+```
 
 ### A9. Cancelar pelo chat ✅ (Fase 4)
 
 > "cancela a reunião de amanhã" → "sim"
 
 Mesma localização do **A8** (um, lista numerada, ou "não encontrei"). Ele mostra o
-compromisso e só apaga depois do "sim" — junto vão os lembretes dele.
+compromisso e só apaga depois do "sim":
+
+```
+bot:  Vou CANCELAR "Reunião" (sex 09/10 10:00–11:00) e apagar os lembretes dele.
+      Posso cancelar? (sim / não)
+você: sim
+bot:  Cancelado: "Reunião" (sex 09/10 10:00–11:00). Os lembretes desse
+      compromisso foram apagados.
+```
+
+Apagar é apagar mesmo (sem lixeira). "não" ou desistir no meio → nada muda.
 
 ---
 
@@ -213,20 +242,6 @@ Qualquer mensagem → só o passo a passo de cadastro. Nada mais funciona.
 
 ---
 
-## D. Ainda NÕO faz (próximas fases)
-
-| Falta                               | Vem na      |
-| ----------------------------------- | ----------- |
-| Site: calendário, revisão, cadastro | Fases 5 a 7 |
-| Recorrência ("toda segunda")        | Roadmap     |
-
-(Já faz desde a Fase 3: lembretes com escolha no chat — **C1** — e resumo diário
-automático — **C2**. Editar/criar pelo web e regra `needs_review` na fila recalculam
-os lembretes sozinhos. Desde a Fase 4: marcar solto (**A6**), editar (**A8**) e
-cancelar (**A9**) um compromisso pelo chat, e a fila de revisão é real (**A7**).)
-
----
-
 ## C1. Lembrete chegou sozinho ✅ (Fase 3)
 
 Na hora marcada (ex.: 30min antes), você recebe:
@@ -241,7 +256,7 @@ bot:  ⏰ Lembrete: "Consulta dentista" — qui 08/10 14:30–15:30
 - **Compromisso em revisão nunca lembrete**: se a reavaliação mudou o quando/notas e o
   levou pra fila, os lembretes param até você aprovar na web.
 - Cancelou/apagou o compromisso (ou mudou o horário) → os lembretes antigos somem; novos
-  são criados no lugar.
+  são criados no lugar. Editou pelo chat (**A8**)? Mesma coisa, recalculado sozinho.
 - Bot fora do ar na hora do lembrete → ele chega atrasado; mais de `NOTIFY_STALE_MINUTES`
   de atraso (default 30) → o lembrete vence sem enviar (você não recebe coisa velha).
 - Reenvio automático até 3x em backoff; depois vira `failed` com o erro guardado.
@@ -272,11 +287,26 @@ bot:  ☀️ Hoje você está livre! Bom dia.
 
 ---
 
+## D. Ainda NÃO faz (próximas fases)
+
+| Falta                        | Vem na      |
+| ---------------------------- | ----------- |
+| Site: calendário e telas     | Fases 5 a 7 |
+| Recorrência ("toda segunda") | Roadmap     |
+
+(Já faz desde a Fase 3: lembretes com escolha no chat — **C1** — e resumo diário
+automático — **C2**. Desde a Fase 4: marcar solto (**A6**), editar (**A8**) e cancelar
+(**A9**) pelo chat, fila de revisão real (**A7**) — a fila já tem API (`/review`, teste
+no **F**), a **tela** chega na fase web.)
+
+---
+
 ## E. Como o bot classifica sua fala
 
 | Você fala                              | Ele entende                        |
 | -------------------------------------- | ---------------------------------- |
 | "quero marcar X"                       | começar agendamento                |
+| "marca X quinta 14h" (tudo numa fala)  | atalho de extração (A6)            |
 | "o que tenho amanhã?"                  | listar agenda                      |
 | "deixa pra lá"                         | cancelar o que estava fazendo      |
 | "e às 16h?" (no conflito)              | remarcar                           |
@@ -284,8 +314,8 @@ bot:  ☀️ Hoje você está livre! Bom dia.
 | "alterar lembretes" (na confirmação)   | volta a etapa de lembretes         |
 | qualquer resposta ao passo             | seguir o fluxo                     |
 | qualquer coisa na etapa `lembrete`     | resposta do passo (NUNCA cancela)  |
-| “muda/adianta o compromisso X”         | começa edição pelo chat (A8)       |
-| “cancela a reunião de amanhã”          | começa cancelamento pelo chat (A9) |
+| "muda/adianta o compromisso X"         | começa edição pelo chat (A8)       |
+| "cancela a reunião de amanhã"          | começa cancelamento pelo chat (A9) |
 | "me conta uma piada"                   | fora do escopo → resposta padrão   |
 
 ---
@@ -305,6 +335,14 @@ pnpm dev:worker                            # worker de notificações (Fase 3)
 
 1. Confirme sua conta (signup + código, ou direto no banco em dev).
 2. Mande os cenários ✅ na ordem: **C0 → A1 → A2 → B1 → B2 → B3 → A3**.
+3. Fase 4: **A6** → **A8** → **A9**, e um **A7** (fala vaga). Para ver a fila da API da
+   Revisão (a tela web ainda não existe), troque seu token de login por um Bearer e:
+
+   ```bash
+   curl http://localhost:3001/review -H "Authorization: Bearer SEU_TOKEN"          # lista a fila
+   curl -X POST http://localhost:3001/review/ID/confirm -H "Authorization: Bearer SEU_TOKEN"
+   # confirm aceita corpo opcional { "startsAt": "...", "endsAt": "..." } p/ corrigir a hora
+   ```
 
 **Deu esquisito?** Não é o modelo decidindo — é regra. Rode de novo ou mande
 "o que tenho hoje?" pra ver o estado da agenda.
