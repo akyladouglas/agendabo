@@ -22,6 +22,8 @@ export const INTENTS = [
   'remarcar',
   /** Novo agendamento com fluxo aberto => bot pergunta antes de descartar o atual. */
   'substituir_atual',
+  /** Quer VER a agenda ("o que tenho hoje?", "semana que vem?") — so leitura, Fase 2. */
+  'consultar',
   /** Nao e sobre agenda (o bot responde padrao, sem criar nem alterar nada). */
   'fora_do_escopo',
 ] as const;
@@ -55,7 +57,8 @@ export const classifyIntentTool = {
           'criar = quer marcar algo novo; cancelar = quer cancelar/desistir; ' +
           'continuar_fluxo = resposta ao passo atual do fluxo; remarcar = oferecer outro ' +
           'horario apos conflito; substituir_atual = quer comecar um agendamento novo com ' +
-          'fluxo ja aberto; fora_do_escopo = qualquer outra coisa',
+          'fluxo ja aberto; consultar = quer ver/listar seus compromissos ("o que tenho ' +
+          'hoje?", "semana que vem?"); fora_do_escopo = qualquer outra coisa',
       },
       confidence: { type: 'number', description: 'Confianca da classificacao, 0 a 1' },
     },

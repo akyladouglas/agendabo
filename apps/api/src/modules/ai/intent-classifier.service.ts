@@ -27,6 +27,8 @@ const SYSTEM_PROMPT = [
   '',
   'Intencoes:',
   '- criar: quer marcar/-agendar um compromisso novo (ex.: "quero marcar uma consulta").',
+  '- consultar: quer VER/listar seus compromissos ("o que tenho hoje?", "o que tenho ' +
+    '  semana que vem?") — somente leitura, nunca cria nada.',
   '- cancelar: quer cancelar/desistir de algo dito agora (ex.: "cancela", "deixa pra lá",',
   '  "melhor não", "para por enquanto") ou cancelar um compromisso.',
   '- continuar_fluxo: esta respondendo a pergunta atual do bot (da um titulo, escolhe um',
@@ -130,6 +132,9 @@ export class IntentClassifierService {
     if (context?.inFlow) {
       lines.push(`contexto: usuario esta no fluxo de agendamento (etapa: ${context.step}).`);
       if (context.conflictPending) lines.push('contexto: ha um conflito pendente de decisao.');
+      lines.push(
+        'contexto: dentro do fluxo, uma pergunta sobre a agenda ("o que tenho hoje?") e consultar.',
+      );
     } else {
       lines.push('contexto: usuario esta fora do fluxo de agendamento.');
     }

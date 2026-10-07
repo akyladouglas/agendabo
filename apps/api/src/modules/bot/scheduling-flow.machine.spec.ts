@@ -349,7 +349,7 @@ describe('SchedulingFlowMachine — validações e cancelamento (spec 12–13)',
       classified: intent('cancelar', 0.75),
     });
     expect(s.step).toBe('confirmar_cancelamento');
-    expect(texts(out)).toContain('cancelar este agendamento, certo?');
+    expect(texts(out)).toContain('cancelar este compromisso, certo?');
     // usuário nega: volta para o passo anterior, nada é descartado
     const back = await m.handleTurn({
       ...baseInput(),

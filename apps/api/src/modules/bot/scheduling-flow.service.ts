@@ -10,8 +10,13 @@ import { PrismaService } from '../../shared/prisma/prisma.service';
 import { TelegramClientService } from '../../shared/telegram/telegram-client.service';
 import type { Env } from '../../config/env.validation';
 import { BotAccessService, type BotUser } from './bot-access.service';
-import { BOT_MESSAGES, escapeHtml, parseYesNo } from './messages';
+import { BOT_MESSAGES, escapeHtml, givesUpQuery, parseYesNo } from './messages';
 import { IntentClassifierService, type IntentFlowContext } from '../ai/intent-classifier.service';
+import {
+  AgendaQueryService,
+  AGENDA_QUERY_MAX_PERIOD_PROMPTS,
+  type AgendaQueryResult,
+} from './agenda-query.service';
 import {
   SchedulingFlowMachine,
   type BotReply,
@@ -61,6 +66,15 @@ export function tzOffsetMinutes(timeZone: string, at: Date): number {
 export class SchedulingFlowService {
   private readonly logger = new Logger(SchedulingFlowService.name);
   private readonly sessions = new Map<string, FlowSession>();
+  /**
+   * Estado do turno de consulta (Fase 2): `true` = a última mensagem do bot foi a
+   * pergunta de período; `count` = quantas vezes perguntamos (máx 2 — spec #14).
+   * TTL: a mesma janela de `BOT_SESSION_TTL_MINUTES` do fluxo (llm.md #5).
+   */
+  private readonly pendingQueries = new Map<
+    string,
+    { awaitingPeriod: boolean; count: number; lastActivityAt: number }
+  >();
   private readonly machine: SchedulingFlowMachine;
   private readonly ttlMs: number;
   private readonly minConfidence: number;
@@ -72,6 +86,7 @@ export class SchedulingFlowService {
     private readonly telegram: TelegramClientService,
     private readonly prisma: PrismaService,
     private readonly config: ConfigService<Env, true>,
+    private readonly agendaQuery: AgendaQueryService,
   ) {
     this.ttlMs = this.config.get('BOT_SESSION_TTL_MINUTES', { infer: true }) * 60_000; // decisao D2 do plano (30 min)
     this.minConfidence = this.config.get('MIN_CONFIDENCE_TO_ACCEPT', { infer: true });
@@ -135,12 +150,17 @@ export class SchedulingFlowService {
     void this.send(user.telegramId, this.machine.startReplies());
   }
 
+  /** Relógio da borda (testes substituem este método p/ determinismo). */
+  private now(): Date {
+    return new Date();
+  }
+
   /** Um turno: estado -> bordas (LLM/banco) -> maquina -> respostas/persistencia. */
   async turn(
     user: BotUser,
     partial: { text?: string; dayChoice?: HandleTurnInput['dayChoice']; timeChoice?: string },
   ): Promise<void> {
-    const now = new Date();
+    const now = this.now();
     const offsetMinutes = tzOffsetMinutes(user.timezone, now);
     const existing = await this.existingConfirmedFuture(user.id, now);
 
@@ -159,8 +179,7 @@ export class SchedulingFlowService {
         await this.telegram.sendMessage(user.telegramId, BOT_MESSAGES.fallback);
         return;
       }
-      const classified = await this.classifier.classify(partial.text ?? '', { inFlow: false });
-      await this.openFlowTurn(user, partial.text ?? '', classified, now);
+      await this.offFlowTurn(user, partial.text ?? '', now);
       return;
     }
 
@@ -171,6 +190,23 @@ export class SchedulingFlowService {
     const classified = deterministic
       ? undefined
       : await this.classifier.classify(partial.text ?? '', context);
+
+    // Consulta de agenda com o fluxo de criar ABERTO (Fase 2, decisão #5): responde
+    // a consulta e volta ao mesmo passo — o estado do candidato fica intacto e o
+    // passo é re-perguntado ao final. Desistência/cancelar continuam com prioridade.
+    if (!deterministic && classified?.ok && classified.intent === 'consultar') {
+      const result = await this.runAgendaQuery(
+        user,
+        partial.text ?? '',
+        offsetMinutes,
+        now,
+        session.step,
+      );
+      await this.telegram.sendMessage(user.telegramId, result.replies[0] ?? '');
+      // volta à pergunta do passo atual, sem reclassificar (1 chamada LLM/turno).
+      await this.replayCurrentStep(user, session, offsetMinutes, now);
+      return;
+    }
 
     const outcome = await this.machine.handleTurn({
       session,
@@ -203,34 +239,49 @@ export class SchedulingFlowService {
     return rows;
   }
 
-  /** Regras 1+2 da spec: fora do fluxo NAO existe "resposta ao passo" — o LLM
-   * classifica a intencao e so transita acima do limiar (ADR-008).
+  /**
+   * Regras 1+2 da spec (Fase 1) + roteamento da consulta (Fase 2): fora do fluxo o
+   * LLM classifica a intencao e so transita acima do limiar (ADR-008).
    *
-   * - confianca baixa / parse falho => pergunta o que o usuario quis (spec 2),
-   *   nunca abre fluxo nem roda transicao.
-   * - `criar`/`substituir_atual` => abre o fluxo e a fala vira a resposta do passo
-   *   titulo (UX: "marca uma consulta" ja entrega um titulo razoavel; se nao servir,
-   *   a maquina re-pergunta — abrir e acao nao destrutiva).
-   * - `continuar_fluxo` => resposta padrao (fora do fluxo nao ha passo a continuar).
-   * - `cancelar` => nada em andamento, so responde. `remarcar`/`fora_do_escopo` =>
-   *   resposta padrao (spec 2).
+   * - consulta pendente aguardando o periodo (spec Fase 2 #14): desistencia encerra,
+   *   2a resposta reinterpreta, 3a pergunta encerra educadamente.
+   * - confianca baixa / parse falho => pergunta o que o usuario quis, nunca age.
+   * - `consultar` => AgendaQueryService (somente leitura; nao abre o fluxo).
+   * - `criar`/`substituir_atual` => abre o fluxo; a fala vira o passo titulo.
+   * - `continuar_fluxo`/`remarcar`/`fora_do_escopo` => resposta padrao.
+   * - `cancelar` => nada em andamento, so responde.
    */
-  private async openFlowTurn(
-    user: BotUser,
-    text: string,
-    classified: Awaited<ReturnType<IntentClassifierService['classify']>>,
-    now: Date,
-  ): Promise<void> {
+  private async offFlowTurn(user: BotUser, text: string, now: Date): Promise<void> {
     const telegramId = user.telegramId;
-    if (!classified.ok) {
-      await this.telegram.sendMessage(telegramId, BOT_MESSAGES.pediuEsclarecimento);
+    const offsetMinutes = tzOffsetMinutes(user.timezone, now);
+    const pending = this.takePendingQuery(telegramId, now);
+
+    // A consulta aguardando o período é tratada ANTES da classificação (o turno é a
+    // RESPOSTA à pergunta do bot; fala de desistência dispensa o LLM — ADR-008).
+    if (pending?.awaitingPeriod) {
+      if (givesUpQuery(text) || parseYesNo(text) === false) {
+        await this.telegram.sendMessage(telegramId, BOT_MESSAGES.cancelado);
+        return;
+      }
+      if (pending.count >= AGENDA_QUERY_MAX_PERIOD_PROMPTS) {
+        // 2× pedido de período sem sucesso: encerra educadamente (spec Fase 2 #14).
+        await this.telegram.sendMessage(telegramId, this.agendaQuery.closePolitely());
+        return;
+      }
+      await this.answerAgendaQuery(user, text, offsetMinutes, now, undefined, pending.count);
       return;
     }
-    if (classified.confidence < this.minConfidence) {
+
+    const classified = await this.classifier.classify(text, { inFlow: false });
+    if (!classified.ok || classified.confidence < this.minConfidence) {
       await this.telegram.sendMessage(telegramId, BOT_MESSAGES.pediuEsclarecimento);
       return;
     }
     switch (classified.intent) {
+      case 'consultar': {
+        await this.answerAgendaQuery(user, text, offsetMinutes, now, undefined, 0);
+        return;
+      }
       case 'criar':
       case 'substituir_atual': {
         this.openFlow(user, now);
@@ -258,6 +309,89 @@ export class SchedulingFlowService {
         await this.telegram.sendMessage(telegramId, BOT_MESSAGES.fallback);
       }
     }
+  }
+
+  /** Roda a consulta e envia; se o periodo faltou, marca a pendencia (contador). */
+  private async answerAgendaQuery(
+    user: BotUser,
+    text: string,
+    offsetMinutes: number,
+    now: Date,
+    inFlowStep: string | undefined,
+    priorPrompts: number,
+  ): Promise<void> {
+    const result = await this.runAgendaQuery(user, text, offsetMinutes, now, inFlowStep);
+    for (const reply of result.replies) {
+      await this.telegram.sendMessage(user.telegramId, reply);
+    }
+    const key = user.telegramId;
+    if (result.awaitingPeriod) {
+      this.pendingQueries.set(key, {
+        awaitingPeriod: true,
+        count: priorPrompts + 1,
+        lastActivityAt: now.getTime(),
+      });
+    } else {
+      this.pendingQueries.delete(key);
+    }
+  }
+
+  /** Estado pendente da consulta com TTL (llm.md #5); expirado = descartado. */
+  private takePendingQuery(
+    telegramId: string,
+    now: Date,
+  ): { awaitingPeriod: boolean; count: number } | undefined {
+    const pending = this.pendingQueries.get(telegramId);
+    if (!pending) return undefined;
+    if (now.getTime() - pending.lastActivityAt > this.ttlMs) {
+      this.pendingQueries.delete(telegramId);
+      return undefined;
+    }
+    return pending;
+  }
+
+  private async runAgendaQuery(
+    user: BotUser,
+    text: string,
+    offsetMinutes: number,
+    now: Date,
+    inFlowStep: string | undefined,
+  ): Promise<AgendaQueryResult> {
+    try {
+      return await this.agendaQuery.run(user, { text, offsetMinutes, now, inFlowStep });
+    } catch (err) {
+      this.logger.error(`bot: falha na consulta de agenda p/ ${user.id}: ${String(err)}`);
+      return {
+        replies: [
+          'Deu um probleminha aqui do meu lado e eu não consegui consultar 😞 Tenta de novo?',
+        ],
+        awaitingPeriod: false,
+      };
+    }
+  }
+
+  /**
+   * Decisão #5 da Fase 2: depois de responder a consulta com o criar aberto, repete a
+   * pergunta do passo atual (mesmo teclado) sem tocar no candidato. Reusa a máquina
+   * com texto vazio + nenhuma classificação — cada passo re-pergunta a si mesmo.
+   */
+  private async replayCurrentStep(
+    user: BotUser,
+    session: FlowSession,
+    offsetMinutes: number,
+    now: Date,
+  ): Promise<void> {
+    const outcome = await this.machine.handleTurn({
+      session,
+      user,
+      text: '',
+      classified: undefined,
+      existing: [],
+      offsetMinutes,
+      now,
+    });
+    if (outcome.done) this.sessions.delete(user.telegramId);
+    await this.send(user.telegramId, outcome.replies);
   }
 
   /** Criacao via AppointmentsService (mesmo caminho da web, D7). Falha logada, nunca engolida calada. */
@@ -348,7 +482,7 @@ export class SchedulingFlowService {
     }
     const day = label.match(/^(\d{2})\/(\d{2})(?:\/(\d{4}))?$/);
     if (day) {
-      const now = new Date();
+      const now = this.now();
       const year = day[3] ? Number(day[3]) : now.getUTCFullYear();
       await this.handleDayPick(telegramId, { year, month: Number(day[2]), day: Number(day[1]) });
       return;
@@ -365,7 +499,7 @@ export class SchedulingFlowService {
     // resolve hoje/amanha no tz do usuario (deterministico, spec decisao #7).
     try {
       const user = await this.access.requireConfirmedUser(telegramId);
-      const now = new Date();
+      const now = this.now();
       const offset = tzOffsetMinutes(user.timezone, now);
       const shift = label === 'hoje' ? 0 : 1;
       const probe = new Date(now.getTime() + shift * 24 * 60 * 60_000 + offset * 60_000);

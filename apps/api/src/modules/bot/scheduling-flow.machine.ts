@@ -247,7 +247,14 @@ export class SchedulingFlowMachine {
       case 'continuar_fluxo':
       case 'fora_do_escopo':
         return null;
+
+      case 'consultar':
+        // Fase 2, decisão #5: consulta durante o criar é respondida pelo
+        // SchedulingFlowService (borda LLM/banco) e o turno volta ao mesmo passo —
+        // a máquina não tem estado de consulta. null = segue o fluxo do passo.
+        return null;
     }
+    return null;
   }
 
   /** Resposta ao passo atual: o texto do usuario e interpretado como DADO do passo. */
@@ -364,6 +371,10 @@ export class SchedulingFlowMachine {
       }
 
       case 'notas': {
+        // resumo do candidato para a pergunta; texto vazio = replay do passo
+        // (consulta do bot respondida — decisão #5 da Fase 2).
+        const resumo = this.resumo(c, input);
+        const text = input.text.trim();
         // spec 5: "nao"/vazio => null; qualquer outro texto => nota. Ruido puro
         // (texto que nao e nem sim/nao nem nota legivel) re-pergunta a pergunta.
         const yesNo = parseYesNo(text);
@@ -371,9 +382,12 @@ export class SchedulingFlowMachine {
           // ambiguo: aceita como nota apenas texto "substantivo"; re-pergunta ruido curto
           if (text.length <= 3) {
             return {
-              replies: [{ kind: 'text', text: BOT_MESSAGES.pedeNotas(this.resumo(c, input)) }],
+              replies: [{ kind: 'text', text: BOT_MESSAGES.pedeNotas(resumo) }],
             };
           }
+        }
+        if (!text) {
+          return { replies: [{ kind: 'text', text: BOT_MESSAGES.pedeNotas(resumo) }] };
         }
         const notes = parseNotesAnswer(text);
         c.notes = notes;

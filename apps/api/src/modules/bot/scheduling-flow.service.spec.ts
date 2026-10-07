@@ -13,6 +13,9 @@ import type { Env } from '../../config/env.validation';
 
 const USER: BotUser = { id: 'u1', telegramId: '111', timezone: 'America/Sao_Paulo' };
 
+/** Data base do teste: "hoje" determinístico — não depende do relógio real. */
+const TODAY_LOCAL = '2026-10-06';
+
 function make() {
   const sent: string[] = [];
   const access = { requireConfirmedUser: jest.fn().mockResolvedValue(USER) };
@@ -33,6 +36,12 @@ function make() {
     }),
   };
   const prisma = { appointment: { findMany: jest.fn().mockResolvedValue([]) } };
+  const agendaQuery = {
+    run: jest
+      .fn()
+      .mockResolvedValue({ replies: ['Isto é o que você tem hoje:'], awaitingPeriod: false }),
+    closePolitely: jest.fn(() => 'Tanto faz, encerro aqui então 😊'),
+  };
   const config = {
     get: (key: keyof Env) =>
       (
@@ -52,8 +61,11 @@ function make() {
     telegram as never,
     prisma as never,
     config,
+    agendaQuery as never,
   );
-  return { svc, sent, access, classifier, appointments, prisma };
+  // relogio do servico congelado (determinismo do atalho "hoje"/datas UTC)
+  (svc as unknown as { now: () => Date }).now = () => new Date(`${TODAY_LOCAL}T10:00:00Z`);
+  return { svc, sent, access, classifier, appointments, prisma, agendaQuery };
 }
 
 /** Abre o fluxo com intencao `criar` aceita; a fala "Consulta" vira o titulo. */
@@ -103,7 +115,7 @@ describe('SchedulingFlowService (bordas)', () => {
     const m2 = make();
     m2.classifier.classify.mockResolvedValue({ ok: false, reason: 'low_confidence' });
     await m2.svc.handleText('111', 'hmmm');
-    expect(m2.sent.at(-1)).toContain('Não tenho certeza');
+    expect(m2.sent.at(-1)).toContain('não tenho certeza');
     expect(m2.appointments.create).not.toHaveBeenCalled();
   });
 
@@ -177,7 +189,8 @@ describe('SchedulingFlowService (bordas)', () => {
       classifier: { classify: jest.Mock };
     };
     expect(internals.sessions.get('111')?.step).toBe('dia'); // "Consulta" virou o titulo
-    internals.sessions.get('111')!.lastActivityAt = Date.now() - 31 * 60_000; // TTL estourado
+    internals.sessions.get('111')!.lastActivityAt =
+      new Date(`${TODAY_LOCAL}T10:00:00Z`).getTime() - 31 * 60_000; // TTL estourado
 
     m.classifier.classify.mockResolvedValue({ ok: true, intent: 'criar', confidence: 0.9 });
     await m.svc.handleText('111', 'oi de novo');
@@ -185,7 +198,134 @@ describe('SchedulingFlowService (bordas)', () => {
     const fresh = internals.sessions.get('111')!;
     // comecou do zero: a sessao nova nasceu (relogio novo) e o titulo antigo se foi;
     // a fala "oi de novo" virou o titulo do agendamento NOVO (nada do anterior).
-    expect(fresh.lastActivityAt).toBeGreaterThan(Date.now() - 5_000);
+    // (relogio congelado em TODAY_LOCAL 10:00Z — o TTL estourado de antes se foi)
+    expect(fresh.lastActivityAt).toBe(new Date(`${TODAY_LOCAL}T10:00:00Z`).getTime());
     expect(fresh.candidate.title).toBe('oi de novo');
+  });
+
+  // ---------- Fase 2: consulta de agenda sob demanda (spec consultar-agenda-bot) ----------
+
+  it('fora do fluxo: "consultar" NÃO abre o fluxo e responde a agenda (Gherkin Roteamento)', async () => {
+    const m = make();
+    m.classifier.classify.mockResolvedValue({ ok: true, intent: 'consultar', confidence: 0.9 });
+
+    await m.svc.handleText('111', 'o que tenho hoje?');
+
+    expect(m.agendaQuery.run).toHaveBeenCalledTimes(1);
+    expect(m.sent.at(-1)).toContain('Isto é o que você tem hoje:');
+    // a máquina de estados de criar NÃO abriu (nenhuma sessão)
+    const internals = m.svc as unknown as { sessions: Map<string, unknown> };
+    expect(internals.sessions.get('111')).toBeUndefined();
+  });
+
+  it('fora do fluxo: "criar" ainda abre o fluxo normalmente (consulta não captura o turno)', async () => {
+    const m = make();
+    m.classifier.classify.mockResolvedValue({ ok: true, intent: 'criar', confidence: 0.9 });
+
+    await m.svc.handleText('111', 'quero marcar uma consulta');
+
+    const internals = m.svc as unknown as { sessions: Map<string, { step: string }> };
+    expect(internals.sessions.get('111')).toBeDefined();
+    expect(m.agendaQuery.run).not.toHaveBeenCalled();
+  });
+
+  it('dentro do passo "notas": responde a consulta e VOLTA à pergunta de notas (decisão #5)', async () => {
+    const m = make();
+    await openFlow(m);
+    await m.svc.handleText('111', 'hoje'); // dia (atalho)
+    await m.svc.handleText('111', '14:00'); // hora
+    await m.svc.handleText('111', '1h'); // fim -> conflito? nenhum -> notas
+    const internals = m.svc as unknown as {
+      sessions: Map<string, { step: string; candidate: { title?: string } }>;
+    };
+    expect(internals.sessions.get('111')?.step).toBe('notas');
+
+    m.classifier.classify.mockResolvedValue({ ok: true, intent: 'consultar', confidence: 0.9 });
+    m.agendaQuery.run.mockResolvedValue({
+      replies: ['Isto é o que você tem hoje:'],
+      awaitingPeriod: false,
+    });
+    await m.svc.handleText('111', 'o que tenho hoje?');
+
+    // 1) a consulta foi respondida
+    expect(m.sent).toContain('Isto é o que você tem hoje:');
+    // 2) o estado do criar NÃO foi perdido nem reaberto
+    const s = internals.sessions.get('111')!;
+    expect(s).toBeDefined();
+    expect(s.candidate.title).toBe('Consulta');
+    // 3) voltou ao MESMO passo (a pergunta de notas voltou)
+    expect(s.step).toBe('notas');
+    expect(m.sent.at(-1)).toContain('informação importante pra eu anotar');
+  });
+
+  it('dentro do passo "dia": responde a consulta e VOLTA ao teclado de dia (decisão #5)', async () => {
+    const m = make();
+    await openFlow(m); // "Consulta" -> passo dia
+    const internals = m.svc as unknown as {
+      sessions: Map<string, { step: string; candidate: { title?: string } }>;
+    };
+    expect(internals.sessions.get('111')?.step).toBe('dia');
+
+    m.classifier.classify.mockResolvedValue({ ok: true, intent: 'consultar', confidence: 0.9 });
+    m.agendaQuery.run.mockResolvedValue({
+      replies: ['Isto é o que você tem hoje:'],
+      awaitingPeriod: false,
+    });
+    await m.svc.handleText('111', 'o que tenho amanhã?');
+
+    expect(m.sent).toContain('Isto é o que você tem hoje:');
+    const s = internals.sessions.get('111')!;
+    expect(s).toBeDefined();
+    expect(s.candidate.title).toBe('Consulta');
+    expect(s.step).toBe('dia');
+    expect(m.sent.at(-1)).toContain('Em que dia vai ser?');
+  });
+
+  it('pergunta de período: 1ª falha pergunta; "tanto faz" encerra com cancelado (spec #14)', async () => {
+    const m = make();
+    m.classifier.classify.mockResolvedValue({ ok: true, intent: 'consultar', confidence: 0.9 });
+    m.agendaQuery.run.mockResolvedValue({
+      replies: ['Para qual período você quer ver? 📅'],
+      awaitingPeriod: true,
+    });
+
+    await m.svc.handleText('111', 'meus compromissos');
+    expect(m.sent.at(-1)).toContain('Para qual período');
+
+    // desistência por fala natural: cancelado, sem novo LLM/banco
+    const runsBefore = m.agendaQuery.run.mock.calls.length;
+    const classifyBefore = m.classifier.classify.mock.calls.length;
+    await m.svc.handleText('111', 'tanto faz');
+    expect(m.sent.at(-1)).toContain('nada foi salvo');
+    expect(m.agendaQuery.run.mock.calls.length).toBe(runsBefore);
+    expect(m.classifier.classify.mock.calls.length).toBe(classifyBefore);
+  });
+
+  it('pergunta de período: 2ª falha reinterpreta; sem sucesso de novo encerra educadamente (spec #14)', async () => {
+    const m = make();
+    m.classifier.classify.mockResolvedValue({ ok: true, intent: 'consultar', confidence: 0.9 });
+
+    // turno 1: não extraiu período -> pergunta (count 1)
+    m.agendaQuery.run.mockResolvedValue({
+      replies: ['Para qual período você quer ver? 📅'],
+      awaitingPeriod: true,
+    });
+    await m.svc.handleText('111', 'meus compromissos');
+    expect(m.sent.at(-1)).toContain('Para qual período');
+
+    // turno 2 (resposta): reinterpreta (SEM classificar intenção) e falha de novo -> count 2
+    m.agendaQuery.run.mockResolvedValue({
+      replies: ['Para qual período você quer ver? 📅'],
+      awaitingPeriod: true,
+    });
+    await m.svc.handleText('111', 'hmm, assim, uns desses...');
+    expect(m.sent.at(-1)).toContain('Para qual período');
+
+    // turno 3 (3ª vez): encerra educadamente, sem LLM
+    const classifyBefore = m.classifier.classify.mock.calls.length;
+    await m.svc.handleText('111', 'ai, não sei te dizer');
+    expect(m.sent.at(-1)).toContain('encerro aqui');
+    expect(m.classifier.classify.mock.calls.length).toBe(classifyBefore);
+    expect(m.agendaQuery.run).toHaveBeenCalledTimes(2);
   });
 });

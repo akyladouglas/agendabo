@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { classifyIntentSchema, classifyIntentTool } from './classifyIntent';
+import { classifyIntentSchema, classifyIntentTool, INTENTS } from './classifyIntent';
 
 /**
  * Testes de parse da saida do LLM (testing.md nº 2): valido, campo faltando,
@@ -40,13 +40,6 @@ describe('classifyIntentSchema', () => {
 
   it('tool espelha o zod: enum completo e required nos dois campos', () => {
     expect(classifyIntentTool.input_schema.required).toEqual(['intent', 'confidence']);
-    expect(classifyIntentTool.input_schema.properties.intent.enum).toEqual([
-      'criar',
-      'cancelar',
-      'continuar_fluxo',
-      'remarcar',
-      'substituir_atual',
-      'fora_do_escopo',
-    ]);
+    expect(classifyIntentTool.input_schema.properties.intent.enum).toEqual([...INTENTS]);
   });
 });

@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { AnthropicClientProvider } from './anthropic-client.provider';
+import { ConsultaInterpreterService } from './consulta-interpreter.service';
 import { IntentClassifierService } from './intent-classifier.service';
 
 /**
@@ -8,7 +9,7 @@ import { IntentClassifierService } from './intent-classifier.service';
  * para os services de bot/consulta — nunca o SDK cru.
  */
 @Module({
-  providers: [AnthropicClientProvider, IntentClassifierService],
-  exports: [AnthropicClientProvider, IntentClassifierService],
+  providers: [AnthropicClientProvider, IntentClassifierService, ConsultaInterpreterService],
+  exports: [AnthropicClientProvider, IntentClassifierService, ConsultaInterpreterService],
 })
 export class AiModule {}

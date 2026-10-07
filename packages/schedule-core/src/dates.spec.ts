@@ -1,8 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import {
   localTimeOfDayToUtcUtcDay,
+  shiftDayRange,
   userDayRange,
+  userMonthRange,
+  userNextMonthRange,
+  userNextWeekRange,
+  userNextYearRange,
   userWeekRange,
+  userWeekendRange,
+  userYearRange,
   utcToZonedParts,
   zonedTimeToUtc,
 } from './dates';
@@ -57,5 +64,132 @@ describe('janelas do calendario do usuario', () => {
   it('localTimeOfDayToUtcUtcDay resolve "07:00 no timezone do usuario"', () => {
     const at = localTimeOfDayToUtcUtcDay(instant, minus3, '07:00');
     expect(at.toISOString()).toBe('2026-10-05T10:00:00.000Z');
+  });
+});
+
+/**
+ * Janelas relativas dos simbolos de consulta (Fase 2, spec 6/7). Base do Gherkin da
+ * spec: America/Sao_Paulo (-180), agora = qua 07/10/2026 08:00 local (11:00Z).
+ * Tudo meio-aberto, meia-noite LOCAL nas bordas.
+ */
+describe('janelas de consulta (Fase 2) — offset -180, qua 07/10/2026 08:00 local', () => {
+  const now = new Date('2026-10-07T11:00:00Z'); // 08:00 local de 07/10
+  const sp = -180;
+
+  it('shiftDayRange: "amanha" e "depois de amanha" (meia-noite local nas bordas)', () => {
+    expect(shiftDayRange(now, sp, 1).start.toISOString()).toBe('2026-10-08T03:00:00.000Z');
+    expect(shiftDayRange(now, sp, 1).end.toISOString()).toBe('2026-10-09T03:00:00.000Z');
+    expect(shiftDayRange(now, sp, 2).start.toISOString()).toBe('2026-10-09T03:00:00.000Z');
+    expect(shiftDayRange(now, sp, 2).end.toISOString()).toBe('2026-10-10T03:00:00.000Z');
+  });
+
+  it('shiftDayRange: transborda mes (28/10 + 2 => 30/10) e ano (31/12 + 1 => 01/01 ano+1)', () => {
+    const endOfMonth = new Date('2026-10-28T12:00:00Z'); // 09:00 local de 28/10 (quarta)
+    expect(shiftDayRange(endOfMonth, sp, 2).start.toISOString()).toBe('2026-10-30T03:00:00.000Z');
+
+    const newYearsEve = new Date('2026-12-31T15:00:00Z'); // 12:00 local de 31/12/2026
+    expect(shiftDayRange(newYearsEve, sp, 1).start.toISOString()).toBe('2027-01-01T03:00:00.000Z');
+    expect(shiftDayRange(newYearsEve, sp, 1).end.toISOString()).toBe('2027-01-02T03:00:00.000Z');
+  });
+
+  it('shiftDayRange: offset positivo (Lisboa +60) tambem resolve no dia civil local', () => {
+    const lisboa = new Date('2026-10-07T09:00:00Z'); // 10:00 local de 07/10
+    expect(shiftDayRange(lisboa, 60, 1).start.toISOString()).toBe('2026-10-07T23:00:00.000Z'); // 08/10 00:00 local
+    expect(shiftDayRange(lisboa, 60, -1).start.toISOString()).toBe('2026-10-05T23:00:00.000Z'); // 06/10 00:00 local
+  });
+
+  it('userNextWeekRange: semana civil que vem [seg 12/10 00:00, seg 19/10 00:00) local', () => {
+    const { start, end } = userNextWeekRange(now, sp);
+    expect(start.toISOString()).toBe('2026-10-12T03:00:00.000Z');
+    expect(end.toISOString()).toBe('2026-10-19T03:00:00.000Z');
+  });
+
+  it('userMonthRange: "este mes" [01/10 00:00, 01/11 00:00) local', () => {
+    const { start, end } = userMonthRange(now, sp);
+    expect(start.toISOString()).toBe('2026-10-01T03:00:00.000Z');
+    expect(end.toISOString()).toBe('2026-11-01T03:00:00.000Z');
+  });
+
+  it('userNextMonthRange: "mes que vem" [01/11 00:00, 01/12 00:00) local', () => {
+    const { start, end } = userNextMonthRange(now, sp);
+    expect(start.toISOString()).toBe('2026-11-01T03:00:00.000Z');
+    expect(end.toISOString()).toBe('2026-12-01T03:00:00.000Z');
+  });
+
+  it('userNextMonthRange: transborda o ano (dez/2026 => jan..fev/2027)', () => {
+    const december = new Date('2026-12-15T12:00:00Z'); // 09:00 local de 15/12
+    const { start, end } = userNextMonthRange(december, sp);
+    expect(start.toISOString()).toBe('2027-01-01T03:00:00.000Z');
+    expect(end.toISOString()).toBe('2027-02-01T03:00:00.000Z');
+  });
+
+  it('userYearRange: "este ano" [01/01/2026 00:00, 01/01/2027 00:00) local', () => {
+    const { start, end } = userYearRange(now, sp);
+    expect(start.toISOString()).toBe('2026-01-01T03:00:00.000Z');
+    expect(end.toISOString()).toBe('2027-01-01T03:00:00.000Z');
+  });
+
+  it('userNextYearRange: "ano que vem" [01/01/2027 00:00, 01/01/2028 00:00) local', () => {
+    const { start, end } = userNextYearRange(now, sp);
+    expect(start.toISOString()).toBe('2027-01-01T03:00:00.000Z');
+    expect(end.toISOString()).toBe('2028-01-01T03:00:00.000Z');
+  });
+
+  it('userWeekendRange: qui 08/10 => [sab 10/10 00:00, seg 12/10 00:00) local', () => {
+    const thursday = new Date('2026-10-08T11:00:00Z');
+    const { start, end } = userWeekendRange(thursday, sp);
+    expect(start.toISOString()).toBe('2026-10-10T03:00:00.000Z');
+    expect(end.toISOString()).toBe('2026-10-12T03:00:00.000Z');
+  });
+
+  it('userWeekendRange: sabado mesmo dia e domingo => fim de semana corrente', () => {
+    const saturday = new Date('2026-10-10T04:00:00Z'); // 01:00 local de sabado
+    const sunday = new Date('2026-10-11T11:00:00Z'); // 08:00 local de domingo
+    expect(userWeekendRange(saturday, sp).start.toISOString()).toBe('2026-10-10T03:00:00.000Z');
+    // domingo ainda pertence ao fim de semana corrente: [sab 10/10, seg 12/10)
+    expect(userWeekendRange(sunday, sp).start.toISOString()).toBe('2026-10-10T03:00:00.000Z');
+    expect(userWeekendRange(sunday, sp).end.toISOString()).toBe('2026-10-12T03:00:00.000Z');
+  });
+
+  it('userWeekendRange: transborda mes (dom 31/10 => [sab 31/10, seg 02/11)', () => {
+    const sunday = new Date('2026-10-31T11:00:00Z'); // 08:00 local de domingo 31/10
+    const { start, end } = userWeekendRange(sunday, sp);
+    expect(start.toISOString()).toBe('2026-10-31T03:00:00.000Z');
+    expect(end.toISOString()).toBe('2026-11-02T03:00:00.000Z');
+  });
+});
+
+/**
+ * DST norte-americano (offset fixo -150 = EDT, regra do repo ADR-002): as janelas
+ * continuam ancoradas na MEIA-NOITE LOCAL de cada dia. Como o offset e fixo, a
+ * meia-noite local fica sempre a 24h da anterior — o teste garante que nenhum
+ * "24h cegas" escondeu um bug de calendario.
+ */
+describe('janelas de consulta — offset -150 (DST norte-americano)', () => {
+  const us = -150;
+  const wed = new Date('2026-03-11T14:00:00Z'); // 09:00 local de qua 11/03/2026 (sobe DST em 08/03)
+
+  it('shiftDayRange: amanha e depois de amanha ancorados na meia-noite local', () => {
+    expect(shiftDayRange(wed, us, 1).start.toISOString()).toBe('2026-03-12T02:30:00.000Z');
+    expect(shiftDayRange(wed, us, 1).end.toISOString()).toBe('2026-03-13T02:30:00.000Z');
+    expect(shiftDayRange(wed, us, 2).start.toISOString()).toBe('2026-03-13T02:30:00.000Z');
+  });
+
+  it('userNextWeekRange: [seg 16/03, seg 23/03) local', () => {
+    const { start, end } = userNextWeekRange(wed, us);
+    expect(start.toISOString()).toBe('2026-03-16T02:30:00.000Z');
+    expect(end.toISOString()).toBe('2026-03-23T02:30:00.000Z');
+  });
+
+  it('userMonthRange: [01/03 00:00, 01/04 00:00) local', () => {
+    const { start, end } = userMonthRange(wed, us);
+    expect(start.toISOString()).toBe('2026-03-01T02:30:00.000Z');
+    expect(end.toISOString()).toBe('2026-04-01T02:30:00.000Z');
+  });
+
+  it('userYearRange: [01/01/2026 00:00, 01/01/2027 00:00) local', () => {
+    const { start, end } = userYearRange(wed, us);
+    expect(start.toISOString()).toBe('2026-01-01T02:30:00.000Z');
+    expect(end.toISOString()).toBe('2027-01-01T02:30:00.000Z');
   });
 });

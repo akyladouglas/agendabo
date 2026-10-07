@@ -67,6 +67,16 @@ export function parseNotesAnswer(text: string): string | null {
   return stripped.length > 0 ? stripped : t;
 }
 
+/**
+ * Rótulo de "desistência" da consulta ("tanto faz", "tanto", "tanto fez") —
+ * análogo a `givesUp`, específico do turno de consulta (spec Fase 2 #14).
+ * "tanto faz" NÃO é desistência do fluxo de criar (givesUp), só da consulta.
+ */
+export function givesUpQuery(text: string): boolean {
+  const t = normalize(text);
+  return /^(tanto faz|tanto fez|tanto)$/.test(t) || givesUp(text);
+}
+
 /** Escapa texto dinâmico p/ parse_mode HTML do Telegram (gotcha 6). */
 export function escapeHtml(text: string): string {
   return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
@@ -177,4 +187,32 @@ export const BOT_MESSAGES = {
   /** Resposta de alterar fora do vocabulario. */
   alterarNaoEntendido:
     'Não entendi o que alterar 🤔 Responde: título, dia, horário, duração ou notas.',
+
+  // ---------- Fase 2: consulta de agenda sob demanda (spec consultar-agenda-bot) ----------
+
+  /** Spec #9 — cabeçalho repete o período interpretado (o usuário percebe desentendimento). */
+  consultaCabecalho: (periodo: string) => `Isto é o que você tem ${periodo}:`,
+
+  /** Spec #10 — caso vazio: só isso, nada mais. */
+  consultaVazia: 'Você não tem nada nesse período 👌',
+
+  /** Decisão #4 — truncar em 10, nunca cortar mudo. */
+  consultaTruncado: (restante: number) =>
+    `E mais ${restante} compromisso${restante === 1 ? '' : 's'}... quer ver o resto ou buscar um período menor?`,
+
+  /** Decisão #8 — período muito amplo: contagem + oferta de detalhar. */
+  consultaAgregado: (total: number) =>
+    `Você tem ${total} compromisso${total === 1 ? '' : 's'} nesse período. ` +
+    'É muita coisa pra caber numa mensagem — quer ver mês a mês?',
+
+  /** Spec #5 — LLM não devolveu período confiável: pergunta, nunca age no chute. */
+  consultaPerguntaPeriodo:
+    'Para qual período você quer ver? Ex.: hoje, amanhã, semana que vem, de 10 a 12 📅',
+
+  /** Spec #14 — 2× pedido de período sem sucesso: encerra educadamente. */
+  consultaEncerrado:
+    'Tanto faz, encerro aqui então 😊 Quando quiser ver sua agenda de novo, é só perguntar!',
+
+  /** Decisão #3 — compromisso ainda em revisão aparece com o marcador. */
+  consultaMarcadorNeedsReview: '⚠️ conferindo',
 } as const;

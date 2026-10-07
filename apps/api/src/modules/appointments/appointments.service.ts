@@ -6,7 +6,10 @@ import {
   listAppointmentsQuerySchema,
 } from '@agendabo/contracts';
 import { findConflict } from '@agendabo/schedule-core';
-import { Prisma } from '@prisma/client';
+import { AppointmentStatus, Prisma } from '@prisma/client';
+
+/** Alias local do enum Prisma (usado no default de `listOverlapping`). */
+type $AppointmentStatus = AppointmentStatus;
 import { PrismaService } from '../../shared/prisma/prisma.service';
 
 /** Erro de dominio: conflito de horario (1.1). A controller vira 409 com o compromisso que choca. */
@@ -32,6 +35,30 @@ export class AppointmentsService {
       include: { notificationRules: true },
     });
     return { items };
+  }
+
+  /**
+   * Compromissos que TOCAM o intervalo [from, to) — intersecção half-open
+   * `startsAt < to AND endsAt >= from` (Fase 2, spec #8). Diferente da `list` da web
+   * (que usa contenção `startsAt >= from AND endsAt <= to`): um compromisso que
+   * começa antes do período ou termina depois dele também aparece. Ordenado por
+   * `startsAt`. `cancelled` nunca entra (filtro de status, default confirmado+revisão).
+   */
+  async listOverlapping(
+    userId: string,
+    from: Date,
+    to: Date,
+    statuses: readonly $AppointmentStatus[] = ['confirmed', 'needs_review'],
+  ) {
+    return this.prisma.appointment.findMany({
+      where: {
+        userId,
+        startsAt: { lt: to },
+        endsAt: { gte: from },
+        status: { in: [...statuses] },
+      },
+      orderBy: { startsAt: 'asc' },
+    });
   }
 
   async checkConflict(userId: string, raw: unknown) {
