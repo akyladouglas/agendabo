@@ -1,0 +1,71 @@
+<template>
+  <SelectRoot
+    :model-value="props.modelValue"
+    @update:model-value="emit('update:modelValue', String($event))"
+  >
+    <SelectTrigger
+      :id="props.id"
+      :class="
+        cn(
+          'od-move flex h-11 w-full items-center justify-between gap-2 rounded-md border border-border bg-surface px-3 py-2 text-left text-sm text-foreground shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+          props.class,
+        )
+      "
+    >
+      <SelectValue :placeholder="props.placeholder" />
+      <ChevronDown class="h-4 w-4 shrink-0 text-muted-foreground" />
+    </SelectTrigger>
+    <SelectPortal>
+      <SelectContent
+        position="popper"
+        :class="
+          'od-move z-50 max-h-72 min-w-[var(--radix-select-trigger-width)] overflow-hidden rounded-lg border border-border bg-card shadow-xl'
+        "
+      >
+        <SelectViewport class="p-1">
+          <SelectItem
+            v-for="opt in props.options"
+            :key="opt.value"
+            :value="opt.value"
+            class="relative flex min-h-11 cursor-pointer select-none items-center gap-2 rounded-md py-2 pl-8 pr-3 text-sm text-foreground outline-none data-[highlighted]:bg-muted"
+          >
+            <SelectItemIndicator class="absolute left-2 inline-flex items-center">
+              <SelectItemText as-child>
+                <Check class="h-4 w-4 text-primary" />
+              </SelectItemText>
+            </SelectItemIndicator>
+            <SelectItemText>{{ opt.label }}</SelectItemText>
+          </SelectItem>
+        </SelectViewport>
+      </SelectContent>
+    </SelectPortal>
+  </SelectRoot>
+</template>
+
+<script setup lang="ts">
+import {
+  SelectContent,
+  SelectItem,
+  SelectItemIndicator,
+  SelectItemText,
+  SelectPortal,
+  SelectRoot,
+  SelectTrigger,
+  SelectValue,
+  SelectViewport,
+} from 'radix-vue';
+import { Check, ChevronDown } from 'lucide-vue-next';
+import { cn } from '@/app/utils/cn';
+import type { HTMLAttributes } from 'vue';
+
+/** Select acessível (fuso IANA, hora do resumo). Burro: opções por prop. */
+const props = defineProps<{
+  modelValue: string;
+  options: { value: string; label: string }[];
+  placeholder?: string;
+  id?: string;
+  class?: HTMLAttributes['class'];
+}>();
+
+const emit = defineEmits<{ 'update:modelValue': [string] }>();
+</script>

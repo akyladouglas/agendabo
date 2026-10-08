@@ -175,7 +175,7 @@ export class SchedulingFlowService {
   private openFlow(user: BotUser, now: Date): void {
     const fresh = this.machine.newSession(now);
     this.sessions.set(user.telegramId, fresh);
-    void this.send(user.telegramId, this.machine.startReplies());
+    void this.send(user.telegramId, this.machine.startReplies(user.name));
   }
 
   /** Relógio da borda (testes substituem este método p/ determinismo). */

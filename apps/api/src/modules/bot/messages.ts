@@ -83,6 +83,14 @@ export function escapeHtml(text: string): string {
 }
 
 export const BOT_MESSAGES = {
+  /**
+   * Fase 5 (decisão 7): saudação/endereçamento com o nome quando existir.
+   * Sem nome (contas antigas ou usuário não informou) o fallback mantém o texto
+   * vigente — o bot nunca inventa tratamento.
+   */
+  comNome: (name: string | null | undefined, fallback: string, comNome: (n: string) => string) =>
+    name && name.trim() ? comNome(name.trim()) : fallback,
+
   /** Regra 1 — chat nao cadastrado/sem email confirmado: so orientacao de cadastro. */
   cadastroNecessario:
     'Oi! Eu sou o Agendabô👋\n\n' +

@@ -1,4 +1,5 @@
 import { defineConfig } from 'vitest/config';
+import vue from '@vitejs/plugin-vue';
 import { fileURLToPath, URL } from 'node:url';
 
 /**
@@ -12,7 +13,12 @@ const pkgAlias = (pkg: string) => ({
 });
 
 export default defineConfig({
+  // plugin-vue tipado contra o vite 6 do build; o vite 5 do Vitest aceita o mesmo
+  // objeto em runtime — o cast é só para a divergência de tipos não vazar ao vue-tsc.
+  plugins: [vue() as never],
   resolve: {
+    // instância única de vue/vee-validate também nos testes (ver vite.config.ts)
+    dedupe: ['vue', 'vee-validate', '@vee-validate/zod'],
     alias: [
       { find: '@', replacement: fileURLToPath(new URL('./src', import.meta.url)) },
       pkgAlias('contracts'),

@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { isoDateSchema, optionalText } from '../primitives';
-import { notificationRuleInputSchema } from './notification-rule';
+import { notificationRuleInputSchema, notificationRuleSchema } from './notification-rule';
 
 /** `confirmed` = criado com confianca; `needs_review` = LLM nao entendeu, espera correcao no web (3.3). */
 export const appointmentStatusSchema = z.enum(['confirmed', 'needs_review']);
@@ -18,6 +18,8 @@ export const appointmentSchema = z.object({
   notes: z.string().max(2000).nullable(),
   status: appointmentStatusSchema,
   origin: appointmentOriginSchema,
+  /** Regras persistidas (o GET devolve p/ a web editar os chips; ausente = n/d). */
+  notificationRules: z.array(notificationRuleSchema).optional(),
   createdAt: isoDateSchema,
 });
 export type AppointmentDto = z.infer<typeof appointmentSchema>;

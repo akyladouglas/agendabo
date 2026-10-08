@@ -74,7 +74,12 @@ export class DigestSchedulingService {
     now: Date,
   ): Promise<{ materialized: number; jobs: { outboxId: string; firesAt: Date }[] }> {
     const users = await this.prisma.user.findMany({
-      where: { emailConfirmedAt: { not: null }, telegramId: { not: null } },
+      where: {
+        emailConfirmedAt: { not: null },
+        telegramId: { not: null },
+        // resumo desligado no perfil (Aberto #2 → (a)) ⇒ nada é agendado
+        resumoDiarioAtivo: true,
+      },
       select: { id: true, timezone: true, resumoDiarioHora: true },
     });
 

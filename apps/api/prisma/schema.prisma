@@ -52,6 +52,10 @@ model User {
   timezone         String    @default("America/Sao_Paulo")
   /// Hora do resumo diario no fuso do usuario, "HH:mm" (2.1)
   resumoDiarioHora String    @default("07:00")
+  /// Nome como o bot deve chamar o usuario (decisao 7 da spec web; null = sem nome)
+  name             String?
+  /// Resumo diario ligado/desligado (Aberto #2 -> (a): desligado => nada e agendado)
+  resumoDiarioAtivo Boolean  @default(true)
   createdAt        DateTime  @default(now())
   updatedAt        DateTime  @updatedAt
 
@@ -134,17 +138,35 @@ model NotificationOutbox {
   @@map("notification_outbox")
 }
 
+/// Tipo da prova de posse temporaria de email: codigo do cadastro ou token do
+/// reset de senha ("Esqueci a senha" — reuso da tabela, decisao D1 da spec).
+enum VerificationKind {
+  email_verification
+  password_reset
+}
+
 /// Codigo de verificacao de email (3.1.1 / ADR-002): 6 digitos, hash sha256.
+/// Com `kind = password_reset` a mesma tabela guarda o token do magic link do
+/// reset (64 hexchars, hash sha256, TTL 1h, quota 2/10min — spec esqueci-a-senha).
 model VerificationCode {
-  id        String    @id @default(uuid()) @db.Uuid
+  id        String           @id @default(uuid()) @db.Uuid
   email     String
+  /// Hash sha256 do codigo ou do token de reset — o valor cru nunca e gravado.
   codeHash  String
+  kind      VerificationKind @default(email_verification)
   expiresAt DateTime
-  /// Timestamps de cada envio: comprimento no intervalo de 30min = quota de reenvio (max 3)
+  /// Timestamps de cada envio: comprimento no intervalo = quota (3/30min cadastro; 2/10min reset)
   sentAt    DateTime  @default(now())
   usedAt    DateTime?
 
   @@index([email, sentAt])
+  /// Unicidade do token de reset: buscamos o linha por hash no reset, entao o
+  /// hash precisa ser unico — MAS so entre linhas `password_reset` (codigos de
+  /// 6 digitos tem espaco de 1e6 e colidem). `@@unique` do Prisma nao expressa
+  /// indice PARCIAL; a constraint real e o CREATE UNIQUE INDEX ... WHERE criado
+  /// no SQL da migracao password_reset_kind (mesma tecnica do digest do outbox).
+  /// (Nao declarar @@unique aqui: `prisma migrate` tentaria recria-la como total.)
+  @@index([codeHash])
   @@map("verification_codes")
 }
 

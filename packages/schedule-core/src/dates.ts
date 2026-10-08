@@ -93,6 +93,21 @@ export function userNextWeekRange(date: Date, offsetMinutes: number): { start: D
 }
 
 /**
+ * Intervalo half-open da SEMANA CIVIL de `date` deslocada em `shiftWeeks` semanas
+ * (negativo volta semanas; 0 = a semana corrente) — navegação ← hoje → da web
+ * (Fase 5). Deslocar o dia em 7×N dias locais e re-derivar a semana é equivalente a
+ * mover o início da semana em N×7 dias (dias locais com offset fixo — ADR-002), e
+ * transborda mês/ano naturalmente (mesma técnica de `shiftDayRange`).
+ */
+export function shiftWeekRange(
+  date: Date,
+  offsetMinutes: number,
+  shiftWeeks: number,
+): { start: Date; end: Date } {
+  return userWeekRange(new Date(date.getTime() + shiftWeeks * 7 * DAY), offsetMinutes);
+}
+
+/**
  * Intervalo half-open do MES CIVIL que contem `date` no fuso offset:
  * [dia 1 00:00 local, dia 1 00:00 local do mes seguinte) — "este mes".
  */

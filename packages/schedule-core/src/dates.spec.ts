@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   localTimeOfDayToUtcUtcDay,
   shiftDayRange,
+  shiftWeekRange,
   userDayRange,
   userMonthRange,
   userNextMonthRange,
@@ -102,6 +103,47 @@ describe('janelas de consulta (Fase 2) — offset -180, qua 07/10/2026 08:00 loc
     const { start, end } = userNextWeekRange(now, sp);
     expect(start.toISOString()).toBe('2026-10-12T03:00:00.000Z');
     expect(end.toISOString()).toBe('2026-10-19T03:00:00.000Z');
+  });
+
+  it('shiftWeekRange(0) = semana corrente; (1) = userNextWeekRange (Fase 5 — web)', () => {
+    const current = userWeekRange(now, sp);
+    const zero = shiftWeekRange(now, sp, 0);
+    expect(zero).toEqual(current);
+    expect(shiftWeekRange(now, sp, 1)).toEqual(userNextWeekRange(now, sp));
+    expect(zero.start.toISOString()).toBe('2026-10-05T03:00:00.000Z'); // seg 05/10 00:00 local
+  });
+
+  it('shiftWeekRange(-1) volta para a semana anterior [seg 28/09, seg 05/10) local', () => {
+    const { start, end } = shiftWeekRange(now, sp, -1);
+    expect(start.toISOString()).toBe('2026-09-28T03:00:00.000Z');
+    expect(end.toISOString()).toBe('2026-10-05T03:00:00.000Z');
+  });
+
+  it('shiftWeekRange a partir de DOMINGO continua na mesma semana deslocada (semana civil)', () => {
+    const sunday = new Date('2026-10-11T11:00:00Z'); // 08:00 local de domingo 11/10
+    // +1 semana a partir do domingo 11/10 => semana de 12/10..18/10
+    expect(shiftWeekRange(sunday, sp, 1).start.toISOString()).toBe('2026-10-12T03:00:00.000Z');
+    expect(shiftWeekRange(sunday, sp, -1).start.toISOString()).toBe('2026-09-28T03:00:00.000Z');
+  });
+
+  it('shiftWeekRange cruza mês (out -> set e out -> nov) e ano (dez/2026 -> jan/2027)', () => {
+    // qui 01/10/2026 08:00 local: semana = [seg 28/09, seg 05/10); -1 => [21/09, 28/09)
+    const firstOct = new Date('2026-10-01T11:00:00Z');
+    expect(shiftWeekRange(firstOct, sp, -1).start.toISOString()).toBe('2026-09-21T03:00:00.000Z');
+    expect(shiftWeekRange(firstOct, sp, 5).start.toISOString()).toBe('2026-11-02T03:00:00.000Z'); // cruza outubro -> novembro
+
+    // qui 31/12/2026 08:00 local: +1 semana cruza o ANO => [seg 04/01/2027, ...
+    const newYearsEveWeek = new Date('2026-12-31T11:00:00Z');
+    expect(shiftWeekRange(newYearsEveWeek, sp, 1).start.toISOString()).toBe('2027-01-04T03:00:00.000Z');
+    // ...e -1 semana volta para a anterior do mesmo ano [seg 21/12, seg 28/12)
+    expect(shiftWeekRange(newYearsEveWeek, sp, -1).start.toISOString()).toBe('2026-12-21T03:00:00.000Z');
+  });
+
+  it('shiftWeekRange: duração fixa de 7 dias half-open em qualquer deslocamento', () => {
+    for (const shift of [-3, -1, 0, 1, 4]) {
+      const { start, end } = shiftWeekRange(now, sp, shift);
+      expect(end.getTime() - start.getTime()).toBe(7 * 24 * 60 * 60_000);
+    }
   });
 
   it('userMonthRange: "este mes" [01/10 00:00, 01/11 00:00) local', () => {

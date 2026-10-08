@@ -7,6 +7,7 @@ import {
 } from '@agendabo/contracts';
 import { findConflict } from '@agendabo/schedule-core';
 import { AppointmentStatus, type NotificationRuleType, Prisma } from '@prisma/client';
+import type { AppointmentDto } from '@agendabo/contracts';
 
 /** Alias local do enum Prisma (usado no default de `listOverlapping`). */
 type $AppointmentStatus = AppointmentStatus;
@@ -81,44 +82,57 @@ export class AppointmentsService {
   /**
    * Criação (web/bot): N regras + linhas do outbox na MESMA transação (spec regra 6);
    * jobs BullMQ entram na fila SÓ depois do commit (Redis nunca dentro de tx).
-   * Gatilho no passado = zero linhas (silencioso na web — decisão #1 da spec).
+   * Gatilho no passado = zero linhas (descartado pelo schedule-core); a web recebe
+   * `droppedRules` no response p/ avisar o usuário (Fase 5, decisão 3 — ADR-011).
    */
-  async create(userId: string, raw: unknown, options: { origin?: 'bot' | 'web' } = {}) {
+  async create(
+    userId: string,
+    raw: unknown,
+    options: { origin?: 'bot' | 'web' } = {},
+  ): Promise<AppointmentDto & { droppedRules: NotificationRuleType[] }> {
     const input = appointmentInputSchema.parse(raw);
     await this.assertNoConflict(userId, input);
     const now = this.now();
     const hasRules = input.notificationRules.some((r) => r.type !== 'none');
 
-    const { appointment, outboxIds, triggers } = await this.prisma.$transaction(async (tx) => {
-      const created = await tx.appointment.create({
-        data: {
-          ...input,
-          notes: input.notes ?? null,
-          userId,
-          origin: options.origin ?? 'web',
-          status: 'confirmed',
-          notificationRules: { create: input.notificationRules.map(toRuleCreate) },
-        },
-        include: { notificationRules: true },
-      });
-      if (!hasRules) return { appointment: created, outboxIds: [] as string[], triggers: [] };
-      const materialized = await this.outbox.materializeInTx(
-        tx,
-        { id: created.id, userId, startsAt: created.startsAt },
-        input.notificationRules.map((r) => ({
-          type: r.type,
-          value: r.value ?? null,
-        })),
-        now,
-      );
-      return { appointment: created, ...materialized };
-    });
+    const { appointment, outboxIds, triggers, droppedRuleTypes } = await this.prisma.$transaction(
+      async (tx) => {
+        const created = await tx.appointment.create({
+          data: {
+            ...input,
+            notes: input.notes ?? null,
+            userId,
+            origin: options.origin ?? 'web',
+            status: 'confirmed',
+            notificationRules: { create: input.notificationRules.map(toRuleCreate) },
+          },
+          include: { notificationRules: true },
+        });
+        if (!hasRules)
+          return {
+            appointment: created,
+            outboxIds: [] as string[],
+            triggers: [],
+            droppedRuleTypes: [] as NotificationRuleType[],
+          };
+        const materialized = await this.outbox.materializeInTx(
+          tx,
+          { id: created.id, userId, startsAt: created.startsAt },
+          input.notificationRules.map((r) => ({
+            type: r.type,
+            value: r.value ?? null,
+          })),
+          now,
+        );
+        return { appointment: created, ...materialized };
+      },
+    );
 
     await this.outbox.enqueueJobs(
       triggers.map((t, i) => ({ outboxId: outboxIds[i]!, firesAt: t.firesAt })),
       now,
     );
-    return appointment;
+    return { ...appointment, droppedRules: droppedRuleTypes };
   }
 
   /**
@@ -127,7 +141,11 @@ export class AppointmentsService {
    * nascem dos dados novos; jobs antigos na fila viram no-op (regra 12). Edição que
    * não toca em nada disso não mexe no outbox.
    */
-  async update(userId: string, id: string, raw: unknown) {
+  async update(
+    userId: string,
+    id: string,
+    raw: unknown,
+  ): Promise<AppointmentDto & { droppedRules: NotificationRuleType[] }> {
     const patch = appointmentPatchSchema.parse(raw);
     const current = await this.prisma.appointment.findFirst({ where: { id, userId } });
     if (!current) throw new NotFoundException();
@@ -151,43 +169,52 @@ export class AppointmentsService {
           (r) => ({ type: r.type, value: r.value }),
         );
 
-    const { appointment, outboxIds, triggers } = await this.prisma.$transaction(async (tx) => {
-      if (rulesChanged) {
-        await tx.notificationRule.deleteMany({ where: { appointmentId: id } });
-        await tx.notificationRule.createMany({
-          data: patch.notificationRules!.map((r) => ({ appointmentId: id, ...toRuleCreate(r) })),
-        });
-      }
-      let newIds: string[] = [];
-      let newTriggers: { firesAt: Date }[] = [];
-      if (reschedule) {
-        // cancela as pendências antigas na MESMA transação (spec regra 9)
-        await this.outbox.invalidateForAppointment(tx, id);
-        // re-materializa SOMENTE quando o instante ou as regras mudaram (mexer só no
-        // título/notas/fim não recria gatilhos — os `firesAt` continuariam válidos)
-        if (startsAt.getTime() !== current.startsAt.getTime() || rulesChanged) {
-          const materialized = await this.outbox.materializeInTx(
-            tx,
-            { id, userId, startsAt },
-            nextRules.map((r) => ({ type: r.type, value: r.value })),
-            now,
-          );
-          newIds = materialized.outboxIds;
-          newTriggers = materialized.triggers;
+    const { appointment, outboxIds, triggers, droppedRuleTypes } = await this.prisma.$transaction(
+      async (tx) => {
+        if (rulesChanged) {
+          await tx.notificationRule.deleteMany({ where: { appointmentId: id } });
+          await tx.notificationRule.createMany({
+            data: patch.notificationRules!.map((r) => ({ appointmentId: id, ...toRuleCreate(r) })),
+          });
         }
-      }
-      const updated = await tx.appointment.update({
-        where: { id },
-        data: {
-          ...(patch.title !== undefined && { title: patch.title }),
-          ...(patch.notes !== undefined && { notes: patch.notes ?? null }),
-          startsAt,
-          endsAt,
-        },
-        include: { notificationRules: true },
-      });
-      return { appointment: updated, outboxIds: newIds, triggers: newTriggers };
-    });
+        let newIds: string[] = [];
+        let newTriggers: { firesAt: Date }[] = [];
+        let dropped: NotificationRuleType[] = [];
+        if (reschedule) {
+          // cancela as pendências antigas na MESMA transação (spec regra 9)
+          await this.outbox.invalidateForAppointment(tx, id);
+          // re-materializa SOMENTE quando o instante ou as regras mudaram (mexer só no
+          // título/notas/fim não recria gatilhos — os `firesAt` continuariam válidos)
+          if (startsAt.getTime() !== current.startsAt.getTime() || rulesChanged) {
+            const materialized = await this.outbox.materializeInTx(
+              tx,
+              { id, userId, startsAt },
+              nextRules.map((r) => ({ type: r.type, value: r.value })),
+              now,
+            );
+            newIds = materialized.outboxIds;
+            newTriggers = materialized.triggers;
+            dropped = materialized.droppedRuleTypes;
+          }
+        }
+        const updated = await tx.appointment.update({
+          where: { id },
+          data: {
+            ...(patch.title !== undefined && { title: patch.title }),
+            ...(patch.notes !== undefined && { notes: patch.notes ?? null }),
+            startsAt,
+            endsAt,
+          },
+          include: { notificationRules: true },
+        });
+        return {
+          appointment: updated,
+          outboxIds: newIds,
+          triggers: newTriggers,
+          droppedRuleTypes: dropped,
+        };
+      },
+    );
 
     if (reschedule) {
       // Jobs antigos ficam na fila: são no-op garantidos pela linha `cancelled`
@@ -197,7 +224,7 @@ export class AppointmentsService {
         now,
       );
     }
-    return appointment;
+    return { ...appointment, droppedRules: droppedRuleTypes };
   }
 
   /**

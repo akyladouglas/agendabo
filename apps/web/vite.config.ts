@@ -16,6 +16,9 @@ const pkgAlias = (pkg: string) => ({
 export default defineConfig({
   plugins: [vue(), tailwindcss()],
   resolve: {
+    // instância única de vue/vee-validate no dev (evita otimizar duas versões
+    // lado a lado — bug observado: useField de outra cópia ≠ reatividade do app)
+    dedupe: ['vue', 'vee-validate', '@vee-validate/zod'],
     alias: [
       {
         find: '@',
@@ -25,10 +28,18 @@ export default defineConfig({
       pkgAlias('schedule-core'),
     ],
   },
+  optimizeDeps: {
+    include: ['vee-validate', '@vee-validate/zod'],
+  },
   server: {
     port: 5174,
     proxy: {
-      '/api': { target: 'http://localhost:3001', changeOrigin: true },
+      // proxy de dev: API não usa prefixo /api; reescreve antes de ir ao proxy
+      '/api': {
+        target: 'http://localhost:3001',
+        changeOrigin: true,
+        rewrite: (path: string) => path.replace(/^\/api/, ''),
+      },
     },
   },
 });

@@ -120,6 +120,23 @@ O fluxo principal começa no **bot do Telegram**:
 6. **Web — contas**: cadastro, confirmação por código, login.
 7. **Web — agenda**: calendário (mês/semana/dia/ano) + tela de revisão.
 
+### Etapas additions pedidas pelo humano (2026-10-08, ordem: depois das acima)
+
+8. **Mini-fase — "Esqueci a senha"** (reset por magic link): spec aprovada em
+   `.ia/specs/auth/esqueci-a-senha-reset-senha.spec.md`.
+9. **Última etapa — Observabilidade**:
+   - **Erros/ performance da plataforma**: Sentry (ou similar) na API, worker e
+     web — DSN em `.env`, ambiente/release nas events, sem dados pessoais na
+     stack (PII scrubbed).
+   - **Eventos do bot por usuário**: registro estruturado (log JSON / tabela de
+     auditoria) de cada interação do bot — quem (telegramId/userId), o que
+     (intenção/etapa do fluxo), quando, resultado (criou/editou/cancelou/
+     needs_review) — consultável por usuário.
+   - **Custos de IA/LLM**: registrar tokens de entrada/saída e custo estimado por
+     chamada (modelo + usage da resposta da API Anthropic), agregável por usuário
+     e por período, com visão do gasto total.
+   - Decisões não-óbvias (ferramenta, onde mora o registro, retenção) viram ADR.
+
 ## Convenções
 
 - Commits convencionais (commitlint), testes de unidade no domínio (jest no api,

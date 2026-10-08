@@ -5,5 +5,8 @@
 export const qk = {
   me: ['me'] as const,
   appointments: (from: string, to: string) => ['appointments', from, to] as const,
+  /** Prefixo amplo p/ invalidar todas as janelas de uma vez. */
+  appointmentsAll: ['appointments'] as const,
   review: ['review'] as const,
+  profile: ['profile'] as const,
 };

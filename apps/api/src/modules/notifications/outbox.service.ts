@@ -27,6 +27,11 @@ export interface AppointmentWithRules {
 export interface MaterializedTriggers {
   outboxIds: string[];
   triggers: { firesAt: Date; ruleType: NotificationRuleType }[];
+  /**
+   * Regras não-`none` cujos gatilhos caíram no passado e foram descartados
+   * (Fase 5 — decisão 3: web avisa o gatilho retroativo com estes tipos).
+   */
+  droppedRuleTypes: NotificationRuleType[];
 }
 
 /**
@@ -50,6 +55,10 @@ export class OutboxService {
    * `pending` (kind reminder) dentro da MESMA transação do caller. Regras
    * `none`/todas no passado => zero linhas (spec regra 7 / Gherkin regra 4).
    * NÃO enfileira: quem chama chama `enqueueJobs` depois do commit.
+   *
+   * `droppedRuleTypes` (Fase 5, decisão 3 da spec web): regras cujos gatilhos cairam
+   * NO PASSSADO e foram descartados pelo `computeTriggers`. A materialização continua
+   * sendo só daqui (zero regra duplicada na web) — a UI só mostra o aviso.
    */
   async materializeInTx(
     tx: Prisma.TransactionClient,
@@ -57,8 +66,17 @@ export class OutboxService {
     rules: readonly { type: NotificationRuleType; value: number | null }[],
     now: Date,
   ): Promise<MaterializedTriggers> {
-    const triggers = computeTriggers(appointment.startsAt, rules.map(toCoreRule), { now });
-    if (triggers.length === 0) return { outboxIds: [], triggers: [] };
+    const coreRules = rules.map(toCoreRule);
+    const triggers = computeTriggers(appointment.startsAt, coreRules, { now });
+    const fired = new Set(triggers.map((t) => t.ruleType));
+    const droppedRuleTypes = [
+      ...new Set(
+        coreRules
+          .filter((r) => r.type !== 'none' && !fired.has(r.type))
+          .map((r) => r.type as NotificationRuleType),
+      ),
+    ];
+    if (triggers.length === 0) return { outboxIds: [], triggers: [], droppedRuleTypes };
 
     const created = await tx.notificationOutbox.createManyAndReturn({
       data: triggers.map((t) => ({
@@ -72,6 +90,7 @@ export class OutboxService {
     return {
       outboxIds: created.map((row) => row.id),
       triggers: triggers.map((t) => ({ firesAt: t.firesAt, ruleType: t.ruleType })),
+      droppedRuleTypes,
     };
   }
 

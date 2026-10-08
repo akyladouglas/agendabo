@@ -10,7 +10,7 @@ import { BOT_MESSAGES, escapeHtml } from '../bot/messages';
 import { TelegramClientService } from '../../shared/telegram/telegram-client.service';
 import { PrismaService } from '../../shared/prisma/prisma.service';
 import type { Env } from '../../config/env.validation';
-import { buildDigestBody, digestHeaderPtBr } from './digest';
+import { buildDigestBody, digestHeaderPtBr, greetingPtBr } from './digest';
 import type { DispatchJobData } from './outbox.service';
 
 /**
@@ -72,6 +72,8 @@ interface OutboxRow {
     telegramId: string | null;
     emailConfirmedAt: Date | null;
     timezone: string;
+    /** Nome p/ saudação do resumo (decisão 7 da spec web; null = sem nome). */
+    name: string | null;
   };
 }
 
@@ -122,7 +124,15 @@ export class DispatchService {
             status: true,
           },
         },
-        user: { select: { id: true, telegramId: true, emailConfirmedAt: true, timezone: true } },
+        user: {
+          select: {
+            id: true,
+            telegramId: true,
+            emailConfirmedAt: true,
+            timezone: true,
+            name: true,
+          },
+        },
       },
     })) as OutboxRow | null;
     if (!row) return this.noop(job, 'not_found');
@@ -176,7 +186,7 @@ export class DispatchService {
     try {
       const text =
         row.kind === 'daily_digest'
-          ? await this.buildDigestText(row.user.id, row.user.timezone, now)
+          ? await this.buildDigestText(row.user.id, row.user.timezone, now, row.user.name)
           : this.buildReminderText(row, now);
       await this.telegram.sendMessage(row.user.telegramId, text);
       this.attemptCache.delete(row.id);
@@ -236,7 +246,12 @@ export class DispatchService {
    * data — decisão #6). `needs_review` não aparece; dia vazio dos dois
    * = "☀️ Hoje você está livre!" (decisão #5).
    */
-  private async buildDigestText(userId: string, timezone: string, now: Date): Promise<string> {
+  private async buildDigestText(
+    userId: string,
+    timezone: string,
+    now: Date,
+    name: string | null = null,
+  ): Promise<string> {
     const offset = this.offsetProvider(timezone, now);
     const day = userDayRange(now, offset);
     const [appointments, due] = await Promise.all([
@@ -264,6 +279,8 @@ export class DispatchService {
           .filter((d) => d.appointment !== null)
           .map((d) => ({ title: d.appointment!.title, startsAt: d.appointment!.startsAt })),
         header: digestHeaderPtBr(now, offset),
+        // saudação com nome (decisão 7 da spec web): "Bom dia, Ana!" / "Bom dia!"
+        greeting: greetingPtBr(now, offset, name),
         dueHeader: BOT_MESSAGES.resumoVencendoHoje,
         diaLivreText: BOT_MESSAGES.resumoDiaLivre,
       }),

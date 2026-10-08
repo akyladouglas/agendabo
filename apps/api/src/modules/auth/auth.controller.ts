@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  HttpCode,
   HttpException,
   Post,
   Req,
@@ -10,6 +11,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { Request, Response } from 'express';
 import { AuthSignupService, EmailNotConfirmedError } from './auth-signup.service';
+import { AuthPasswordResetService, ResetTokenInvalidError } from './auth-password-reset.service';
 import { REFRESH_COOKIE } from './auth.service';
 import { Public } from './public.decorator';
 import type { Env } from '../../config/env.validation';
@@ -25,6 +27,7 @@ const REFRESH_COOKIE_OPTS = {
 export class AuthController {
   constructor(
     private readonly signupService: AuthSignupService,
+    private readonly passwordResetService: AuthPasswordResetService,
     private readonly config: ConfigService<Env, true>,
   ) {}
 
@@ -35,7 +38,21 @@ export class AuthController {
       return await this.signupService.signup(body);
     } catch (err) {
       if (err instanceof Error && err.constructor.name === 'EmailAlreadyInUseError') {
-        throw new HttpException('Este email ja esta cadastrado', 409);
+        // So conta CONFIRMADA e conflito (pendente retoma o codigo no service).
+        // Message do service e a de dominio; o corpo JSON garante `code` p/ a UI.
+        throw new HttpException(
+          { message: 'Este email ja esta cadastrado', code: 'email_taken' },
+          409,
+        );
+      }
+      if (err instanceof Error && err.constructor.name === 'TelegramAlreadyInUseError') {
+        throw new HttpException(
+          {
+            message: 'Este telegramId ja esta cadastrado em outra conta',
+            code: 'telegram_taken',
+          },
+          409,
+        );
       }
       throw err;
     }
@@ -45,6 +62,44 @@ export class AuthController {
   @Post('resend-code')
   resendCode(@Body() body: unknown) {
     return this.signupService.resendCode(body);
+  }
+
+  /**
+   * POST /auth/forgot-password ("Esqueci a senha"): resposta SEMPRE 202 {},
+   * qualquer que seja o e-mail (anti-enumeration, spec regras 2/8). O service
+   * decide tudo e retorna void; aqui nao ha nenhum `if` de regra.
+   */
+  @Public()
+  @Post('forgot-password')
+  @HttpCode(202)
+  async forgotPassword(@Body() body: unknown): Promise<Record<string, never>> {
+    await this.passwordResetService.requestReset(body);
+    return {};
+  }
+
+  /**
+   * POST /auth/reset-password: 204 vazio no sucesso (sem login automatico);
+   * token inexistente/usado/expirado e TODOS os sabores do mesmo 410 generico
+   * (spec regra 11). 400 zod fica com o ValidationPipe (erro de entrada).
+   */
+  @Public()
+  @Post('reset-password')
+  @HttpCode(204)
+  async resetPassword(@Body() body: unknown): Promise<void> {
+    try {
+      await this.passwordResetService.completeReset(body);
+    } catch (err) {
+      if (err instanceof ResetTokenInvalidError) {
+        throw new HttpException(
+          {
+            message: 'Link inválido ou expirado. Solicite um novo.',
+            code: 'reset_token_invalid',
+          },
+          410,
+        );
+      }
+      throw err;
+    }
   }
 
   @Public()

@@ -88,6 +88,7 @@ function reminderRow(overrides: Record<string, unknown> = {}): Record<string, un
       telegramId: '111',
       emailConfirmedAt: new Date('2026-01-01T00:00:00Z'),
       timezone: 'America/Sao_Paulo',
+      name: null,
     },
     ...overrides,
   };
@@ -188,12 +189,20 @@ describe('DispatchService.dispatch — lembrete', () => {
 });
 
 describe('DispatchService.dispatch — resumo diário', () => {
-  function digestRow() {
+  function digestRow(userOverrides: Record<string, unknown> = {}) {
     return reminderRow({
       kind: 'daily_digest',
       appointment: null,
       ruleType: null,
       firesAt: NOW, // digere p/ teste: disparo exatamente no agora
+      user: {
+        id: 'u1',
+        telegramId: '111',
+        emailConfirmedAt: new Date('2026-01-01T00:00:00Z'),
+        timezone: 'America/Sao_Paulo',
+        name: null,
+        ...userOverrides,
+      },
     });
   }
 
@@ -239,6 +248,42 @@ describe('DispatchService.dispatch — resumo diário', () => {
     const { svc, sent } = make({ outbox: digestRow(), appointments: [], dueReminders: [] });
     await svc.dispatch({ outboxId: 'o1' }, NOW);
     expect(sent[0]!.text).toBe('☀️ Hoje você está livre!');
+  });
+
+  it('resumo com nome: saudação "Bom dia, Ana!" antes do cabeçalho (decisão 7, Fase 5)', async () => {
+    const { svc, sent } = make({
+      outbox: digestRow({ name: 'Ana' }),
+      appointments: [
+        {
+          id: 'a1',
+          title: 'Consulta',
+          startsAt: new Date('2026-10-08T17:00:00Z'),
+          endsAt: new Date('2026-10-08T18:00:00Z'),
+        },
+      ],
+      dueReminders: [],
+    });
+    await svc.dispatch({ outboxId: 'o1' }, NOW); // NOW = 07:00 local => "Bom dia"
+    expect(sent[0]!.text).toContain('Bom dia, Ana!');
+    expect(sent[0]!.text).toContain('📋 Resumo de quinta-feira, 08/10');
+  });
+
+  it('resumo sem nome mantém o texto vigente (fallback da decisão 7)', async () => {
+    const { svc, sent } = make({
+      outbox: digestRow(), // user.name = null
+      appointments: [
+        {
+          id: 'a1',
+          title: 'Consulta',
+          startsAt: new Date('2026-10-08T17:00:00Z'),
+          endsAt: new Date('2026-10-08T18:00:00Z'),
+        },
+      ],
+      dueReminders: [],
+    });
+    await svc.dispatch({ outboxId: 'o1' }, NOW);
+    expect(sent[0]!.text).toContain('Bom dia!');
+    expect(sent[0]!.text).not.toMatch(/Bom dia, /);
   });
 
   it('needs_review não aparece no digest (só confirmed passa no WHERE — spec regra 11)', async () => {

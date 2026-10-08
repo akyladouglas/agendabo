@@ -94,7 +94,7 @@ describe('OutboxService.materializeInTx', () => {
       [{ type: 'none', value: null }],
       NOW,
     );
-    expect(none).toEqual({ outboxIds: [], triggers: [] });
+    expect(none).toEqual({ outboxIds: [], triggers: [], droppedRuleTypes: [] });
 
     const retro = await svc.materializeInTx(
       makeTx() as never,
@@ -103,6 +103,10 @@ describe('OutboxService.materializeInTx', () => {
       NOW,
     );
     expect(retro.triggers).toHaveLength(0);
+    // Fase 5 (decisão 3): a web precisa saber QUAL regra caiu p/ avisar o usuário.
+    expect(retro.droppedRuleTypes).toEqual(['before_days']);
+    // none não é "regra que caiu": nunca aparece no aviso.
+    expect(none.droppedRuleTypes).toEqual([]);
   });
 
   it('multi-regra gera uma linha por gatilho (spec regra 1/6)', async () => {

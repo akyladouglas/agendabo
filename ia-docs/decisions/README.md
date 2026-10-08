@@ -19,6 +19,8 @@ de `Accepted`. Decisão nova que contradiz antiga ganha número novo e campo
 | [0008](pt-br/0008-llm-classifica-intencao-conversa.md)     | LLM classifica a intenção da conversa (sem barra); regras decidem                   | Aceito | 2026-10-06 |
 | [0009](pt-br/0009-worker-notificacoes-processo-proprio.md) | Worker de notificações em processo próprio                                          | Aceito | 2026-10-06 |
 | [0010](pt-br/0010-regua-needs-review-e-cancelar-apagar.md) | Régua do needs_review no criar; cancelar pelo chat apaga; editar nunca vira revisão | Aceito | 2026-10-07 |
+| [0011](pt-br/0011-web-avisa-gatilho-retroativo.md)         | Web avisa gatilho retroativo de lembrete (regra continua única na API)              | Aceito | 2026-10-08 |
+| [0012](pt-br/0012-magic-link-reset-senha.md)               | Magic link no reset de senha (cadastro mantém o código do ADR-003)                  | Aceito | 2026-10-08 |
 
 ## Template
 

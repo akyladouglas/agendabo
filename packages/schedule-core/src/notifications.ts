@@ -63,6 +63,19 @@ export function computeTriggers(
 }
 
 /**
+ * TODOS os disparos teóricos (mesmo dedupe/ordem de `computeTriggers`), incluindo
+ * os que já passaram. Serve às bordas para AVISAR quantos lembretes não vão
+ * disparar (decisão 3 da spec web: web avisa gatilho retroativo; a API continua
+ * sendo a única que decide/materializa). `past = all - computeTriggers`.
+ */
+export function computeAllTriggers(
+  startsAt: Date,
+  rules: readonly NotificationRule[],
+): NotificationTrigger[] {
+  return computeTriggers(startsAt, rules, { now: new Date(Number.MIN_SAFE_INTEGER) });
+}
+
+/**
  * Compromissos do dia civil do usuario (2.1): usa o DESLOCAMENTO UTC observado no
  * instante `now` na IANA `tz` (funcao injetavel para teste — dominio puro nao lida
  * com base de dados de tz). Um "dia" pode ter 23/24/25h de UTC; com deslocamento

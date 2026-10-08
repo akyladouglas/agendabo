@@ -6,8 +6,12 @@ import { authApi, setAccessToken } from '../services/api';
 export interface SessionUser {
   id: string;
   email: string;
+  /** Nome (decisão 7 da spec web); null = conta sem nome. */
+  name: string | null;
   timezone: string;
   resumoDiarioHora: string;
+  /** Resumo diário ligado/desligado (flag `resumoDiarioAtivo`). */
+  resumoDiarioAtivo: boolean;
 }
 
 export const useAuthStore = defineStore('auth', () => {

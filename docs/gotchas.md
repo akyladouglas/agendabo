@@ -49,3 +49,28 @@ o bot repete texto digitado pelo usuario (titulo, notas) nas mensagens; um titul
 **Fix aplicado:** `escapeHtml()` em `modules/bot/messages.ts` aplicado as replies
 em `scheduling-flow.service.send()` (`HTML` e so em rotulos controlados).
 **Se acontecer de novo:** escape todo texto de usuario antes de mandar com parse_mode.
+
+## 7. Vite serve vee-validate em copias multiplas no dev (forms Vue)
+
+**Problema:** no dev server, a pagina importa 'vee-validate' direto e @vee-validate/zod usa
+outra copia otimizada; `useField().value` devolve um Ref aninhado de outro runtime de
+reatividade, o template nunca faz unwrap, e o `validationSchema` valida um form sem
+registro e devolve {} no submit. Acontece no dev E no vitest; dedupe/alias/pin
+(`resolve.dedupe`, `optimizeDeps.include`, versao exata no package.json) NAO resolvem.
+**Fix aplicado:** pages de form usam `useForm({ validate })` (zod safeParse -> map de
+erros) em vez de `validationSchema`; helper `achata()` achata Refs aninhados; bindings
+`:model-value` + `@update:model-value` (nunca v-model); `Input.vue` sincroniza o no DOM
+e repassa onInput; rede de seguranca re-valida com o zod dos contracts no onSubmit.
+**Se acontecer de novo:** nao tente 'consertar' o dedupe; siga o padrao de LoginPage.vue.
+
+## 8. Preencher campo por programa (rascunho) precisa de `initial`, nao de `setValue`
+
+**Problema:** represencar um form por programa (ex.: "Voltar para o cadastro" do
+ConfirmPage) com `useField().setValue()` ANTES da montagem nao chega ao DOM — em DEV
+a copia do form que executa o setup e outra que o template observa, e o `local` do
+`AppInput` (rede de seguranca do gotcha 7) nasce vazio e vence o display.
+**Fix aplicado:** `AppInput` ganha prop `initial` (semente do `local` via
+`watch(immediate)` — lint-clean com vue/no-setup-props); a pagina guarda o rascunho
+em `sessionStorage` (router/index.ts) e passa `:initial` + `setValue` no form.
+**Se acontecer de novo:** o valor programado TEM que chegar no AppInput direto; nunca
+dependa do vee-validate ecoar `setValue` para o template.

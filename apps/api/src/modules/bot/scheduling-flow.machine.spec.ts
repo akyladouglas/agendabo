@@ -18,7 +18,7 @@ const OFFSET = -180;
 const TTL = 30 * 60_000;
 const MIN_CONF = 0.7;
 
-const user: BotUser = { id: 'u1', telegramId: '111', timezone: 'America/Sao_Paulo' };
+const user: BotUser = { id: 'u1', telegramId: '111', timezone: 'America/Sao_Paulo', name: null };
 
 function machine(): SchedulingFlowMachine {
   return new SchedulingFlowMachine(TTL, MIN_CONF);

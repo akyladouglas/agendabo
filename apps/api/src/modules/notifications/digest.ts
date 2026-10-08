@@ -17,6 +17,17 @@ export interface DigestDueReminder {
   startsAt: Date;
 }
 
+/**
+ * Saudação com o nome (Fase 5, decisão 7): "Bom dia, Ana" quando existir;
+ * sem nome mantém o texto vigente ("Bom dia!"). Fuso aplicado por quem chama
+ * (a saudação é montada na borda, onde o offset já é medido).
+ */
+export function greetingPtBr(now: Date, offsetMinutes: number, name: string | null): string {
+  const { hour } = utcToZonedParts(now, offsetMinutes);
+  const word = hour < 12 ? 'Bom dia' : hour < 18 ? 'Boa tarde' : 'Boa noite';
+  return name ? `${word}, ${name}!` : `${word}!`;
+}
+
 const WEEKDAYS = ['dom', 'seg', 'ter', 'qua', 'qui', 'sex', 'sáb'];
 const pad = (n: number) => String(n).padStart(2, '0');
 
@@ -70,12 +81,16 @@ export function buildDigestBody(input: {
   header: string;
   dueHeader: string;
   diaLivreText: string;
+  /** Saudação opcional antes do cabeçalho ("Bom dia, Ana!" — decisão 7, Fase 5). */
+  greeting?: string;
 }): string {
   const { now, offsetMinutes, today, dueReminders } = input;
   if (today.length === 0 && dueReminders.length === 0) return input.diaLivreText;
 
   const day = userDayRange(now, offsetMinutes);
-  const lines: string[] = [input.header, ''];
+  const lines: string[] = [];
+  if (input.greeting) lines.push(input.greeting, '');
+  lines.push(input.header, '');
   for (const a of today) {
     lines.push(
       `• ${dmy(a.startsAt, offsetMinutes)} ${formatTimeRange(a.startsAt, a.endsAt, offsetMinutes)} — ${a.title}`,

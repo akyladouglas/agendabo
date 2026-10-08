@@ -19,6 +19,9 @@ importers:
       lint-staged:
         specifier: ^15.2.10
         version: 15.5.2
+      playwright:
+        specifier: ^1.64.0
+        version: 1.64.0
       prettier:
         specifier: ^3.4.2
         version: 3.9.9
@@ -163,7 +166,7 @@ importers:
         version: 8.71.1(eslint@9.39.5(jiti@2.7.0))(typescript@5.9.3)
       vite-tsconfig-paths:
         specifier: ^5.1.4
-        version: 5.1.4(typescript@5.9.3)(vite@6.4.3(@types/node@22.20.5)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.51.2)(tsx@4.23.15)(yaml@2.9.1))
+        version: 5.1.4(typescript@5.9.3)(vite@5.4.21(@types/node@22.20.5)(lightningcss@1.32.0)(terser@5.51.2))
       vitest:
         specifier: ^2.1.8
         version: 2.1.9(@types/node@22.20.5)(happy-dom@15.11.7)(lightningcss@1.32.0)(terser@5.51.2)
@@ -180,8 +183,8 @@ importers:
         specifier: ^5.62.7
         version: 5.104.1(vue@3.5.43(typescript@5.9.3))
       "@vee-validate/zod":
-        specifier: ^4.15.0
-        version: 4.15.1(vue@3.5.43(typescript@5.9.3))(zod@3.25.76)
+        specifier: 4.15.0
+        version: 4.15.0(vue@3.5.43(typescript@5.9.3))(zod@3.25.76)
       "@vueuse/core":
         specifier: ^12.0.0
         version: 12.8.2(typescript@5.9.3)
@@ -207,8 +210,8 @@ importers:
         specifier: ^2.5.5
         version: 2.6.1
       vee-validate:
-        specifier: ^4.15.0
-        version: 4.15.1(vue@3.5.43(typescript@5.9.3))
+        specifier: 4.15.0
+        version: 4.15.0(vue@3.5.43(typescript@5.9.3))
       vue:
         specifier: ^3.5.13
         version: 3.5.43(typescript@5.9.3)
@@ -2814,10 +2817,10 @@ packages:
       }
     engines: { node: ^18.18.0 || ^20.9.0 || >=21.1.0 }
 
-  "@vee-validate/zod@4.15.1":
+  "@vee-validate/zod@4.15.0":
     resolution:
       {
-        integrity: sha512-329Z4TDBE5Vx0FdbA8S4eR9iGCFFUNGbxjpQ20ff5b5wGueScjocUIx9JHPa79LTG06RnlUR4XogQsjN4tecKA==,
+        integrity: sha512-MpvIKiyg9X5yD8bJW0no2AU7wtR2T5mrvD9tuPRiie951sU2n6QKgMV38qKKOiqFBCxsMSjIuLLLV3V5kVE4nQ==,
       }
     peerDependencies:
       zod: ^3.24.0
@@ -7141,6 +7144,22 @@ packages:
         integrity: sha512-j/lCFdcppV0JxWpCEITdbDltBxPP6cHT+yNJ6Go2OgoSA9518X847X9z0p6LtA4Nc16+eQzCZjRrWanTGvHJ5w==,
       }
 
+  playwright-core@1.64.0:
+    resolution:
+      {
+        integrity: sha512-T9r+MZkTECl2+oUcZ26YgZzTrYidTsIhYYkJix+6iDOymOb1FB2RLLSOxRGnZGv5DStt+aduIVbt+E8WygXYpg==,
+      }
+    engines: { node: ">=20" }
+    hasBin: true
+
+  playwright@1.64.0:
+    resolution:
+      {
+        integrity: sha512-kVzTnYFYEyQ9RGzBjNCd2+yEqWmVbxl3AHPynv3qQ6JTjv4a+kwRcnqQwIpuP3NnrnIrE/Q6wWAIAvMfIE2/Yg==,
+      }
+    engines: { node: ">=20" }
+    hasBin: true
+
   pluralize@8.0.0:
     resolution:
       {
@@ -8397,10 +8416,10 @@ packages:
       }
     engines: { node: ">= 0.8" }
 
-  vee-validate@4.15.1:
+  vee-validate@4.15.0:
     resolution:
       {
-        integrity: sha512-DkFsiTwEKau8VIxyZBGdO6tOudD+QoUBPuHj3e6QFqmbfCRj1ArmYWue9lEp6jLSWBIw4XPlDLjFIZNLdRAMSg==,
+        integrity: sha512-PGJh1QCFwCBjbHu5aN6vB8macYVWrajbDvgo1Y/8fz9n/RVIkLmZCJDpUgu7+mUmCOPMxeyq7vXUOhbwAqdXcA==,
       }
     peerDependencies:
       vue: ^3.4.26
@@ -10350,10 +10369,10 @@ snapshots:
       "@typescript-eslint/types": 8.71.1
       eslint-visitor-keys: 5.0.1
 
-  "@vee-validate/zod@4.15.1(vue@3.5.43(typescript@5.9.3))(zod@3.25.76)":
+  "@vee-validate/zod@4.15.0(vue@3.5.43(typescript@5.9.3))(zod@3.25.76)":
     dependencies:
       type-fest: 4.41.0
-      vee-validate: 4.15.1(vue@3.5.43(typescript@5.9.3))
+      vee-validate: 4.15.0(vue@3.5.43(typescript@5.9.3))
       zod: 3.25.76
     transitivePeerDependencies:
       - vue
@@ -10953,7 +10972,7 @@ snapshots:
       dotenv: 16.6.1
       exsolve: 1.1.3
       giget: 2.0.0
-      jiti: 2.6.1
+      jiti: 2.7.0
       ohash: 2.0.12
       pathe: 2.0.3
       perfect-debounce: 1.0.0
@@ -13160,6 +13179,12 @@ snapshots:
       exsolve: 1.1.3
       pathe: 2.0.3
 
+  playwright-core@1.64.0: {}
+
+  playwright@1.64.0:
+    dependencies:
+      playwright-core: 1.64.0
+
   pluralize@8.0.0: {}
 
   postcss-selector-parser@6.1.4:
@@ -13857,7 +13882,7 @@ snapshots:
 
   vary@1.1.2: {}
 
-  vee-validate@4.15.1(vue@3.5.43(typescript@5.9.3)):
+  vee-validate@4.15.0(vue@3.5.43(typescript@5.9.3)):
     dependencies:
       "@vue/devtools-api": 7.7.10
       type-fest: 4.41.0
@@ -13899,13 +13924,13 @@ snapshots:
       - supports-color
       - terser
 
-  vite-tsconfig-paths@5.1.4(typescript@5.9.3)(vite@6.4.3(@types/node@22.20.5)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.51.2)(tsx@4.23.15)(yaml@2.9.1)):
+  vite-tsconfig-paths@5.1.4(typescript@5.9.3)(vite@5.4.21(@types/node@22.20.5)(lightningcss@1.32.0)(terser@5.51.2)):
     dependencies:
       debug: 4.4.3
       globrex: 0.1.2
       tsconfck: 3.1.6(typescript@5.9.3)
     optionalDependencies:
-      vite: 6.4.3(@types/node@22.20.5)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.51.2)(tsx@4.23.15)(yaml@2.9.1)
+      vite: 5.4.21(@types/node@22.20.5)(lightningcss@1.32.0)(terser@5.51.2)
     transitivePeerDependencies:
       - supports-color
       - typescript

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { appointmentsOnUserDay, computeTriggers, minutesBeforeFor } from './notifications';
+import { appointmentsOnUserDay, computeAllTriggers, computeTriggers, minutesBeforeFor } from './notifications';
 
 const now = new Date('2026-10-05T12:00:00Z');
 const startsAt = new Date('2026-10-10T17:00:00Z'); // compromisso futuro
@@ -98,6 +98,28 @@ describe('computeTriggers (deterministico, a partir de startsAt UTC)', () => {
       now,
     });
     expect(t).toEqual([]);
+  });
+});
+
+describe('computeAllTriggers (disparos teoricos, incluindo passados)', () => {
+  it('inclui disparos no passado que computeTriggers descartaria', () => {
+    const past = new Date('2026-10-01T17:00:00Z'); // comeca antes de agora
+    const rules = [{ type: 'before_days', days: 3 }, { type: 'before_hours', hours: 1 }];
+    const future = computeTriggers(past, rules, { now });
+    const all = computeAllTriggers(past, rules);
+    expect(all).toHaveLength(2); // 3 dias antes e 1h antes — ambos ja passaram
+    expect(future).toHaveLength(0);
+  });
+
+  it('mesmo dedupe do computeTriggers (24h antes colapsa com 1 dia da contagem)', () => {
+    const rules = [{ type: 'countdown_3_2_1' }, { type: 'before_days', days: 1 }];
+    const all = computeAllTriggers(startsAt, rules);
+    expect(all.map((x) => iso(x.firesAt))).toEqual([
+      '2026-10-07T17:00:00.000Z',
+      '2026-10-08T17:00:00.000Z',
+      '2026-10-09T17:00:00.000Z',
+    ]);
+    expect(all).toHaveLength(3); // 4 regras-expandidas -> 3 instantes unicos
   });
 });
 

@@ -1,4 +1,4 @@
-﻿import { ForbiddenException } from '@nestjs/common';
+import { ForbiddenException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { SchedulingFlowService } from './scheduling-flow.service';
 import type { BotUser } from './bot-access.service';
@@ -11,7 +11,7 @@ import type { Env } from '../../config/env.validation';
  * origin bot (spec 6/18), TTL da sessao (spec 15).
  */
 
-const USER: BotUser = { id: 'u1', telegramId: '111', timezone: 'America/Sao_Paulo' };
+const USER: BotUser = { id: 'u1', telegramId: '111', timezone: 'America/Sao_Paulo', name: null };
 
 /** Data base do teste: "hoje" determinístico — não depende do relógio real. */
 const TODAY_LOCAL = '2026-10-06';

@@ -1,25 +1,139 @@
 @import 'tailwindcss';
 
-@theme {
-  --radius: 0.5rem;
-  --color-background: #0b0e14;
-  --color-foreground: #e6e9ef;
-  --color-card: #131722;
-  --color-card-foreground: #e6e9ef;
-  --color-muted: #1a2030;
-  --color-muted-foreground: #8b93a7;
-  --color-border: #232a3b;
-  --color-primary: #4f7cff;
-  --color-primary-foreground: #ffffff;
-  --color-destructive: #ef4444;
-  --color-ring: #4f7cff;
+/*
+ * Tokens do protótipo OpenDesign (decisão 9/10 da spec web) — TEMA ESCURO É O
+ * DEFAULT. As classes utilitárias do Tailwind (`bg-background`, `text-muted`…) são
+ * geradas de `@theme inline`, que resolve em `var(...)` EM TEMPO DE USO: assim um
+ * `[data-theme]` no <html> troca o tema inteiro sem recompilar CSS.
+ */
+
+/* Escuro (default) + claro via [data-theme=light]. Prefers-color-scheme é aplicado
+ * pelo themeStore na primeira carga (o toggle persistido manda). */
+:root,
+[data-theme='dark'] {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface-2: #1f2630;
+  --border: #2d3542;
+  --text: #e9edf3;
+  --text-muted: #98a4b5;
+  --primary: #4acc8a;
+  --primary-foreground: #06130c;
+  --danger: #ff7b72;
+  --danger-foreground: #2a0b08;
+  --warning: #e3b341;
+  --warning-foreground: #241a04;
+  --info: #6cb6ff;
+  --info-foreground: #071b30;
+  color-scheme: dark;
 }
 
-:root {
-  color-scheme: dark;
+[data-theme='light'] {
+  --bg: #f6f8fa;
+  --surface: #ffffff;
+  --surface-2: #eef1f5;
+  --border: #d7dee6;
+  --text: #182430;
+  --text-muted: #5b6675;
+  --primary: #157a4e;
+  --primary-foreground: #ffffff;
+  --danger: #c0392b;
+  --danger-foreground: #ffffff;
+  --warning: #9a6b00;
+  --warning-foreground: #ffffff;
+  --info: #1f5fbf;
+  --info-foreground: #ffffff;
+  color-scheme: light;
+}
+
+@theme inline {
+  --radius: 0.5rem;
+
+  --color-background: var(--bg);
+  --color-foreground: var(--text);
+  --color-card: var(--surface);
+  --color-card-foreground: var(--text);
+  --color-surface-2: var(--surface-2);
+  --color-muted: var(--surface-2);
+  --color-muted-foreground: var(--text-muted);
+  --color-border: var(--border);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-destructive: var(--danger);
+  --color-danger: var(--danger);
+  --color-warning: var(--warning);
+  --color-info: var(--info);
+  --color-ring: var(--primary);
+
+  /* movimento (regra 16c): 150/220/320ms — ease-out entra, ease-in sai */
+  --animate-pulse-soft: od-pulse 1.4s ease-in-out infinite;
+
+  @keyframes od-pulse {
+    0%,
+    100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.45;
+    }
+  }
+}
+
+html {
+  font-family: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+}
+
+/* Títulos: Space Grotesk com fallback de sistema (decisão 10 — rede pode falhar;
+ * a tipografia nunca é pré-requisito de legibilidade). */
+.font-heading,
+h1,
+h2,
+h3 {
+  font-family: 'Space Grotesk', ui-sans-serif, system-ui, sans-serif;
+}
+
+/* Título de página clamp(22–30px) e de modal 19px (mock). */
+.title-page {
+  font-size: clamp(22px, 2.2vw + 16px, 30px);
+  line-height: 1.2;
+  font-weight: 700;
+}
+.title-modal {
+  font-size: 19px;
+  line-height: 1.3;
+  font-weight: 600;
 }
 
 body {
   @apply bg-background text-foreground antialiased;
-  font-family: ui-sans-serif, system-ui, sans-serif;
+}
+
+/* Horários: dígitos tabulares e sem quebra (mock: `14:00–15:00` nunca quebra). */
+.od-nowrap {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Transições utilitárias do tema (150ms). Respeita prefers-reduced-motion. */
+.od-move {
+  transition-duration: 150ms;
+  transition-timing-function: ease-out;
+  transition-property: color, background-color, border-color, opacity, transform;
+}
+
+/* Botões: cursor pointer (o reset do Tailwind v4 zera o cursor dos botões). */
+button,
+[role=button] {
+  cursor: pointer;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  ::before,
+  ::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }

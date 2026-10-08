@@ -11,7 +11,6 @@ export const http = axios.create({
 });
 
 let accessToken: string | null = null;
-let refreshPromise: Promise<string | null> | null = null;
 
 export function setAccessToken(token: string | null): void {
   accessToken = token;
@@ -36,24 +35,21 @@ http.interceptors.response.use(
 );
 
 async function refreshOnce(): Promise<string | null> {
-  refreshPromise ??= (async () => {
-    try {
-      const { data } = await axios.post<{ accessToken: string }>(
-        `${env.apiBaseUrl}/auth/refresh`,
-        {},
-        { withCredentials: true },
-      );
-      accessToken = data.accessToken;
-      return data.accessToken;
-    } catch {
-      accessToken = null;
-      return null;
-    } finally {
-      // libere a promise deduplicada no proximo tick
-      setTimeout(() => (refreshPromise = null), 0);
-    }
-  })();
-  return refreshPromise;
+  // NUNCA deduplicar com ??= aqui: se a promise de bootstrap (sessão morta no boot)
+  // for reusada depois de um login novo, o 401 pós-login "refresha" com o cookie
+  // PRÉ-LOGIN e o next() do guard roda antes do token novo — login não navega.
+  try {
+    const { data } = await axios.post<{ accessToken: string }>(
+      `${env.apiBaseUrl}/auth/refresh`,
+      {},
+      { withCredentials: true },
+    );
+    accessToken = data.accessToken;
+    return data.accessToken;
+  } catch {
+    accessToken = null;
+    return null;
+  }
 }
 
 export const authApi = {
@@ -72,4 +68,11 @@ export const authApi = {
       })
       .then((r) => r.data),
   logout: () => http.post('/auth/logout').then((r) => r.data),
+  /**
+   * "Esqueci a senha" (spec esqueci-a-senha): a resposta é 202 uniforme para
+   * QUALQUER e-mail — a UI mostra o mesmo estado neutro independentemente do resultado.
+   */
+  forgotPassword: (body: unknown) => http.post('/auth/forgot-password', body).then((r) => r.status),
+  /** POST /auth/reset-password: 204 no sucesso; 410 `reset_token_invalid` genérico. */
+  resetPassword: (body: unknown) => http.post('/auth/reset-password', body).then((r) => r.status),
 };

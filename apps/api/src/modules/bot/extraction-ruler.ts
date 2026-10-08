@@ -1,18 +1,18 @@
 import { isValidDate, utcToZonedParts, zonedTimeToUtc } from '@agendabo/schedule-core';
 
 /**
- * A RÃ‰GUA da Fase 4 (spec llm-avancado regra 6 / D1 do plano) â€” domÃ­nio PURO do bot.
- * O LLM jÃ¡ passou pelo safeParse do zod na borda (modules/ai); aqui a rÃ©gua decide o
- * VEREDITO do candidato extraÃ­do: aceitar, mandar pra revisÃ£o, ou re-perguntar.
- * O modelo nunca confirma nada â€” datas viram instantes SÃ“ aqui, com o offset validado
- * contra o tz real da conta (ADR-002: inconsistÃªncia de offset = falha).
+ * A RÉGUA da Fase 4 (spec llm-avancado regra 6 / D1 do plano) — domínio PURO do bot.
+ * O LLM já passou pelo safeParse do zod na borda (modules/ai); aqui a régua decide o
+ * VEREDITO do candidato extraído: aceitar, mandar pra revisão, ou re-perguntar.
+ * O modelo nunca confirma nada — datas viram instantes SÓ aqui, com o offset validado
+ * contra o tz real da conta (ADR-002: inconsistência de offset = falha).
  *
- * A polÃ­tica de cada veredito Ã© do caller (especulaÃ§Ã£o deliberada da regra 6):
- *  - criar:  fraco/suspeito â‡’ needs_review; sem_quando/falhou â‡’ fluxo guiado;
- *  - editar: QUALQUER veredito nÃ£o-aceito â‡’ re-pergunta; NUNCA needs_review (regra 20).
+ * A política de cada veredito é do caller (especulação deliberada da regra 6):
+ *  - criar:  fraco/suspeito ⇒ needs_review; sem_quando/falhou ⇒ fluxo guiado;
+ *  - editar: QUALQUER veredito não-aceito ⇒ re-pergunta; NUNCA needs_review (regra 20).
  */
 
-/** Payload bruto da tool `extrair_agendamento` (strip do zod jÃ¡ aplicado na borda). */
+/** Payload bruto da tool `extrair_agendamento` (strip do zod já aplicado na borda). */
 export interface ExtracaoPayloadBruto {
   title: string;
   startsAt: string;
@@ -21,7 +21,7 @@ export interface ExtracaoPayloadBruto {
   dateEvidence?: string;
 }
 
-/** Payload bruto da tool `interpretar_pedido_edicao` (sÃ³ o quando novo importa aqui). */
+/** Payload bruto da tool `interpretar_pedido_edicao` (só o quando novo importa aqui). */
 export interface EdicaoPayloadBruto {
   acao: 'editar' | 'cancelar';
   confidence: number;
@@ -34,11 +34,11 @@ export interface EdicaoPayloadBruto {
 export interface ExtracaoInput {
   minConfidence: number;
   now: Date;
-  /** Offset do tz do usuÃ¡rio (minutos leste de UTC) â€” medido na borda (ADR-002). */
+  /** Offset do tz do usuário (minutos leste de UTC) — medido na borda (ADR-002). */
   offsetMinutes: number;
 }
 
-/** Candidato materializado pela rÃ©gua (datas em instantes UTC â€” nada de calendÃ¡rio aqui). */
+/** Candidato materializado pela régua (datas em instantes UTC — nada de calendário aqui). */
 export interface ExtracaoCandidato {
   title: string;
   startUtc: Date;
@@ -47,27 +47,27 @@ export interface ExtracaoCandidato {
 }
 
 export type ExtracaoVeredito =
-  /** confianÃ§a â‰¥ limiar, datas vÃ¡lidas e futuras â‡’ segue confirmado (atalho do criar). */
+  /** confiança ≥ limiar, datas válidas e futuras ⇒ segue confirmado (atalho do criar). */
   | { verdict: 'aceito'; candidate: ExtracaoCandidato }
   /**
-   * quando utilizÃ¡vel, mas o "dia" ainda Ã© calendÃ¡rio (sem hora) â‡’ preenche o que tem e
-   * o fluxo pergunta sÃ³ o que falta (decisÃ£o #5 da spec). `day` Ã© calendÃ¡rio local do
-   * usuÃ¡rio derivado do instante que a BORDA resolveu (o modelo nÃ£o faz calendÃ¡rio).
+   * quando utilizável, mas o "dia" ainda é calendário (sem hora) ⇒ preenche o que tem e
+   * o fluxo pergunta só o que falta (decisão #5 da spec). `day` é calendário local do
+   * usuário derivado do instante que a BORDA resolveu (o modelo não faz calendário).
    */
   | { verdict: 'quando_parcial'; title: string; day: { year: number; month: number; day: number } }
-  /** confianÃ§a baixa COM tÃ­tulo+inÃ­cio â‡’ candidato plausÃ­vel: needs_review no criar. */
+  /** confiança baixa COM título+início ⇒ candidato plausível: needs_review no criar. */
   | { verdict: 'fraco'; candidate: ExtracaoCandidato; reviewReason: string }
-  /** aceito-no-passado: plausÃ­vel mas nunca em silÃªncio â‡’ needs_review "suspeito". */
+  /** aceito-no-passado: plausível mas nunca em silêncio ⇒ needs_review "suspeito". */
   | { verdict: 'suspeito'; candidate: ExtracaoCandidato; reviewReason: string }
-  /** falou de quando mas nada utilizÃ¡vel (ilegÃ­vel/sem offset) â‡’ re-pergunta. */
+  /** falou de quando mas nada utilizável (ilegível/sem offset) ⇒ re-pergunta. */
   | { verdict: 'sem_quando' }
-  /** payload incoerente (tÃ­tulo vazio) â‡’ cai no guiado no ponto do dado faltante. */
+  /** payload incoerente (título vazio) ⇒ cai no guiado no ponto do dado faltante. */
   | { verdict: 'invalido'; reason: 'sem_titulo' };
 
 export type EdicaoVeredito =
-  /** horÃ¡rio novo utilizÃ¡vel (novoStartUtc resolvido) OU delta a aplicar (applyShift). */
+  /** horário novo utilizável (novoStartUtc resolvido) OU delta a aplicar (applyShift). */
   | { verdict: 'ok'; novoStartUtc?: Date; novaDuracaoMin?: number; deslocamentoMin?: number }
-  /** re-pergunta o horÃ¡rio novo; NUNCA persiste nada (spec regra 20). */
+  /** re-pergunta o horário novo; NUNCA persiste nada (spec regra 20). */
   | {
       verdict: 'reperguntar';
       reason: 'sem_quando' | 'offset_inconsistente' | 'confianca_baixa' | 'data_no_passado';
@@ -77,7 +77,7 @@ const ISO_OFFSET_RE =
   /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}(?:\.\d{1,3})?))?(Z|[+-]\d{2}:\d{2})$/;
 const DEFAULT_DURATION_MIN = 60; // default da borda (documentado no contrato do schema)
 
-/** Offset (minutos leste de UTC) embutido num ISO-8601; null = sem offset utilizÃ¡vel. */
+/** Offset (minutos leste de UTC) embutido num ISO-8601; null = sem offset utilizável. */
 function offsetOf(iso: string): number | null {
   const m = ISO_OFFSET_RE.exec(iso);
   if (!m) return null;
@@ -86,7 +86,7 @@ function offsetOf(iso: string): number | null {
   const sign = tz[0] === '-' ? -1 : 1;
   const [, , oh, om] = /^([+-])(\d{2}):(\d{2})$/.exec(tz) ?? [];
   if (oh === undefined || om === undefined) return null;
-  // oh/om sÃ£o SEMPRE positivos no ISO-8601 (-03:00 â‡’ oh "03"); o sinal vem do prefixo.
+  // oh/om são SEMPRE positivos no ISO-8601 (-03:00 ⇒ oh "03"); o sinal vem do prefixo.
   return sign * (Number(oh) * 60 + Number(om));
 }
 
@@ -96,15 +96,15 @@ function resolveInstante(
   offsetMinutes: number,
 ): { startUtc: Date; offsetOk: boolean } | null {
   const embedded = offsetOf(iso);
-  if (embedded === null) return null; // sem offset â‡’ a borda nÃ£o sabe o tz (spec regra 3)
+  if (embedded === null) return null; // sem offset ⇒ a borda não sabe o tz (spec regra 3)
   const startUtc = new Date(iso);
   if (!isValidDate(startUtc)) return null;
   return { startUtc, offsetOk: embedded === offsetMinutes };
 }
 
 /**
- * RÃ©gua do CRIAR (coraÃ§Ã£o da spec). O safeParse do zod jÃ¡ garante regex do startsAt;
- * aqui entra a segunda barreira: offset â†” tz da conta, validade do instante e futuro.
+ * Régua do CRIAR (coração da spec). O safeParse do zod já garante regex do startsAt;
+ * aqui entra a segunda barreira: offset ↔ tz da conta, validade do instante e futuro.
  */
 export function classificarExtracao(
   payload: ExtracaoPayloadBruto,
@@ -115,8 +115,8 @@ export function classificarExtracao(
 
   const instant = resolveInstante(payload.startsAt, input.offsetMinutes);
   if (!instant) {
-    // "quando" mencionado mas ilegÃ­vel/sem offset â‡’ hipÃ³tese nenhuma p/ persistir:
-    // re-pergunta (a conversa estÃ¡ viva â€” divergÃªncia de llm.md #2 documentada no ADR-010).
+    // "quando" mencionado mas ilegível/sem offset ⇒ hipótese nenhuma p/ persistir:
+    // re-pergunta (a conversa está viva — divergência de llm.md #2 documentada no ADR-010).
     return { verdict: 'sem_quando' };
   }
   if (!instant.offsetOk) {
@@ -134,7 +134,7 @@ export function classificarExtracao(
 
   if (!confident) return { verdict: 'fraco', candidate, reviewReason: 'confianca_baixa' };
   if (instant.startUtc.getTime() < input.now.getTime()) {
-    // aceito-no-passado: pode ser registro legÃ­timo, mas nunca em silÃªncio (spec regra 6).
+    // aceito-no-passado: pode ser registro legítimo, mas nunca em silêncio (spec regra 6).
     return { verdict: 'suspeito', candidate, reviewReason: 'data_no_passado' };
   }
   return { verdict: 'aceito', candidate };
@@ -155,8 +155,8 @@ function materialize(
 }
 
 /**
- * RÃ©gua do QUANDO do EDITAR (mesma rÃ©gua, polÃ­tica outra â€” spec regras 6/10/20):
- * tudo que nÃ£o for `ok` vira RE-PERGUNTA no fluxo; nada Ã© persistido.
+ * Régua do QUANDO do EDITAR (mesma régua, política outra — spec regras 6/10/20):
+ * tudo que não for `ok` vira RE-PERGUNTA no fluxo; nada é persistido.
  */
 export function classificarEdicao(
   payload: EdicaoPayloadBruto,
@@ -179,8 +179,8 @@ export function classificarEdicao(
     };
   }
   if (payload.deslocamentoMin !== undefined) {
-    // delta Ã© aritmÃ©tica determinÃ­stica (applyShift na candidata) â€” a confianÃ§a do
-    // interpretador cobre a leitura ("adianta" vs "atrasa"), nÃ£o o cÃ¡lculo.
+    // delta é aritmética determinística (applyShift na candidata) — a confiança do
+    // interpretador cobre a leitura ("adianta" vs "atrasa"), não o cálculo.
     if (!confident) return { verdict: 'reperguntar', reason: 'confianca_baixa' };
     return {
       verdict: 'ok',
@@ -188,8 +188,8 @@ export function classificarEdicao(
       ...(payload.novaDuracaoMin ? { novaDuracaoMin: payload.novaDuracaoMin } : {}),
     };
   }
-  // sem horÃ¡rio novo na fala: quem chama decide (mover tÃ­tulo/notas nÃ£o precisa de
-  // horÃ¡rio â€” o service trata antes; "muda pra sexta" sem hora chega aqui).
+  // sem horário novo na fala: quem chama decide (mover título/notas não precisa de
+  // horário — o service trata antes; "muda pra sexta" sem hora chega aqui).
   return { verdict: 'reperguntar', reason: 'sem_quando' };
 }
 

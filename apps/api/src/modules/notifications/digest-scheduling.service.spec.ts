@@ -96,6 +96,30 @@ describe('DigestSchedulingService.materializeDueDigests', () => {
     const b = await svc.materializeDueDigests(new Date('2026-10-08T10:06:00Z')); // passou a janela
     expect(b.jobs).toEqual([]);
   });
+
+  it('resumo DESLIGADO no perfil não materializa nem no minuto alvo (Fase 5, Aberto #2 → (a))', async () => {
+    // A guarda vive no WHERE da busca: usuário com resumoDiarioAtivo=false nem é
+    // carregado. O mock abaixo honra o where para provar o filtro, não o if.
+    const seen: Record<string, unknown>[] = [];
+    const prisma = {
+      user: {
+        findMany: async ({ where }: { where: Record<string, unknown> }) => {
+          seen.push(where);
+          return []; // resumoDiarioAtivo=false => fora da carga
+        },
+      },
+      notificationOutbox: { create: async () => ({ id: 'o1', firesAt: new Date() }) },
+    };
+    const outbox = { enqueueJobs: async () => undefined };
+    const svc = new DigestSchedulingService(prisma as never, outbox as never);
+    svc.offsetProvider = () => OFFSET;
+    const { materialized, jobs } = await svc.materializeDueDigests(
+      new Date('2026-10-08T10:00:00Z'),
+    );
+    expect(materialized).toBe(0);
+    expect(jobs).toEqual([]);
+    expect(seen[0]).toMatchObject({ resumoDiarioAtivo: true });
+  });
 });
 
 describe('parseHourOfDay', () => {

@@ -34,7 +34,12 @@ não mata job em voo). Postgres = verdade dos disparos (outbox); Redis = só ent
 
 - `auth`: signup/verificação de código (quota 3/30min)/login/refresh; JWT dual (access 15m
   em memória + refresh 30d cookie httpOnly rotacionado); dono do `MailService` (Resend).
-- `users`: perfil/preferências (timezone, resumoDiarioHora).
+  "Esqueci a senha" (ADR-0012): `POST /auth/forgot-password` (202 uniforme anti-enumeration,
+  magic link TTL 1h, quota silenciosa 2/10min em `verification_codes` com `kind`) e
+  `POST /auth/reset-password` (410 genérico `reset_token_invalid`; troca a senha, apaga os
+  refresh_tokens e avisa no Telegram; sem login automático).
+- `users`: perfil/preferências (name, timezone, resumoDiarioHora, resumoDiarioAtivo);
+  `PATCH /me` (Fase 5) com zod dos contracts (`updateProfileInputSchema`).
 - `appointments`: CRUD + check-conflict (regra em schedule-core; 409 com o compromisso que
   choca). `ReviewService`/`ReviewController` (Fase 4): fila `needs_review` — `GET /review`,
   `POST /review/:id/confirm` (conflito ⇒ 409; sem conflito ⇒ `confirmed` + materializa o
@@ -59,6 +64,20 @@ não mata job em voo). Postgres = verdade dos disparos (outbox); Redis = só ent
 
 Guard global `JwtAuthGuard` deny-by-default (`@Public()` opt-in). Env tipado via
 `config/env.validation.ts` (zod, espelho de `.env.example`).
+
+## Web (Fase 5)
+
+SPA Vue 3 com rotas `requireAuth` (`/agenda`, `/revisao`, `/perfil`) e telas de auth
+(`/login`, `/cadastro`, `/confirmar`) mais as públicas do reset (`/esqueci-a-senha`,
+`/redefinir-senha` — esta é a única exceção documentada à política "nada de dado do
+usuário em query params": só o `token` opaco do magic link, ADR-0012). Camadas
+`.ia/rules/vue.md`: páginas só em
+`view/pages`, queries/mutations em `app/services` + `app/composables`, zero regra de
+data/conflito no front (períodos via `schedule-core` pela fonte TS via alias — ADR-005).
+Tema escuro default + toggle claro persistido; tokens do protótipo OpenDesign em CSS
+vars. Responsivo 360/768/≥1280. Detalhe não-óbvio: em DEV o vite serve `vee-validate`
+em cópias múltiplas (páginas de form têm workaround documentado em `LoginPage.vue` /
+`Input.vue` — validação via função + rede de segurança zod no submit).
 
 ## Fluxos-chave
 
@@ -99,4 +118,5 @@ ia-docs único lar dos ADRs, e o grafo de imports (`CROSS_MODULE_EDGES` em
 `apps/api/.dependency-cruiser.cjs`). **0008**: LLM classifica a intenção da conversa;
 regras decidem. **0009**: worker de notificações como processo próprio (Fase 3).
 **0010**: régua do needs_review no criar; cancelar pelo chat apaga; editar nunca vira
-revisão (Fase 4).
+revisão (Fase 4). **0011**: web avisa gatilho de lembrete retroativo (inverte a
+silenciosidade da Fase 3 na borda web — ADR escrito na Fase 5).

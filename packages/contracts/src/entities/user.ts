@@ -21,6 +21,10 @@ export const userSchema = z.object({
   emailConfirmedAt: isoDateSchema.nullable(),
   timezone: timezoneSchema,
   resumoDiarioHora: hourOfDaySchema,
+  /** Nome como o bot chama o usuario (decisao 7 da spec web; null = sem nome). */
+  name: z.string().nullable(),
+  /** Resumo diario ligado/desligado (Aberto #2 -> (a)). */
+  resumoDiarioAtivo: z.boolean(),
 });
 
 export type UserDto = z.infer<typeof userSchema>;

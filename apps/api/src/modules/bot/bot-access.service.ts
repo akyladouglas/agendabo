@@ -5,6 +5,8 @@ export interface BotUser {
   id: string;
   telegramId: string;
   timezone: string;
+  /** Nome para saudação/endereçamento (decisão 7 da spec web; null = sem nome). */
+  name: string | null;
 }
 
 /**
@@ -18,11 +20,16 @@ export class BotAccessService {
   async requireConfirmedUser(telegramId: string): Promise<BotUser> {
     const user = await this.prisma.user.findUnique({
       where: { telegramId },
-      select: { id: true, telegramId: true, timezone: true, emailConfirmedAt: true },
+      select: { id: true, telegramId: true, timezone: true, emailConfirmedAt: true, name: true },
     });
     if (!user || !user.emailConfirmedAt || !user.telegramId) {
       throw new ForbiddenException('cadastro_necessario');
     }
-    return { id: user.id, telegramId: user.telegramId, timezone: user.timezone };
+    return {
+      id: user.id,
+      telegramId: user.telegramId,
+      timezone: user.timezone,
+      name: user.name,
+    };
   }
 }

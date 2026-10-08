@@ -31,7 +31,7 @@ export class ReviewController {
         const c = err.conflictWith;
         throw new HttpException(
           {
-            message: `Choque com "${c.title}" (${c.startsAt.toISOString()} - ${c.endsAt.toISOString()})`,
+            message: `Conflito com "${c.title}" (${c.startsAt.toISOString()} - ${c.endsAt.toISOString()})`,
             conflictWith: c,
           },
           409,

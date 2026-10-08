@@ -335,8 +335,18 @@ export class SchedulingFlowMachine {
   }
 
   /** Mensagem inicial ao abrir o fluxo (etapa a). */
-  startReplies(): BotReply[] {
-    return [{ kind: 'text', text: BOT_MESSAGES.pedeTitulo }];
+  startReplies(name?: string | null): BotReply[] {
+    // Fase 5 (decisão 7): o bot chama pelo nome quando existir; sem nome, texto vigente.
+    return [
+      {
+        kind: 'text',
+        text: BOT_MESSAGES.comNome(
+          name,
+          BOT_MESSAGES.pedeTitulo,
+          (n) => `Oi, ${n}! Bora marcar! 📅 Como eu chamo esse compromisso?`,
+        ),
+      },
+    ];
   }
 
   /** Teclado de dias: hoje + amanha + N proximos dias (atalho hoje/amanhã é determinístico). */

@@ -9,7 +9,7 @@ import type { BotUser } from './bot-access.service';
  * agregado (decisão #8), falha do interpretador => pergunta (spec #5).
  */
 
-const USER: BotUser = { id: 'u1', telegramId: '111', timezone: 'America/Sao_Paulo' };
+const USER: BotUser = { id: 'u1', telegramId: '111', timezone: 'America/Sao_Paulo', name: null };
 const NOW = new Date('2026-10-07T11:00:00Z'); // 08:00 local SP
 const OFFSET = -180;
 

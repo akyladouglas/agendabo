@@ -273,6 +273,10 @@ bot:  📋 Resumo de 08/10 — seu dia (fuso America/Sao_Paulo):
       Até mais!
 ```
 
+Se a conta tiver **nome** (campo do perfil, Fase 5), o resumo começa com a
+saudação: `Bom dia, Ana!` / `Boa tarde, Ana!` / `Boa noite, Ana!` conforme a hora
+no fuso do usuário; sem nome, segue `Bom dia!` como sempre.
+
 Dia vazio:
 
 ```
