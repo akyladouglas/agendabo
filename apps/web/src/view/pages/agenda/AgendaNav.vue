@@ -46,7 +46,10 @@
       </AppButton>
     </div>
 
-    <!-- ir-para (A.5): Select de Ano + Select de Mês (só Mês/Ano) -->
+    <!-- ir-para (A.5): Select de Ano + Select de Mês (só Mês/Ano). AppSelect
+         (radix) — o <select> nativo desenha o POPUP no chrome do SO: em tema
+         escuro o popup saía claro com texto claro (ilegível, relato do usuário
+         2026-10-09). O radix herda o tema e mantém o gatilho estilizado. -->
     <div
       v-if="props.view === 'month' || props.view === 'year'"
       class="flex items-center gap-2"
@@ -56,21 +59,14 @@
         class="sr-only"
         :for="`jump-year-${props.view}`"
       >Ir para o ano</label>
-      <select
+      <AppSelect
         :id="`jump-year-${props.view}`"
-        class="od-move h-9 rounded-md border border-border bg-surface px-2 text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-        data-testid="jump-year"
-        :value="String(props.year)"
-        @change="emit('jumpYear', Number(($event.target as HTMLSelectElement).value))"
-      >
-        <option
-          v-for="opt in props.yearOptions"
-          :key="opt.value"
-          :value="opt.value"
-        >
-          {{ opt.label }}
-        </option>
-      </select>
+        :model-value="String(props.year)"
+        :options="props.yearOptions"
+        class="h-9 w-auto min-w-24"
+        test-id="jump-year"
+        @update:model-value="emit('jumpYear', Number($event))"
+      />
       <div
         v-if="props.view === 'month'"
         class="flex items-center gap-2"
@@ -79,21 +75,14 @@
           class="sr-only"
           :for="`jump-month-${props.view}`"
         >Ir para o mês</label>
-        <select
+        <AppSelect
           :id="`jump-month-${props.view}`"
-          class="od-move h-9 rounded-md border border-border bg-surface px-2 text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          data-testid="jump-month"
-          :value="String(props.monthIndex)"
-          @change="emit('jumpMonth', Number(($event.target as HTMLSelectElement).value))"
-        >
-          <option
-            v-for="opt in props.monthOptions"
-            :key="opt.value"
-            :value="opt.value"
-          >
-            {{ opt.label }}
-          </option>
-        </select>
+          :model-value="String(props.monthIndex)"
+          :options="props.monthOptions"
+          class="h-9 w-auto min-w-32"
+          test-id="jump-month"
+          @update:model-value="emit('jumpMonth', Number($event))"
+        />
       </div>
     </div>
   </div>
@@ -103,12 +92,13 @@
 /**
  * Cabeçalho de navegação da Agenda (Fase 7): abas Dia|Semana|Mês|Ano + ‹ hoje → +
  * menu ir-para (A.1–A.5). Burro: eventos para a página; zero estado. O ir-para usa
- * <select> nativo estilizado (mesma política de D7 do form: nativo na borda; o radix
- * Select exige pointer events que a grade inteira já não usa aqui).
+ * AppSelect (radix) — o <select> nativo desenha o popup no chrome do SO e o popup
+ * ficava claro em tema escuro (ilegível).
  */
 import { ChevronLeft, ChevronRight } from 'lucide-vue-next';
 import type { AgendaView } from '@/app/composables/useAgendaPage.composable';
 import AppButton from '@/view/components/ui/button/Button.vue';
+import AppSelect from '@/view/components/ui/select/Select.vue';
 import AppTabs from '@/view/components/ui/tabs/Tabs.vue';
 
 const props = defineProps<{

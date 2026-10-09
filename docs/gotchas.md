@@ -198,3 +198,18 @@ abrir/mudar estado, reler o nó por id e re-aplicar a vestimenta imperativa
 `el.style.x` não aparece no `getAttribute('style')` do happy-dom (use um
 atributo-dados de trilha em teste). E o happy-dom NÃO sintetiza `click` de
 `pointerup` — o harness despacha o `click` real como o browser faria.
+
+## 19. radix Select no happy-dom: popper abre mas o DismissableLayer morre em `null.closest`
+
+A troca do ir-para da agenda para AppSelect (radix) abriu esta caixa: o popper
+CHEGA a montar no happy-dom (`role=listbox` + options), mas fechar a interacao
+sem um blur limpo deixa o `focusin` do DismissableLayer com `event.target` null
+quando o body e trocado no teste seguinte - o helper da lib faz
+`target.closest(...)` SEM o guard que o @radix-ui/dom-utils tem e vira
+rejeicao nao-tratada (vitest fecha com codigo 1 a despeito de tudo verde).
+Setas do teclado tambem nao andam o highlight sem layout real (o
+posicionamento do popper falha). **Correcao:** nao simular a interacao do
+Select no unit-test - assert estrutural no gatilho (BUTTON + `aria-expanded` +
+rotulo) e a funcionalidade no SMOKE E2E-browser (ir-para do Mes, verificado
+2026-10-09). **Se acontecer de novo:** "Vitest caught N unhandled errors" +
+stack `dismissableLayer` = popper/foco deixado aberto no teste anterior.

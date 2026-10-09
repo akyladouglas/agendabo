@@ -5,6 +5,7 @@
   >
     <SelectTrigger
       :id="props.id"
+      :data-testid="props.testId"
       :class="
         cn(
           'od-move flex h-11 w-full items-center justify-between gap-2 rounded-md border border-border bg-surface px-3 py-2 text-left text-sm text-foreground shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
@@ -61,12 +62,14 @@ import { Check, ChevronDown } from 'lucide-vue-next';
 import { cn } from '@/app/utils/cn';
 import type { HTMLAttributes } from 'vue';
 
-/** Select acessível (fuso IANA, hora do resumo). Burro: opções por prop. */
+/** Select acessível (fuso IANA, hora do resumo, ir-para da agenda). Burro: opções por prop. */
 const props = defineProps<{
   modelValue: string;
   options: { value: string; label: string }[];
   placeholder?: string;
   id?: string;
+  /** data-testid no gatilho (testes de fluxo; o popper vive em portal). */
+  testId?: string;
   class?: HTMLAttributes['class'];
 }>();
 
