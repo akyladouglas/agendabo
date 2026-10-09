@@ -6,7 +6,12 @@ import { AuthSignupService, EmailAlreadyInUseError } from './auth-signup.service
  * explodir o cadastro — a resposta sinaliza mailDelivered=false.
  */
 function makeService(mailImpl?: { send: (m: unknown) => Promise<void> }) {
-  const user = { findUnique: jest.fn(), create: jest.fn(), update: jest.fn() };
+  const user = {
+    findUnique: jest.fn(),
+    create: jest.fn(),
+    update: jest.fn(),
+    count: jest.fn().mockResolvedValue(0),
+  };
   const code = {
     findFirst: jest.fn(),
     create: jest.fn().mockResolvedValue(undefined),
@@ -16,8 +21,16 @@ function makeService(mailImpl?: { send: (m: unknown) => Promise<void> }) {
   const mail = {
     send: mailImpl?.send ?? jest.fn().mockResolvedValue(undefined),
   };
+  // D-P7 (Fase 9): o create passa a viver numa tx com count() de admins.
+  // $transaction plano: executa o callback com o MESMO mock (o tx.user.create
+  // e gravado no mock de user — os testes antigos de create continuam vendo).
+  const prisma: Record<string, unknown> = {
+    user,
+    verificationCode: code,
+  };
+  prisma['$transaction'] = jest.fn((fn: (tx: unknown) => Promise<unknown>) => fn(prisma));
   const svc = new AuthSignupService(
-    { user, verificationCode: code } as never,
+    prisma as never,
     {
       hashPassword: jest.fn().mockResolvedValue('hash'),
       codeMatches: jest.fn().mockReturnValue(false),
@@ -25,7 +38,7 @@ function makeService(mailImpl?: { send: (m: unknown) => Promise<void> }) {
     mail as never,
     { get: jest.fn() } as never,
   );
-  return { svc, user, code, mail };
+  return { svc, user, code, mail, prisma };
 }
 
 const input = {
@@ -118,5 +131,47 @@ describe('AuthSignupService.signup', () => {
       }),
     );
     await expect(svc.signup(input)).rejects.toBeInstanceOf(EmailAlreadyInUseError);
+  });
+});
+
+/**
+ * D-P7 (Fase 9 / ADR-0017): o PRIMEIRO usuario do sistema nasce admin. A
+ * contagem e o create vivem na MESMA transacao e a constraint parcial unica
+ * (`users_single_admin_unique`) e a trava de corrida real — o teste abaixo
+ * simula o Postgres: P2002 no indice parcial = segundo perdedor nasce nao-admin.
+ */
+describe('AuthSignupService.signup — primeiro admin (D-P7)', () => {
+  it('sem nenhum admin no sistema: primeiro cadastro nasce isAdmin=true', async () => {
+    const { svc, user } = makeService();
+    // count() default = 0 admins
+    await svc.signup(input);
+    expect(user.create).toHaveBeenCalledTimes(1);
+    expect(user.create.mock.calls[0]![0]!.data.isAdmin).toBe(true);
+  });
+
+  it('ja existe admin: cadastro normal nasce isAdmin=false', async () => {
+    const { svc, user } = makeService();
+    user.count = jest.fn().mockResolvedValue(1);
+    await svc.signup(input);
+    expect(user.create.mock.calls[0]![0]!.data.isAdmin).toBe(false);
+  });
+
+  it('corrida dos dois "primeiros usuarios": P2002 no indice parcial re-tenta como nao-admin', async () => {
+    const { svc, user } = makeService();
+    const { Prisma } = jest.requireActual('@prisma/client');
+    user.create
+      .mockRejectedValueOnce(
+        // o alvo do P2002 e o indice parcial do admin — NAO email/telegramId
+        new Prisma.PrismaClientKnownRequestError('dup', {
+          code: 'P2002',
+          clientVersion: '6',
+          meta: { target: 'users_single_admin_unique' },
+        }),
+      )
+      .mockResolvedValue({ id: 'u2' });
+    const res = await svc.signup(input); // nao pode lancar: o segundo ganha a conta
+    expect(res.mailDelivered).toBe(true);
+    expect(user.create).toHaveBeenCalledTimes(2);
+    expect(user.create.mock.calls[1]![0]!.data.isAdmin).toBe(false);
   });
 });

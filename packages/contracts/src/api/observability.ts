@@ -135,14 +135,19 @@ export const botEventDtoSchema = z.object({
 export type BotEventDto = z.infer<typeof botEventDtoSchema>;
 
 /** GET /bot-events — filtros tecnicos; NUNCA identidade em query param (padrao do repo). */
-export const botEventsQuerySchema = z.object({
-  userId: z.string().uuid().optional(),
-  from: z.coerce.date().optional(),
-  to: z.coerce.date().optional(),
-  type: botEventTypeSchema.optional(),
-  limit: z.coerce.number().int().min(1).max(200).default(50),
-  offset: z.coerce.number().int().min(0).default(0),
-});
+export const botEventsQuerySchema = z
+  .object({
+    userId: z.string().uuid().optional(),
+    from: z.coerce.date().optional(),
+    to: z.coerce.date().optional(),
+    type: botEventTypeSchema.optional(),
+    limit: z.coerce.number().int().min(1).max(200).default(50),
+    offset: z.coerce.number().int().min(0).default(0),
+  })
+  // .strict (mesma politica da metadata): o browser manda o state inteiro do
+  // form como query params (ex.: search="texto livre"); stripar em silencio
+  // esconderia conteudo proibido chegando na rota de auditoria. 400 honesto.
+  .strict();
 export type BotEventsQuery = z.infer<typeof botEventsQuerySchema>;
 
 export const botEventsResultSchema = z.object({
@@ -169,11 +174,13 @@ export const llmCallOutcomeSchema = z.enum(LLM_CALL_OUTCOMES);
 export type LlmCallOutcomeValue = z.infer<typeof llmCallOutcomeSchema>;
 
 /** GET /llm-usage — agregacao admin-only (spec C4; custo nunca e do cliente). */
-export const llmUsageQuerySchema = z.object({
-  from: z.coerce.date().optional(),
-  to: z.coerce.date().optional(),
-  groupBy: z.enum(['user', 'purpose']).default('purpose'),
-});
+export const llmUsageQuerySchema = z
+  .object({
+    from: z.coerce.date().optional(),
+    to: z.coerce.date().optional(),
+    groupBy: z.enum(['user', 'purpose']).default('purpose'),
+  })
+  .strict();
 export type LlmUsageQuery = z.infer<typeof llmUsageQuerySchema>;
 
 export const llmUsageBucketSchema = z.object({

@@ -79,24 +79,49 @@ export class AuthSignupService {
     }
 
     const passwordHash = await this.auth.hashPassword(input.password);
+    // D-P7 (Fase 9 / ADR-0017): o PRIMEIRO usuario do sistema nasce admin.
+    // count()+create na MESMA transacao reduz a janela, mas a trava REAL e o
+    // indice parcial unico `users_single_admin_unique` (migracao fase9): na
+    // corrida dos dois "primeiros", o perdedor leva P2002 NO INDICE e re-tenta
+    // como nao-admin — nunca 500, nunca dois admins.
     try {
-      await this.prisma.user.create({
-        data: {
-          email: input.email,
-          passwordHash,
-          telegramId: input.telegramId,
-          timezone: input.timezone,
-          name: input.name ?? null,
-        },
+      await this.prisma.$transaction(async (tx) => {
+        const admins = await tx.user.count({ where: { isAdmin: true } });
+        await tx.user.create({
+          data: {
+            email: input.email,
+            passwordHash,
+            telegramId: input.telegramId,
+            timezone: input.timezone,
+            name: input.name ?? null,
+            isAdmin: admins === 0,
+          },
+        });
       });
     } catch (err) {
-      // Corrida nos unique de email/telegramId — mesma semantica das checagens acima.
       if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
         const target = JSON.stringify(err.meta?.target ?? '');
-        if (target.includes('telegramId')) throw new TelegramAlreadyInUseError();
-        throw new EmailAlreadyInUseError();
+        if (target.includes('users_single_admin_unique')) {
+          // perdedor da corrida do primeiro-admin: a conta dele e valida, so
+          // nao e admin (a constraint fez o trabalho — re-tenta sem isAdmin).
+          await this.prisma.user.create({
+            data: {
+              email: input.email,
+              passwordHash,
+              telegramId: input.telegramId,
+              timezone: input.timezone,
+              name: input.name ?? null,
+              isAdmin: false,
+            },
+          });
+        } else {
+          // Corrida nos unique de email/telegramId — mesma semantica das checagens acima.
+          if (target.includes('telegramId')) throw new TelegramAlreadyInUseError();
+          throw new EmailAlreadyInUseError();
+        }
+      } else {
+        throw err;
       }
-      throw err;
     }
     const mailDelivered = await this.sendNewCode(input.email);
 
