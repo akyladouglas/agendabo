@@ -202,6 +202,17 @@ Implementar com **Pointer Events** (unifica mouse+toque), hook próprio:
 >   então o drop nela é de GRANULARIDADE DIA (translada N dias preservando a
 >   hora local — `dropTargetRange` kind `day`); refinar a Semana para célula
 >   dia×hora fica no backlog junto do redimensionar.
+>   **Atualização 2026-10-09 (pós-fase):** a Semana GANHOU grade de horas por
+>   coluna (`weekGridRows` no schedule-core, TDD) — cada coluna é uma mini-visão
+>   Dia do próprio dia (blocos posicionados, célula vazia cria naquele dia+hora,
+>   régua da hora atual). O drop nela continua `day:<date>`: a COLUNA inteira é a
+>   célula de origem/drop — soltar na própria coluna é no-op mudo, em outra
+>   translada preservando a hora. O redimensionar segue no backlog.
+> - Heading da Semana deriva da GRADE renderizada (`agenda.rows`, dom..sáb da
+>   semana da âncora), não da query (`userWeekRange` é seg→seg: o heading
+>   mostrava "5 – 11" com colunas 4–10). `weekGridRows` recebe a âncora do dia
+>   focado explicitamente: a query começa na segunda 00:00 e, como instante com
+>   offset != 0, "scorreria" a grade um dia para frente em fusos negativos.
 > - O drop conflituoso reabre o Reagendamento Assistido (Etapa 0) via modal de
 >   EDIÇÃO do item aberto no horário candidato (`preset.endsAt` preserva a
 >   duração, `autoRelocate` pede as jogadas ao montar) — nenhum diálogo novo.
@@ -241,8 +252,9 @@ Implementar com **Pointer Events** (unifica mouse+toque), hook próprio:
       escrever (nada mudou na grade);
 - [x] ESC no meio do arrasto cancela (fantasma some, zero request de escrita);
 - [x] Soltar fora de célula cancela silenciosamente (zero escrita);
-- [x] Semana: drop é granularidade-DIA (limitação declarada acima) — card
-      muda de coluna, hora preservada ("→ sex 16/10 11:00");
+- [x] Semana: drop na coluna translada dia(s) preservando a hora; drop na
+      PRÓPRIA coluna é no-op mudo (testes em `drag-drop-flow.spec`) — a coluna
+      inteira é a célula (dia×hora nas colunas 2026-10-09);
 - [x] Mês: chip muda só a data ("qua 21/10 15:00"); clique curto no chip abre
       os detalhes (threshold 4px separa clique de drag);
 - [ ] Toque real em celular — sem device aqui; o caminho é o mesmo de Pointer

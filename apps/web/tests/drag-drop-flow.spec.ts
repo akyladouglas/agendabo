@@ -63,7 +63,7 @@ vi.spyOn(appointmentsService.appointmentsApi, 'checkConflict').mockImplementatio
 vi.spyOn(appointmentsService.appointmentsApi, 'reschedule').mockImplementation(reschedule);
 vi.spyOn(appointmentsService.appointmentsApi, 'relocationOptions').mockImplementation(relocationOptions);
 
-function mountAgenda(opts: { items?: AppointmentDto[] | null } = {}) {
+function mountAgenda(opts: { items?: AppointmentDto[] | null; view?: 'month' | 'week' | 'day' } = {}) {
   list.mockImplementation(async () => ({ items: 'items' in opts ? (opts.items ?? []) : FIXTURES }));
   vi.stubGlobal('matchMedia', (query: string) => ({
     matches: false,
@@ -89,7 +89,7 @@ function mountAgenda(opts: { items?: AppointmentDto[] | null } = {}) {
     defaultOptions: { queries: { retry: false, gcTime: Infinity, refetchOnWindowFocus: false } },
   });
   localStorage.setItem('agenda:anchor', '2026-10-08');
-  localStorage.setItem('agenda:view', 'month');
+  localStorage.setItem('agenda:view', opts.view ?? 'month');
   delete (window as unknown as { __agenda?: unknown }).__agenda;
   const w = mount(AgendaPage, {
     attachTo: document.body,
@@ -123,8 +123,9 @@ const settle = async () => {
   await flushPromises();
 };
 
-/** Caixa determinística SÓ na célula-alvo (as outras ficam com caixa zero — o
- *  hit-test do hook anda o registry e para na primeira com caixa válida). */
+/** Caixa determinística SÓ na célula-alvo. No harness, `getBoundingClientRect` não
+ *  existe em nenhum elemento (happy-dom não faz layout) — o install no alvo é a
+  *  ÚNICA caixa não-nula do documento, e o hit-test do hook para nele. */
 function patchTargetBox(cellKey: string): void {
   const target = document.querySelector<HTMLElement>(`[data-cell-key="${cellKey}"]`);
   if (!target) throw new Error(`célula ${cellKey} ausente`);
@@ -253,5 +254,39 @@ describe('Drop de compromisso (grades-dia-semana-mes Etapa 2.3)', () => {
         movedId: DENTISTA_ID,
       }),
     );
+  });
+
+  it('semana: soltar em OUTRA coluna translada para o MESMO horário em outro dia (dia×hora)', async () => {
+    mountAgenda({ items: FIXTURES, view: 'week' });
+    await settle();
+    // o bloco da quinta 08/10 11:00 SP mora na coluna dom..sáb da semana
+    const block = document.querySelector(`[data-testid="week-item-${DENTISTA_ID}"]`);
+    expect(block).not.toBeNull();
+    patchTargetBox('day:2026-10-10');
+    await dragChipToCell(DENTISTA_ID, 'day:2026-10-10');
+    // translação N×24h preservando a hora local: qui 11:00 SP → sáb 11:00 SP (+2 dias)
+    expect(checkConflict).toHaveBeenCalledWith(
+      expect.objectContaining({
+        startsAt: new Date('2026-10-10T14:00:00.000Z'),
+        endsAt: new Date('2026-10-10T15:30:00.000Z'),
+        ignoreId: DENTISTA_ID,
+      }),
+    );
+    expect(reschedule).toHaveBeenCalledTimes(1);
+    expect(reschedule.mock.calls[0]![0]).toEqual({
+      mode: 'move',
+      movedId: DENTISTA_ID,
+      newStart: new Date('2026-10-10T14:00:00.000Z'),
+      newEnd: new Date('2026-10-10T15:30:00.000Z'),
+    });
+  });
+
+  it('semana: drop na PRÓPRIA coluna é no-op mudo (nada é pedido)', async () => {
+    mountAgenda({ items: FIXTURES, view: 'week' });
+    await settle();
+    patchTargetBox('day:2026-10-08'); // a coluna do próprio item
+    await dragChipToCell(DENTISTA_ID, 'day:2026-10-08');
+    expect(checkConflict).not.toHaveBeenCalled();
+    expect(reschedule).not.toHaveBeenCalled();
   });
 });

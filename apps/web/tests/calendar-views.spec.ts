@@ -258,7 +258,7 @@ describe('Agenda — 4 visões (Fase 7)', () => {
     );
   });
 
-  it('≥md abre na Semana; tabs Dia | Semana | Mês | Ano; cards dom..sáb', async () => {
+  it('≥md abre na Semana; tabs Dia | Semana | Mês | Ano; colunas dom..sáb com grade de horas', async () => {
     const h = mountAgenda({ desktop: true });
     await settle();
     const labels = h.w.findAll('[role="tab"]').map((t) => t.text());
@@ -267,6 +267,12 @@ describe('Agenda — 4 visões (Fase 7)', () => {
     // domingo 04/10 .. sábado 10/10 (grade dom..sáb da semana da âncora)
     expect(h.w.find('[data-testid="week-day-2026-10-04"]').exists()).toBe(true);
     expect(h.w.find('[data-testid="week-day-2026-10-10"]').exists()).toBe(true);
+    // cada coluna é uma mini-grade de horas (24 células) com o heading dom..sáb
+    expect(h.w.findAll('[data-testid^="week-cell-2026-10-04-"]').length).toBe(24);
+    expect(h.w.find('[data-testid="agenda-heading"]').text()).toContain('4');
+    expect(h.w.find('[data-testid="agenda-heading"]').text()).toContain('10');
+    // o bloco do dia aparece POSICIONADO na coluna (overlay), não empilhado
+    expect(h.w.find('[data-testid^="week-item-"]').exists()).toBe(true);
     expect(h.w.text()).toContain('Dentista');
   });
 

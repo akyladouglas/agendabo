@@ -36,7 +36,9 @@ export function dropOriginKey(
   timezone: string,
 ): string {
   const off = measureTzOffset(timezone, item.startsAt);
-  if (view !== 'day') {
+  if (view === 'month' || view === 'week') {
+    // Semana: a COLUNA inteira (`day:<date>`) é a célula de origem/drop — soltar
+    // na própria coluna é no-op mudo; em outra translada preservando a hora
     return `day:${localDateKey(item.startsAt, off)}`;
   }
   // linha de hora local N do dia civil do item: o início UTC da linha é

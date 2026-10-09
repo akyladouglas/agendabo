@@ -4,18 +4,21 @@ import {
   groupByLocalDay,
   hourGrid,
   layoutDayTimeline,
+  MS_DAY,
   monthCells,
   monthGridRange,
   shiftDayRange,
   shiftMonthRange,
   shiftWeekRange,
   shiftYearRange,
+  userDayRange,
   userMonthRange,
   userYearRange,
-  weekRows,
+  weekGridRows,
   utcToZonedParts,
   type CalendarDay,
   type DateRange,
+  type DayHourRow,
   type HourCell,
   type MonthDensity,
   type TimelineBlock,
@@ -108,7 +111,7 @@ export interface UseAgendaPage {
   /** Células da grade do Mês M (visão Ano) e do M+1 (a da âncora — hoje correto). */
   yearMonthCells: ComputedRef<CalendarDay[][]>;
   /** 7 linhas da semana (dom..sáb, semana da âncora). */
-  rows: ComputedRef<CalendarDay[]>;
+  rows: ComputedRef<DayHourRow[]>;
   /** dateKey → compromissos do dia (E.2 — vale para o período da query atual). */
   byDay: ComputedRef<Map<string, AppointmentDto[]>>;
   /** Grade de horas da visão Dia (célula por hora local coberta pelo range — 1.1). */
@@ -173,15 +176,29 @@ export function useAgendaPage(): UseAgendaPage {
   /** âncora nasce MEIA-NOITE LOCAL do dia persistido (se válido) ou de hoje. */
   function setAnchorDate0(): Date {
     const todayKey = storedAnchorKey() ?? dateKeyOfRaw(new Date());
-    const noon = new Date(`${todayKey}T12:00:00Z`);
-    const off = measureTzOffset(timezone.value, noon);
-    return new Date(Date.parse(`${todayKey}T00:00:00Z`) - off * 60_000);
+    return midnightOfDateKey(todayKey);
+  }
+
+  /**
+   * Âncora como meia-noite local DO PRÓPRIO dia (offset medido ao MEIO-DIA LOCAL
+   * — nunca é madrugada de DST): `utcNoonProxy = dateKeyT12:00Z − offset` é um
+   * proxy do meio-dia local (mesmo dia civil quando |offset| < 12h). Medir o
+   * offset no "noon UTC" cru do dateKey NÃO serve: em fusos negativos meio-dia UTC
+   * ainda é o dia ANTERIOR de manhã. `utcToZonedParts(meia-noite, off)` reproduz o
+   * dateKey por construção — a meia-noite deslocada pelo MESMO offset cai na
+   * fronteira exata do dia — mesmo quando o offset do dia ≠ offset do início da
+   * query (DST).
+   */
+  function midnightOfDateKey(dateKey: string): Date {
+    const naiveNoon = Date.parse(`${dateKey}T12:00:00Z`); // "meio-dia" naive (fuso 0)
+    const off = measureTzOffset(timezone.value, new Date(naiveNoon));
+    const utcNoonProxy = new Date(naiveNoon - off * 60_000); // meio-dia local aproximado
+    const offNoon = measureTzOffset(timezone.value, utcNoonProxy);
+    return new Date(Date.parse(`${dateKey}T00:00:00Z`) - offNoon * 60_000);
   }
 
   function setAnchorDate(dateKey: string): Date {
-    const noon = new Date(`${dateKey}T12:00:00Z`);
-    const off = measureTzOffset(timezone.value, noon);
-    anchor.value = new Date(Date.parse(`${dateKey}T00:00:00Z`) - off * 60_000);
+    anchor.value = midnightOfDateKey(dateKey);
     storeAnchorKey(dateKey);
     return anchor.value;
   }
@@ -284,7 +301,6 @@ export function useAgendaPage(): UseAgendaPage {
   const items = computed(() => sortAppointmentsByStart(appointmentsQuery.data.value?.items ?? []));
 
   const cells = computed(() => monthCells(grid.value, offset.value, now.value));
-  const rows = computed(() => weekRows(range.value, offset.value, now.value));
   const byDay = computed(() => groupByLocalDay(items.value, offset.value));
 
   /**
@@ -294,6 +310,32 @@ export function useAgendaPage(): UseAgendaPage {
    * (medido na âncora) coincide com ele quando a âncora é meia-noite local.
    */
   const rangeOffsetMin = computed(() => measureTzOffset(timezone.value, range.value.start));
+  /**
+   * 7 linhas dom..sáb COM grade de horas por dia (visão Semana do plano
+   * grades-dia-semana-mes). A página injeta a meia-noite LOCAL REAL de cada dia
+   * (`measureTzOffset` por dia — a grade abre no DOMINGO e a query começa na
+   * segunda: com o offset do início da query, o domingo de transição de DST
+   * nasceria com a meia-noite errada) e o passo da transição do período
+   * (`rangeOffsetMin` vs o offset na ÂNCORA — modelo de offset único por
+   * período, E.6/ADR-002). A ÂNCORA da grade é sempre `anchor` (o dia focado),
+   * nunca `range.start`: a query da Semana começa na segunda 00:00 e isso
+   * "scorreria" a âncora para o dia anterior em fusos negativos.
+   */
+  const rows = computed<DayHourRow[]>(() => {
+    const tz = timezone.value;
+    const anchorMid = midnightOfDateKey(dateKeyOf(anchor.value));
+    return weekGridRows(
+      range.value,
+      rangeOffsetMin.value,
+      now.value,
+      (d) => {
+        const day = new Date(anchorMid.getTime() + d * MS_DAY);
+        return userDayRange(day, measureTzOffset(tz, day)).start;
+      },
+      rangeOffsetMin.value - measureTzOffset(tz, anchor.value),
+      anchor.value,
+    );
+  });
   /**
    * Grade de horas da visão Dia (plano grades-dia-semana-mes 1.1/1.3): regra 100%
    * schedule-core (`hourGrid` + `layoutDayTimeline`) — a página só compõe (E.4).

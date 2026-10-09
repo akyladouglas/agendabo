@@ -204,6 +204,7 @@
           :days="weekDays"
           :drag="agendaDrag.drag"
           @day-click="openDayFrom"
+          @cell-click="onWeekCellClick"
           @item-click="openDetails"
         />
       </div>
@@ -360,7 +361,12 @@
  */
 import { computed, ref } from 'vue';
 import { Plus } from 'lucide-vue-next';
-import { conflictedIds, firstConflictLabel, type CalendarDay } from '@agendabo/schedule-core';
+import {
+  conflictedIds,
+  firstConflictLabel,
+  layoutDayTimeline,
+  type CalendarDay,
+} from '@agendabo/schedule-core';
 import type { AppointmentDto } from '@agendabo/contracts';
 import { useAgendaPage } from '@/app/composables/useAgendaPage.composable';
 import { useAgendaDrag, dropOriginKey } from '@/app/composables/useAgendaDrag.composable';
@@ -384,7 +390,7 @@ import AppSkeleton from '@/view/components/ui/skeleton/Skeleton.vue';
 import AgendaNav from './AgendaNav.vue';
 import DayGrid, { type DayBlockView, type DaySlotView } from './DayGrid.vue';
 import MonthGrid, { type MonthCellView, type MonthChip } from './MonthGrid.vue';
-import WeekGrid, { type WeekCardView, type WeekDayView } from './WeekGrid.vue';
+import WeekGrid, { type WeekDayView } from './WeekGrid.vue';
 import YearGrid, { type YearDayView, type YearMiniView } from './YearGrid.vue';
 
 const agenda = useAgendaPage();
@@ -422,11 +428,15 @@ const heading = computed(() =>
     ? formatDayHeading(agenda.range.value.start, timezone.value, agenda.now.value)
     : null,
 );
-const weekHeading = computed(() =>
-  agenda.view.value === 'week'
-    ? formatWeekHeading(agenda.range.value.start, agenda.range.value.end, timezone.value)
-    : '',
-);
+const weekHeading = computed(() => {
+  if (agenda.view.value !== 'week') return '';
+  // o heading descreve a GRADE renderizada (dom..sáb), não a query (seg..seg):
+  // `agenda.rows` já é a semana dom..sáb da âncora — o fim é a meia-noite local
+  // do sábado (instante exclusive)
+  const rows = agenda.rows.value;
+  if (rows.length === 0) return '';
+  return formatWeekHeading(rows[0]!.start, rows[rows.length - 1]!.end, timezone.value);
+});
 const headingText = computed(() => {
   switch (agenda.view.value) {
     case 'day':
@@ -488,27 +498,51 @@ function onDaySlotClick(slot: DaySlotView): void {
   openCreateOn(date, `${slot.hour}:00`);
 }
 
-// ---- Semana: linhas dom..sáb (weekRows) + agrupamento por dia civil (groupByLocalDay) ----
+/** Clique na célula vazia da coluna da Semana: criar NAQUELE dia+hora. */
+function onWeekCellClick(dateKey: string, hour: string): void {
+  openCreateOn(dateKey, `${hour}:00`);
+}
+
+// ---- Semana: colunas dom..sáb COM grade de horas (weekGridRows) + blocos ----
+// Os dados vêm do composable (`weekGridRows`/`layoutDayTimeline` do schedule-core);
+// aqui só FORMATAÇÃO e classes — zero regra de data/conflito (E.4).
 const weekDays = computed<WeekDayView[]>(() =>
   agenda.rows.value.map((row) => {
-    const dayItems = agenda.byDay.value.get(row.date) ?? [];
-    const cards: WeekCardView[] = dayItems.map((item) => ({
-      item,
-      time: chipTime(item, row),
-      review: item.status === 'needs_review',
-      past: isPast(item),
-      conflictTitle: conflictTitle(item),
-      class: [
-        item.status === 'needs_review' ? 'border-l-2 border-l-warning' : 'border-border',
-        conflictTitle(item) ? 'border-danger/70' : '',
-        isPast(item) ? 'opacity-60' : '',
-      ].join(' '),
-    }));
+    const blocks = layoutDayTimeline(
+      agenda.byDay.value.get(row.date) ?? [],
+      { start: row.start, end: row.end },
+      row.offsetMinutes,
+      agenda.now.value,
+    );
+    const nowInDay =
+      agenda.now.value >= row.start && agenda.now.value < row.end ? agenda.now.value : null;
+    const nowCell = nowInDay
+      ? row.cells.findIndex((c) => (nowInDay as Date) < c.end)
+      : -1;
     return {
       date: row.date,
       key: row.start.toISOString(),
       heading: formatDayHeading(row.start, timezone.value, agenda.now.value),
-      cards,
+      blocks: blocks.map((b) => ({
+        item: b.item,
+        top: b.top,
+        height: b.height,
+        left: b.column * b.width,
+        width: b.width,
+        time: formatRangeInTz(b.item.startsAt, b.item.endsAt, timezone.value),
+        review: b.item.status === 'needs_review',
+        conflictTitle: conflictTitle(b.item),
+        ariaLabel: `${b.item.title}, ${formatRangeInTz(b.item.startsAt, b.item.endsAt, timezone.value)}${
+          b.isPast ? ' (passado)' : ''
+        }`,
+        class: [
+          b.item.status === 'needs_review' ? 'border-l-2 border-l-warning' : 'border-border',
+          conflictTitle(b.item) ? 'border-danger/70 bg-danger/5' : 'hover:border-primary/50',
+          b.isPast ? 'opacity-60' : '',
+        ].join(' '),
+      })),
+      rulerHour: nowCell >= 0 ? row.cells[nowCell]!.hourUtc : null,
+      nowCell: nowCell >= 0 ? nowCell : null,
     };
   }),
 );
