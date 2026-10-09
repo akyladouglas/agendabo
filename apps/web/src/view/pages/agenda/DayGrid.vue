@@ -15,6 +15,8 @@
       role="row"
       class="relative flex h-12 border-b border-border last:border-b-0"
       :class="slot.isPast ? 'opacity-60' : ''"
+      :data-cell-key="`hour:${slot.key}`"
+      :data-drop-target="drag && drag.dropKey.value === `hour:${slot.key}` ? 'true' : 'false'"
     >
       <div
         role="gridcell"
@@ -50,7 +52,10 @@
         :key="`${block.item.id}-${block.top}`"
         type="button"
         class="od-move pointer-events-auto absolute flex flex-col gap-0.5 overflow-hidden rounded-md border bg-card p-1 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-        :class="block.class"
+        :class="[
+          block.class,
+          drag && drag.draggingId.value === block.item.id ? 'opacity-40' : '',
+        ]"
         :style="{
           top: `${block.top}%`,
           height: `${block.height}%`,
@@ -61,6 +66,7 @@
         :aria-label="block.ariaLabel"
         :data-testid="`day-block-${block.item.id}`"
         :data-conflicted="block.conflictTitle ? 'true' : undefined"
+        v-bind="drag ? drag.bind(block.item) : {}"
         @click.stop="emit('blockClick', block.item)"
       >
         <span class="truncate text-xs font-medium text-foreground">
@@ -81,16 +87,19 @@
 
 <script setup lang="ts">
 /**
- * Grade da Visão Dia (plano grades-dia-semana-mes, Etapa 1.3): BURRA — recebe as
+ * Grade da Visão Dia (plano grades-dia-semana-mes, Etapa 1.3 + 2.3): BURRA — recebe as
  * linhas de hora (`hourGrid`) e os blocos posicionados em % (`layoutDayTimeline`)
  * já resolvidos pela página/composable; ZERO regra de data/conflito aqui (E.4).
  * A grade é um ELEMENTO único (linhas próprias + overlay absoluto, sem fragmentos
  * irmãos — gotcha 10); o EmptyState fica fora dela, na página.
  * Célula vazia → criar NAQUELE dia+hora; bloco → abrir o compromisso. A lista do
  * dia continua ABAIXO (a grade é o panorama; a lista é onde as notas se leem).
+ * Drag (Etapa 2): a página injeta o hook (`drag`) — a view só aplica `v-bind`
+ * no bloco e pinta `data-drop-target` na linha a partir de `dropKey` (primitivo).
  */
 import { AlertTriangle } from 'lucide-vue-next';
 import type { AppointmentDto } from '@agendabo/contracts';
+import type { DragBindApi } from '@/app/composables/useDragAppointment';
 
 export interface DaySlotView {
   /** Hora local da linha, "00".."23" (testid `day-slot-HH`). */
@@ -128,6 +137,8 @@ const props = defineProps<{
   blocks: DayBlockView[];
   /** "Hoje · 8 out" etc. — só para aria-labels (formatado na página). */
   dayLabel: string;
+  /** Mecânica de drag da página (bind + primitivos) — ausente = grade sem drag. */
+  drag?: DragBindApi<AppointmentDto> | null;
 }>();
 
 const emit = defineEmits<{

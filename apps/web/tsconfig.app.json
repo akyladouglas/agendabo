@@ -21,6 +21,7 @@
     "src/**/*.ts",
     "src/**/*.vue",
     "tests/**/*.ts",
+    "tests/**/*.vue",
     // packages consomados via alias de fonte (gotcha 3: sincronizar com vite.config.ts)
     "../../packages/contracts/src/**/*.ts",
     "../../packages/schedule-core/src/**/*.ts"

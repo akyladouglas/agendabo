@@ -183,3 +183,18 @@ do pacote linkado após edição). `fetch` do módulo transformado na URL
 os testes passam = busque no browser o módulo transformado (fetch na URL /@fs/
 ou DevTools Sources); nunca confie só no vitest pra confirmar o bundle do dev
 server.
+
+## 18. happy-dom: patch do watcher re-escreve `v-bind` por CIMA dos atributos imperativos do gesto
+
+No drag (Etapa 2), mudar o `ref` do item em drag dispara o watcher da view NO
+MESMO tick do harness: o patch re-aplica o `v-bind`/`:class` e **apaga** os
+atributos que o hook tinha posto no nó (`data-dragging`, `touch-action`), e o
+`dragging` lido via `defineExpose` chega como Ref cru (só refs de topo são
+desembrulhadas). **Correção:** dirigir a classe da view por PRIMITIVO
+(`draggingId: Ref<string|null>` — o patch só troca a string da classe) e, ao
+abrir/mudar estado, reler o nó por id e re-aplicar a vestimenta imperativa
+(pós-patch). **Se acontecer de novo:** atributo que o teste vê antes do
+`nextTick` e some depois = culpado é o patch do watcher; atributo via
+`el.style.x` não aparece no `getAttribute('style')` do happy-dom (use um
+atributo-dados de trilha em teste). E o happy-dom NÃO sintetiza `click` de
+`pointerup` — o harness despacha o `click` real como o browser faria.

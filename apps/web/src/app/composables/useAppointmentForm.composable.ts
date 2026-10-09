@@ -99,6 +99,29 @@ function fromAppointment(app: AppointmentWithRules | ReviewWithRules, timezone: 
   };
 }
 
+/**
+ * Edição que veio de um DROP com conflito (Etapa 2.3): o preset traz o horário
+ * CANDIDATO (translação) + a duração real do item; sem preset é a session
+ * vigente (o item como está).
+ */
+function fromAppointmentWithPreset(
+  app: AppointmentWithRules | ReviewWithRules,
+  timezone: string,
+  preset?: AppointmentPreset,
+): AppointmentFormValues {
+  const base = fromAppointment(app, timezone);
+  if (!preset) return base;
+  const durationMin = preset.endsAt
+    ? Math.max(5, Math.round((preset.endsAt.getTime() - preset.date.getTime()) / 60_000))
+    : base.durationMinutes;
+  return {
+    ...base,
+    date: toLocalDateString(preset.date, timezone),
+    time: toLocalTimeString(preset.date, timezone),
+    durationMinutes: durationMin,
+  };
+}
+
 /** Hora default ao criar a partir do calendário (Aberto #5 da spec calendario-visoes). */
 export const DEFAULT_CREATE_HOUR = 9;
 
@@ -110,6 +133,14 @@ export const DEFAULT_CREATE_HOUR = 9;
 export interface AppointmentPreset {
   date: Date;
   hour?: string;
+  /**
+   * Arraste-assistido (plano Etapa 2.3): o drop CONFLITUOSO abre o form de
+   * EDIÇÃO já no horário candidato com a DURAÇÃO do item preservada — sem ela
+   * o form derivaria a duração da hora-atual e o payload sairia errado.
+   */
+  endsAt?: Date;
+  /** true = o modal acabou de abrir POR UM DROP com conflito: pede as jogadas. */
+  autoRelocate?: boolean;
 }
 
 /**
@@ -185,7 +216,7 @@ export function useAppointmentForm(options: {
   /** Estado REATIVO único do form — a UI escreve aqui (v-model). */
   const values = reactive<AppointmentFormValues>(
     options.appointment
-      ? fromAppointment(options.appointment as AppointmentWithRules, timezone.value)
+      ? fromAppointmentWithPreset(options.appointment as AppointmentWithRules, timezone.value, options.preset)
       : emptyValues(timezone.value, options.preset),
   );
 
@@ -553,5 +584,6 @@ export function useAppointmentForm(options: {
     relocationBlocked,
     closeRelocation,
     confirmRelocation,
+    openRelocationOptions,
   };
 }

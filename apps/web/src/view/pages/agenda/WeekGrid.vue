@@ -8,9 +8,11 @@
       <section
         v-for="day in props.days"
         :key="day.key"
-        class="flex min-w-0 flex-col gap-2 md:min-w-[96px]"
+        class="flex min-w-0 flex-col gap-2 md:min-w-[96px] rounded-md"
         :aria-label="`${day.heading.weekday} ${day.heading.label}`"
         :data-testid="`week-day-${day.date}`"
+        :data-cell-key="`day:${day.date}`"
+        :data-drop-target="drag && drag.dropKey.value === `day:${day.date}` ? 'true' : 'false'"
       >
         <!-- cabeçalho do dia: clique → visão Dia (C.10) ou criação (cabeçalho vazio, D.16) -->
         <button
@@ -36,9 +38,10 @@
           :key="card.item.id"
           type="button"
           class="od-move flex min-h-11 w-full flex-col gap-1 rounded-md border bg-card p-2 text-left hover:border-primary/50"
-          :class="card.class"
+          :class="[card.class, drag && drag.draggingId.value === card.item.id ? 'opacity-40' : '']"
           :title="card.conflictTitle ? `⚠ ${card.conflictTitle}` : undefined"
           :data-testid="`week-item-${card.item.id}`"
+          v-bind="drag ? drag.bind(card.item) : {}"
           @click="emit('itemClick', card.item)"
         >
           <span class="text-xs font-semibold tabular-nums text-muted-foreground">
@@ -79,6 +82,7 @@
  */
 import { AlertTriangle } from 'lucide-vue-next';
 import type { AppointmentDto } from '@agendabo/contracts';
+import type { DragBindApi } from '@/app/composables/useDragAppointment';
 import AppBadge from '@/view/components/ui/badge/Badge.vue';
 
 export interface WeekCardView {
@@ -99,7 +103,11 @@ export interface WeekDayView {
   cards: WeekCardView[];
 }
 
-const props = defineProps<{ days: WeekDayView[] }>();
+const props = defineProps<{
+  days: WeekDayView[];
+  /** Mecânica de drag da página (bind + primitivos) — ausente = grade sem drag. */
+  drag?: DragBindApi<AppointmentDto> | null;
+}>();
 
 const emit = defineEmits<{
   dayClick: [dateKey: string];

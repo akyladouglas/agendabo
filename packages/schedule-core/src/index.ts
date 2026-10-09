@@ -8,4 +8,5 @@ export * from './dates';
 export * from './calendar';
 export * from './hourGrid';
 export * from './layoutDayTimeline';
+export * from './dropTarget';
 export * from './reminder-text';

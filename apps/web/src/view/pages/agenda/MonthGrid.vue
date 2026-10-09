@@ -35,6 +35,8 @@
         :aria-selected="cell.date === props.anchorKey || undefined"
         class="od-move min-w-0 border-b border-r border-border p-1"
         :class="cell.class"
+        :data-cell-key="`day:${cell.date}`"
+        :data-drop-target="drag && drag.dropKey.value === `day:${cell.date}` ? 'true' : 'false'"
       >
         <button
           type="button"
@@ -59,7 +61,8 @@
               v-for="chip in cell.chips"
               :key="chip.item.id"
               class="od-move flex min-h-5 w-full min-w-0 items-center gap-1 truncate rounded border px-1 text-[11px] leading-4"
-              :class="chip.class"
+              :class="[chip.class, drag && drag.draggingId.value === chip.item.id ? 'opacity-40' : '']"
+              v-bind="drag ? drag.bind(chip.item) : {}"
             >
               <AlertTriangle
                 v-if="chip.review"
@@ -76,6 +79,7 @@
                 class="ml-auto -my-1 -mr-1 flex min-h-11 items-center px-2 text-[10px] font-semibold text-muted-foreground hover:text-foreground md:min-h-0"
                 :aria-label="`Abrir detalhes de ${chip.item.title}`"
                 :data-testid="`chip-open-${chip.item.id}`"
+                @pointerdown.stop
                 @click.stop="emit('itemClick', chip.item)"
               >
                 Abrir
@@ -123,6 +127,7 @@ import { computed } from 'vue';
 import { AlertTriangle } from 'lucide-vue-next';
 import type { AppointmentDto } from '@agendabo/contracts';
 import type { CalendarDay } from '@agendabo/schedule-core';
+import type { DragBindApi } from '@/app/composables/useDragAppointment';
 
 export interface MonthChip {
   item: AppointmentDto;
@@ -151,6 +156,8 @@ const props = defineProps<{
   monthName: string;
   /** dateKey da âncora (aria-selected; o "hoje" vem do CalendarDay.isToday). */
   anchorKey: string;
+  /** Mecânica de drag da página (bind + primitivos) — ausente = grade sem drag. */
+  drag?: DragBindApi<AppointmentDto> | null;
 }>();
 
 const emit = defineEmits<{

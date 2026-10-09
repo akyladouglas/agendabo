@@ -40,6 +40,23 @@
         {{ headingText }}
       </p>
 
+      <!-- prévia do destino durante o arrasto (2.1) + anúncio acessível pós-drop
+           (2.4). Elementos ÚNICOS sempre presentes (sem v-if de irmãos — gotcha 10) -->
+      <p
+        v-show="agendaDrag.previewLabel.value"
+        class="text-xs tabular-nums text-muted-foreground"
+        data-testid="drop-preview"
+      >
+        {{ agendaDrag.previewLabel.value }}
+      </p>
+      <p
+        class="sr-only"
+        aria-live="polite"
+        data-testid="drop-live"
+      >
+        {{ agendaDrag.dropAnnouncement.value }}
+      </p>
+
       <!-- CORPO da página: UM branch por estado. Todo ramo tem ELEMENTO próprio +
            `key` estável — nada de `v-if` de texto/template VAZIO entre irmãos: o
            comentário-âncora desse vazio órfão de uma remontagem a mais e o update
@@ -125,6 +142,7 @@
           :slots="daySlots"
           :blocks="dayBlocksView"
           :day-label="headingText"
+          :drag="agendaDrag.drag"
           @slot-click="onDaySlotClick"
           @block-click="openDetails"
         />
@@ -188,6 +206,7 @@
       <div v-else-if="bodyKind === 'week'">
         <WeekGrid
           :days="weekDays"
+          :drag="agendaDrag.drag"
           @day-click="openDayFrom"
           @item-click="openDetails"
         />
@@ -208,6 +227,7 @@
           :cells="monthCellsView"
           :month-name="agenda.monthLabel.value.name"
           :anchor-key="anchorKey"
+          :drag="agendaDrag.drag"
           @day-click="onMonthDayClick"
           @item-click="openDetails"
         />
@@ -242,7 +262,8 @@
       :mode="formMode"
       :appointment="editing"
       :preset="preset"
-      @saved="appointmentsQuery.refetch()"
+      :auto-relocate="Boolean(preset?.autoRelocate)"
+      @saved="onModalSaved"
     />
 
     <!-- detalhes + excluir em 2 passos (A.6/A.7) -->
@@ -346,6 +367,7 @@ import { Inbox, Plus } from 'lucide-vue-next';
 import { conflictedIds, firstConflictLabel, type CalendarDay } from '@agendabo/schedule-core';
 import type { AppointmentDto } from '@agendabo/contracts';
 import { useAgendaPage } from '@/app/composables/useAgendaPage.composable';
+import { useAgendaDrag, dropOriginKey } from '@/app/composables/useAgendaDrag.composable';
 import { useDeleteAppointmentMutation } from '@/app/composables/mutations/useDeleteAppointment.mutation';
 import {
   formatDayHeading,
@@ -651,8 +673,10 @@ const editing = ref<AppointmentDto | undefined>(undefined);
 /**
  * Preset do form de criação: `date` SEMPRE; `hour` "HH:mm" vem da célula da grade
  * do Dia (sem hora — célula do Mês — o form mantém o default 09:00, Aberto #5).
+ * No drop conflituoso (2.3) o preset VAI COM o item em edição: `date`/`endsAt` =
+ * horário candidato + duração, `autoRelocate` = pede as jogadas ao montar.
  */
-const preset = ref<{ date: Date; hour?: string } | undefined>(undefined);
+const preset = ref<{ date: Date; hour?: string; endsAt?: Date; autoRelocate?: boolean } | undefined>(undefined);
 
 const detailsItem = ref<AppointmentDto | null>(null);
 const confirmDelete = ref(false);
@@ -702,6 +726,37 @@ function editFromDetails(): void {
   formSession.value += 1;
   formOpen.value = true;
   closeDetails();
+}
+
+// ---- Drag-and-drop (plano grades-dia-semana-mes, Etapa 2.3) ----
+// Composição: a mecânica é do hook, a regra é do schedule-core (via composable),
+// o conflito reabre o Reagendamento Assistido (modal de edição no horário
+// candidato). ZERO cálculo de data aqui (E.4).
+const agendaDrag = useAgendaDrag({
+  timezone: () => timezone.value,
+  now: () => agenda.now.value,
+  days: () =>
+    agenda.view.value === 'day'
+      ? agenda.hourCells.value
+      : agenda.view.value === 'week'
+        ? agenda.rows.value
+        : agenda.cells.value,
+  originOf: (item) => dropOriginKey(agenda.view.value === 'year' ? 'month' : agenda.view.value, item, timezone.value),
+  onConflict: openRelocationFromDrop,
+});
+
+/** Drop com conflito: modal de EDIÇÃO do item no horário candidato + jogadas. */
+function openRelocationFromDrop(req: { item: AppointmentDto; startsAt: Date; endsAt: Date }): void {
+  formMode.value = 'edit';
+  editing.value = req.item;
+  preset.value = { date: req.startsAt, endsAt: req.endsAt, autoRelocate: true };
+  formSession.value += 1;
+  formOpen.value = true;
+}
+
+/** Salvo/jogado pelo modal: a mutation já invalidou a agenda; limpa o pendente. */
+function onModalSaved(): void {
+  agendaDrag.pendingRelocation.value = null;
 }
 
 async function doDelete(): Promise<void> {

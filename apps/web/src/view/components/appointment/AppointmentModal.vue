@@ -223,6 +223,12 @@ const props = defineProps<{
    * default 09:00 local (Aberto #5).
    */
   preset?: AppointmentPreset;
+  /**
+   * Aberto POR UM DROP com conflito (Etapa 2.3): o form já nasce no horário
+   * candidato e PEDA as jogadas do server assim que monta — o Reagendamento
+   * Assistido (Etapa 0) é a única saída (cancelar = nada muda).
+   */
+  autoRelocate?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -264,6 +270,9 @@ watch(
           preset: props.preset,
         })
       : null;
+    // drop conflituoso (Etapa 2.3): o form nasceu NO horário candidato; pede as
+    // jogadas do server imediatamente (força: é a primeira consulta deste slot)
+    if (props.open && props.autoRelocate) void form.value?.openRelocationOptions(true);
   },
   { immediate: true },
 );

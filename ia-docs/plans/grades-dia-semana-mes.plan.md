@@ -4,7 +4,8 @@
 > grades, e soltar em conflito não existe sem o Reagendamento Assistido.
 > Ordem: **Etapa 0 (regra de conflito sem override) → Etapa 1 (grades) →
 > Etapa 2 (drag)**. Cada etapa com portão de gates.
-> **Status: aguardando aprovação deste plano atualizado.**
+> **Status: Etapa 0 ✔ (2026-10-08). Etapa 1 ✔ (2026-10-08). Etapa 2 ✔ (2026-10-09,
+> gates verdes; smoke humano pendente — ver notas da 2.3).**
 > Regras: `schedule-core.md` (regras puras com TDD), `vue.md`, `testing.md`,
 > invariantes do AGENTS.md. `@vue/test-utils` disponível.
 
@@ -194,6 +195,21 @@ Implementar com **Pointer Events** (unifica mouse+toque), hook próprio:
    visual: **sem optimistic update** — a posição só muda após o server
    confirmar; mantém o cache como fonte da verdade).
 
+> **Notas de implementação (2026-10-09, Etapa 2):**
+>
+> - Chaves de célula: Dia `hour:<ISO do início UTC da linha>`; Semana/Mês
+>   `day:YYYY-MM-DD`. **Limitação declarada:** a Semana não tem grade de horas,
+>   então o drop nela é de GRANULARIDADE DIA (translada N dias preservando a
+>   hora local — `dropTargetRange` kind `day`); refinar a Semana para célula
+>   dia×hora fica no backlog junto do redimensionar.
+> - O drop conflituoso reabre o Reagendamento Assistido (Etapa 0) via modal de
+>   EDIÇÃO do item aberto no horário candidato (`preset.endsAt` preserva a
+>   duração, `autoRelocate` pede as jogadas ao montar) — nenhum diálogo novo.
+> - `useAgendaDrag.composable.ts` compõe hook+regra+API; as grades recebem só o
+>   `DragBindApi` (bind + primitivos `draggingId`/`dropKey` — a classe do bloco
+>   é dirigida por PRIMITIVO para o patch do watcher não cobrir os atributos
+>   imperativos do gesto).
+
 ### 2.4 Acessibilidade
 
 - Drag de mouse/toque é opcional: cada bloco mantém clique → modal de edição
@@ -215,6 +231,23 @@ Implementar com **Pointer Events** (unifica mouse+toque), hook próprio:
 - E2E browser: arrastar bloco 14–15h → célula 18h salva; arrastar sobre outro
   → Reagendamento Assistido abre; "mover o existente" move os dois; cancelar
   restaura; drag no mês muda a data e o clique no bloco abre a edição.
+
+### Gate final 2 — smoke browser (FEITO 2026-10-09)
+
+- [x] Dia: arrastar 11:00 → linha 18:00 salva (`aria-live` "Reagendado para qua
+      14/10 18:00", bloco só se move após a resposta);
+- [x] Dia: arrastar sobre o outro abre o Reagendamento Assistido no horário
+      candidato; "Mover DRAG-B" move os DOIS atomicamente; Cancelar fecha sem
+      escrever (nada mudou na grade);
+- [x] ESC no meio do arrasto cancela (fantasma some, zero request de escrita);
+- [x] Soltar fora de célula cancela silenciosamente (zero escrita);
+- [x] Semana: drop é granularidade-DIA (limitação declarada acima) — card
+      muda de coluna, hora preservada ("→ sex 16/10 11:00");
+- [x] Mês: chip muda só a data ("qua 21/10 15:00"); clique curto no chip abre
+      os detalhes (threshold 4px separa clique de drag);
+- [ ] Toque real em celular — sem device aqui; o caminho é o mesmo de Pointer
+      Events (`pointerdown/move/up` + `touch-action: none` só no bloco), testado
+      por eventos Pointer no happy-dom. Pendente do humano num aparelho.
 
 ## Arquivos
 
