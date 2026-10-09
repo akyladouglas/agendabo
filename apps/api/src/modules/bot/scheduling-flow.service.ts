@@ -46,7 +46,7 @@ import {
   type EdicaoPayloadBruto,
   type ExtracaoPayloadBruto,
 } from './extraction-ruler';
-import type { BotEventsService } from '../observabilidade/bot-events.service';
+import { BotEventsService } from '../observabilidade/bot-events.service';
 
 /** Borda zod dos callbacks de teclado (callback_data nao e confiavel por natureza). */
 const dayChoiceSchema = z.object({

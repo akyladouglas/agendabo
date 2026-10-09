@@ -76,6 +76,9 @@ const VALUE_PATTERNS: Array<[RegExp, string]> = [
   [/[\w.+-]+@[\w-]+\.[\w.-]+/g, '[email]'],
   // telegramId com 5+ digitos (ids reais sao longos; 5+ evita '10h' e anos)
   [/\b\d{5,}\b/g, '[id]'],
+  // segredo colado em texto livre (msg de erro custom, log com interpolacao):
+  // chave=valor proibida (password/senha/token/secret/apikey...)
+  [/\b(password|senha|token|secret|apikey|api_key|authorization|cookie)\b\s*[=:]\s*\S+/gi, '$1=[redacted]'],
 ];
 
 function scrubValue(value: string): string {

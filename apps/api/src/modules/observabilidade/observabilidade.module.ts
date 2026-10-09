@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { PrismaModule } from '../../shared/prisma/prisma.module';
 import { AdminGuard } from './admin.guard';
 import { BotEventsService } from './bot-events.service';
 import { ObservabilidadeController } from './observabilidade.controller';
@@ -11,6 +12,7 @@ import { ObservabilidadeReadService } from './observabilidade-read.service';
  * (GlitchTip via SDK Sentry) e init por processo, nao modulo (ADR-0016).
  */
 @Module({
+  imports: [PrismaModule],
   controllers: [ObservabilidadeController],
   providers: [BotEventsService, ObservabilidadeReadService, AdminGuard],
   exports: [BotEventsService],

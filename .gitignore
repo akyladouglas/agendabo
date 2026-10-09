@@ -26,3 +26,5 @@ CLAUDE.md
 Thumbs.db
 
 .commit-msg.txt
+
+tools/.smoke-envelopes.log

@@ -8,7 +8,7 @@ import { AppModule } from './app.module';
 import type { Env } from './config/env.validation';
 import { loadRootEnv } from './config/load-root-env';
 import { readValidatedEnv } from './config/env.validation';
-import { initErrorTracker } from './shared/observability/error-tracker';
+import { initErrorTracker, attachNestErrorFilter } from './shared/observability/error-tracker';
 
 async function bootstrap(): Promise<void> {
   // tracker ANTES do AppModule: erros do proprio boot sobem (Fase 9/ADR-0016).
@@ -27,6 +27,9 @@ async function bootstrap(): Promise<void> {
   app.useGlobalPipes(new ValidationPipe({ whitelist: false, transform: false }));
 
   const port = config.get('API_PORT', { infer: true });
+  // filtro de excecao do SDK (canal oficial do Nest): captura o que escapa dos
+  // handlers sem mudar a resposta HTTP (Fase 9; sem DSN e no-op).
+  attachNestErrorFilter(app);
   await app.listen(port);
   process.stderr.write(`[api] ouvindo em http://localhost:${port}\n`);
 }

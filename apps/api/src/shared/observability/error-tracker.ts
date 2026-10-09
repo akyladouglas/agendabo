@@ -1,4 +1,5 @@
 import { Logger } from '@nestjs/common';
+import type { INestApplication } from '@nestjs/common';
 import * as Sentry from '@sentry/nestjs';
 import { scrubEvent } from '@agendabo/schedule-core';
 import type { Env } from '../../config/env.validation';
@@ -29,13 +30,56 @@ export function initErrorTracker(env: Env, processName: string): void {
     dsn,
     environment: env.SENTRY_ENVIRONMENT,
     release: env.SENTRY_RELEASE,
+    debug: env.NODE_ENV === 'development',
     tracesSampleRate: env.SENTRY_TRACES_SAMPLE_RATE,
     // nada de anonimato a mais: a politica e a funcao pura testada (spec A5)
-    beforeSend: (event) => scrubEvent(event as never) as never,
-    // O SDK NAO coleta PII por default no node (sendDefaultPii nao existe no
-    // v11 — a ausencia e a politica); o pente-fino duro e o scrub acima.
+    beforeSend: (event, hint) => {
+      const out = scrubEvent(event as never) as never;
+      // segredo NUNCA viaja no evento; se o scrub dropou (null), registra o
+      // motivo no log local (best-effort) para o operador ver o descarte
+      if (out === null) {
+        logger.warn('evento de erro descartado pelo scrub (so identidade)');
+      }
+      void hint;
+      return out;
+    },
+    // O SDK nao coleta PII no node por default — a politica dura e o scrub.
     attachStacktrace: true,
+    // nestIntegration: instrumentacao dos canais Nest (rotas/handlers). A
+    // captura das excecoes de HTTP e ligada no bootstrap com o error handler
+    // do express (abaixo) — sem isso, erro de rota morre no filtro do Nest.
+    integrations: [Sentry.nestIntegration()],
   });
   Sentry.setTag('process', processName);
   logger.log(`tracker de erros ativo (${processName})`);
+}
+
+/**
+ * Filtro global de exceções do SDK (o CANAL OFICIAL de captura no NestJS):
+ * captura tudo que escapa dos handlers e NAO e HttpException esperada (erros
+ * de programa como ZodError cru), registra no tracker e delega ao handler
+ * padrao do Nest (o HTTP para o cliente nao muda). Chamar no bootstrap da API
+ * depois de criar o app. No-op sem client (sem DSN).
+ */
+export function attachNestErrorFilter(app: INestApplication): void {
+  if (!Sentry.getClient()) return;
+  // subpath export do SDK (o indice nao reexporta o filtro)
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { SentryGlobalFilter } = require('@sentry/nestjs/setup') as {
+    SentryGlobalFilter: new (applicationRef: unknown) => never;
+  };
+  app.useGlobalFilters(new SentryGlobalFilter(app.getHttpAdapter()));
+}
+
+/**
+ * Force o flush do SDK antes do processo morrer (os entrypoints standalone
+ * chamam no handler de exit). Sem isso, o envelope de uma excecao fatal pode
+ * morrer no buffer com o processo (best-effort com timeout curto).
+ */
+export async function flushErrorTracker(timeoutMs = 2000): Promise<void> {
+  try {
+    await Sentry.flush(timeoutMs);
+  } catch {
+    /* jamais bloqueia o shutdown */
+  }
 }

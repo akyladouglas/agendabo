@@ -9,7 +9,7 @@ import { Logger } from '@nestjs/common';
 import { AppModule } from './app.module';
 import { loadRootEnv } from './config/load-root-env';
 import { readValidatedEnv } from './config/env.validation';
-import { initErrorTracker } from './shared/observability/error-tracker';
+import { initErrorTracker, flushErrorTracker } from './shared/observability/error-tracker';
 
 async function bootstrap(): Promise<void> {
   const logger = new Logger('BotProcess');
@@ -21,12 +21,21 @@ async function bootstrap(): Promise<void> {
   await app.init();
   logger.log('processo do bot no ar (long-polling). Ctrl+C para sair.');
 
-  const shutdown = async () => {
-    await app.close();
-    process.exit(0);
+  const shutdown = async (code: number): Promise<void> => {
+    try {
+      await app.close();
+    } finally {
+      await flushErrorTracker();
+      process.exit(code);
+    }
   };
-  process.once('SIGINT', () => void shutdown());
-  process.once('SIGTERM', () => void shutdown());
+  process.once('SIGINT', () => void shutdown(0));
+  process.once('SIGTERM', () => void shutdown(0));
+  // falha fatal: flush do tracker antes de morrer (code 1 = crash visivel)
+  process.on('unhandledRejection', (reason) => {
+    logger.error(`falha nao tratada: ${String(reason)}`);
+    void shutdown(1);
+  });
 }
 
 void bootstrap();

@@ -22,7 +22,7 @@ import type { DispatchJobData } from '../modules/notifications/outbox.service';
 import type { Env } from '../config/env.validation';
 import { loadRootEnv } from '../config/load-root-env';
 import { readValidatedEnv } from '../config/env.validation';
-import { initErrorTracker } from '../shared/observability/error-tracker';
+import { initErrorTracker, flushErrorTracker } from '../shared/observability/error-tracker';
 
 async function bootstrap(): Promise<void> {
   const logger = new Logger('NotificationsWorker');
@@ -64,13 +64,23 @@ async function bootstrap(): Promise<void> {
 
   logger.log(`worker de notificações ouvindo a fila "${NOTIFICATIONS_QUEUE}". Ctrl+C para sair.`);
 
-  const shutdown = async () => {
-    await worker.close();
-    await app.close();
-    process.exit(0);
+  const shutdown = async (code: number): Promise<void> => {
+    try {
+      await worker.close();
+      await app.close();
+    } finally {
+      await flushErrorTracker();
+      process.exit(code);
+    }
   };
-  process.once('SIGINT', () => void shutdown());
-  process.once('SIGTERM', () => void shutdown());
+  process.once('SIGINT', () => void shutdown(0));
+  process.once('SIGTERM', () => void shutdown(0));
+  // falha fatal (ex.: Redis morto no boot): da tempo do SDK flush-ear o
+  // envelope antes de morrer e SAI COM CODE 1 (crash visivel, nao maquiado).
+  process.on('unhandledRejection', (reason) => {
+    logger.error(`falha nao tratada: ${String(reason)}`);
+    void shutdown(1);
+  });
 }
 
 void bootstrap();

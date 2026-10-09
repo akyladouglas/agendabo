@@ -79,6 +79,17 @@ describe('scrubEvent (politica de privacidade do tracker)', () => {
     expect(json).toContain('passo titulo'); // o contexto tecnico sobrevive
   });
 
+  it('segredo colado em texto livre (chave=valor) e redigitado', () => {
+    const out = scrubEvent(
+      baseEvent({ message: 'falhou senha=hunter3; api_key: sk-ant-abc123; ok=segue' }),
+    );
+    const json = JSON.stringify(out);
+    expect(json).not.toContain('hunter3');
+    expect(json).not.toContain('sk-ant-abc123');
+    expect(json).toContain('senha=[redacted]');
+    expect(json).toContain('ok=segue'); // o que nao e segredo fica
+  });
+
   it('sem DSN/sem user autenticado: evento segue sem user (e sem crash)', () => {
     const out = scrubEvent(baseEvent());
     expect((out as { user?: unknown }).user).toBeUndefined();
