@@ -90,6 +90,51 @@ describe('scrubEvent (politica de privacidade do tracker)', () => {
     expect(json).toContain('ok=segue'); // o que nao e segredo fica
   });
 
+  it('poda em profundidade: key whoseo valor proibido vira nada (sem casca oca)', () => {
+    const out = scrubEvent(
+      baseEvent({ extra: { auth: { token: 12345 }, contexto: 'ok' } } as never),
+    );
+    const json = JSON.stringify(out);
+    expect(json).not.toContain('12345');
+    // a estrutura do segredo nao deixa rastro: nem "auth" oco
+    expect(json).not.toContain('auth');
+    expect(json).toContain('ok'); // o tecnico sobrevive
+  });
+
+  it('anexos (hint.attachments) sao zerados — nada binario sai da maquina', () => {
+    const hint = { attachments: [{ filename: 'pinia-state.json', data: '{"email":"a@b.c"}' }] };
+    const out = scrubEvent(baseEvent(), hint);
+    expect(out).not.toBeNull();
+    expect(hint.attachments).toHaveLength(0);
+  });
+
+  it('UUID canonico em uppercase e redigitado', () => {
+    const out = scrubEvent(
+      baseEvent({ extra: { reqId: 'AABBCCDD-1122-4344-8566-77889900AABB' } } as never),
+    );
+    const json = JSON.stringify(out);
+    expect(json).not.toContain('AABBCCDD');
+    expect(json).toContain('[uuid]');
+  });
+
+  // P1-4 do review: PII colada em DELIMITADORES diferentes do espaco (virgula/
+  // pipe/tab). A borda do regex nao pode exigir espaco — este caso prende isso.
+  it('PII colada em virgula/pipe/tab continua caindo', () => {
+    const out = scrubEvent(
+      baseEvent({
+        message: 'ana@x.com,+5511912345678|11111111-2222-3333-4444-555555555555\tjoao@y.com.br',
+      } as never),
+    );
+    const json = JSON.stringify(out);
+    expect(json).not.toContain('ana@x.com');
+    expect(json).not.toContain('joao@y.com.br');
+    expect(json).not.toContain('11111111-2222');
+    expect(json).not.toContain('+5511912345678');
+    expect(json).toContain('[email]');
+    expect(json).toContain('[uuid]');
+    expect(json).toContain('[id]');
+  });
+
   it('sem DSN/sem user autenticado: evento segue sem user (e sem crash)', () => {
     const out = scrubEvent(baseEvent());
     expect((out as { user?: unknown }).user).toBeUndefined();

@@ -151,6 +151,40 @@ describe('AnthropicClientProvider — captura llm_calls (ADR-0017)', () => {
     ).resolves.toMatchObject({ stop_reason: 'tool_use' });
   });
 
+  // P1-5 do review: `create` que REJEITA de forma SINCRONA (input invalido,
+  // validacao local do Prisma) viraria unhandled rejection em `void` e o
+  // OnUncaughtException derrubaria o processo por um log. try/catch prende isso.
+  it('rejeicao SINCRONA do prisma.create nao vaza (sem unhandled rejection)', async () => {
+    const { provider, sdkCreate, ctx } = make();
+    sdkCreate.mockResolvedValue(OK_RESPONSE);
+    const error = new Error('input invalido');
+    const prismaFalho = {
+      llmCall: {
+        create: jest.fn().mockImplementation(() => {
+          throw error;
+        }),
+      },
+    };
+    (provider as unknown as { prisma: unknown }).prisma = prismaFalho;
+    await expect(
+      ctx.run({ userId: 'u1', purpose: 'intent_classification' }, () => provider.create(PARAMS)),
+    ).resolves.toMatchObject({ stop_reason: 'tool_use' });
+  });
+
+  // P2-2 do review: tokens de cache do Anthropic sao gravados (auditoria de
+  // custo real); ausentes = null (jamais chute).
+  it('cache tokens do usage sao gravados; ausentes viram null', async () => {
+    const { provider, sdkCreate, llmCall, ctx } = make();
+    sdkCreate.mockResolvedValue({
+      ...OK_RESPONSE,
+      usage: { ...OK_RESPONSE.usage, cache_read_input_tokens: 4000 },
+    });
+    await ctx.run({ userId: 'u1', purpose: 'query_interpretation' }, () => provider.create(PARAMS));
+    const data = llmCall.create.mock.calls[0]![0]!.data;
+    expect(data.cacheReadInputTokens).toBe(4000);
+    expect(data.cacheCreationInputTokens).toBeNull();
+  });
+
   it('escalonamento da chamada aninhada: run() do service cobre create e await', async () => {
     // o padrao oficial: ctx.run(...) ARCADE a chamada — se o store for lexico
     // (nao escalonado) o provider nao ve contexto e este teste falha.

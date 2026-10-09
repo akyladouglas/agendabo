@@ -1,6 +1,9 @@
 # 0016 — GlitchTip SaaS como error tracker (SDK Sentry, DSN trocável, PII = só userId)
 
 - Status: Aceito
+
+> **Emenda (review Fase 9, 2026-10-09)**: a politica de scrub cobre o EVENTO via eforeSend; os ANEXOS do envelope nao passam por ele. Fechar assim: (1) hint.attachments zerado dentro do scrubEvent (canal unico disponivel); (2) os PRODUTORES de anexo ficam desligados na fonte — web jamais registra o plugin pinia do @sentry/vue (estado dos stores tem e-mail), e os defaults do node/nestjs v11 nao incluem extraErrorData/zod-attachments (verificado no SDK 11.6). NENHUM anexo sai da maquina.
+
 - Data: 2026-10-09
 - Contexto da fase: Fase 9 "Observabilidade" (erros/perf da plataforma na API,
   worker, bot e web)

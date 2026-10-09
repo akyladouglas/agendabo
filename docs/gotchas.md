@@ -250,3 +250,19 @@ unitario mocka `$queryRaw` e nunca ve isso — o smoke do FOR UPDATE (review
 2026-10-09) e que encontrou. **Correcao:** todo raw com coluna uuid/enum faz cast
 explicito; sempre ha de haver ao menos um smoke contra o Postgres real tocando o
 SQL cru.
+
+## 22. SDK Sentry: `beforeSend` NAO ve anexos — e o `void promise.create()` pode derrubar o processo
+
+Dois furos achados no review da Fase 9 (2026-10-09):
+
+1. **Anexos do envelope**: `beforeSend` so ve o EVENTO; anexos (plugin pinia do
+   @sentry/vue = estado dos stores com e-mail; `extraErrorData`/zod-anexos no
+   node) viajam pelo envelope e contornariam o scrub inteiro. **Correcao:**
+   `hint.attachments` zerado dentro do `scrubEvent` + produtores desligados na
+   fonte (jamais registrar `createSentryPiniaPlugin`; os defaults do node/nestjs
+   v11 nao incluem os integrations de anexo — verificar ao upgradar o SDK).
+2. **`void prisma.x.create().catch()`**: se o `create` REJEITA de forma
+   SINCRONA (input invalido, validacao local do Prisma), o `.catch` nunca roda e
+   vira unhandled rejection — o OnUncaughtException do SDK derruba o processo
+   por um LOG. **Correcao:** telemetria best-effort embrulha o DISPARO em
+   try/catch, alem do `.catch`.

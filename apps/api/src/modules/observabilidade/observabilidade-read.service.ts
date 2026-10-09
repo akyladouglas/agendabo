@@ -98,16 +98,18 @@ export class ObservabilidadeReadService {
    * chamadas sem tokens reportados — a soma de custo delas e parcial (spec C3).
    */
   async llmUsage(raw: unknown) {
+    // P2-4 do review: escopo default = ULTIMOS 90 DIAS quando o admin nao
+    // passa `from`. A tabela nao tem prazo de remocao (decisao humana #3),
+    // entao a agregacao full-table e o unico jeito de a leitura nao piorar
+    // para sempre. Limites (to-from) seguem presos pelo zod.
+    const fallbackFrom = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000);
     const query = llmUsageQuerySchema.parse(raw);
-    const where: Prisma.LlmCallWhereInput =
-      query.from || query.to
-        ? {
-            createdAt: {
-              ...(query.from ? { gte: query.from } : {}),
-              ...(query.to ? { lte: query.to } : {}),
-            },
-          }
-        : {};
+    const where: Prisma.LlmCallWhereInput = {
+      createdAt: {
+        ...(query.from ? { gte: query.from } : { gte: fallbackFrom }),
+        ...(query.to ? { lte: query.to } : {}),
+      },
+    };
     const groupField = query.groupBy === 'user' ? 'userId' : 'purpose';
     const rows = await this.prisma.llmCall.groupBy({
       by: [groupField],
@@ -128,6 +130,10 @@ export class ObservabilidadeReadService {
         callsWithoutUsage: r._sum.costUsdMicros === null ? r._count._all : 0,
       };
     });
+    // P2-5 do review: ordem estavel e CONTRATADA — custo de ordenar por custo
+    // zero ("sem cost" first). O Prisma devolve em ordem de GROUP BY; sem isto,
+    // a UI de dashboard oscila a cada load.
+    buckets.sort((a, b) => b.costUsdMicros - a.costUsdMicros);
     return llmUsageResultSchema.parse({ buckets });
   }
 
@@ -138,14 +144,25 @@ export class ObservabilidadeReadService {
    */
   async setRollout(targetUserId: string, raw: unknown) {
     const input = updateObservabilityRolloutInputSchema.parse(raw);
-    const result = await this.prisma.user.updateMany({
-      where: { id: targetUserId },
-      data: { observabilidadeEventosAtivo: input.observabilidadeEventosAtivo },
-    });
-    if (result.count === 0) throw new NotFoundException('Usuario nao encontrado');
-    return {
-      userId: targetUserId,
-      observabilidadeEventosAtivo: input.observabilidadeEventosAtivo,
-    };
+    // P2-9 do review: P2034 (deadlock/serialization) e transitorio — uma
+    // re-tentativa resolve (o signup do admin segue o mesmo padrao de retry
+    // da casa). Falha real de conexão NAO e retry-loop: uma chance e sobe.
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        const result = await this.prisma.user.updateMany({
+          where: { id: targetUserId },
+          data: { observabilidadeEventosAtivo: input.observabilidadeEventosAtivo },
+        });
+        if (result.count === 0) throw new NotFoundException('Usuario nao encontrado');
+        return {
+          userId: targetUserId,
+          observabilidadeEventosAtivo: input.observabilidadeEventosAtivo,
+        };
+      } catch (err) {
+        const code = (err as { code?: string })?.code;
+        if (code === 'P2034' && attempt === 0) continue;
+        throw err;
+      }
+    }
   }
 }

@@ -288,6 +288,9 @@ model LlmCall {
   /// `usage` ausente na resposta => null (jamais chute).
   inputTokens  Int?
   outputTokens Int?
+  /// Fase 9 review: cache Anthropic (preco diferenciado); NULL = SDK nao informou.
+  cacheReadInputTokens     Int? @map("cache_read_input_tokens")
+  cacheCreationInputTokens Int? @map("cache_creation_input_tokens")
   /// Micro-USD (1e-6 USD), inteiro — float somado em SQL e armadilha (ADR-0017).
   costUsdMicros Int?
   latencyMs     Int?

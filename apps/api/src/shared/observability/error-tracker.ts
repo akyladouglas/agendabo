@@ -34,13 +34,15 @@ export function initErrorTracker(env: Env, processName: string): void {
     tracesSampleRate: env.SENTRY_TRACES_SAMPLE_RATE,
     // nada de anonimato a mais: a politica e a funcao pura testada (spec A5)
     beforeSend: (event, hint) => {
-      const out = scrubEvent(event as never) as never;
+      // hint: anexos sao ZERADOS dentro do scrubEvent (P0-1a) — nada binario
+      // sai da maquina; produtores de anexo (extraErrorData/zod attachments)
+      // nao estao nos defaults do node@11 (verificado no SDK).
+      const out = scrubEvent(event as never, hint as never) as never;
       // segredo NUNCA viaja no evento; se o scrub dropou (null), registra o
       // motivo no log local (best-effort) para o operador ver o descarte
       if (out === null) {
         logger.warn('evento de erro descartado pelo scrub (so identidade)');
       }
-      void hint;
       return out;
     },
     // O SDK nao coleta PII no node por default — a politica dura e o scrub.

@@ -74,8 +74,14 @@ const FORBIDDEN_KEYS = new Set([
 const VALUE_PATTERNS: Array<[RegExp, string]> = [
   // e-mails
   [/[\w.+-]+@[\w-]+\.[\w.-]+/g, '[email]'],
-  // telegramId com 5+ digitos (ids reais sao longos; 5+ evita '10h' e anos)
-  [/\b\d{5,}\b/g, '[id]'],
+  // uuid CANONICO em texto livre (qualquer case) — ids de request/response.
+  // A politica da casa e uuid NUNCA em mensagem livre; o `user.id` permitido
+  // mora no campo proprio (passo 2 do scrubEvent), nunca aqui.
+  [/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, '[uuid]'],
+  // telegramId com 5+ digitos (ids reais sao longos; 5+ evita '10h' e anos).
+  // Lookaround por [0-9] em vez de \b: borda nao-digito vale (virgula/pipe/tab)
+  // e o telefone colado NAO deixa os 4 ultimos para tras (P1-4 do review).
+  [/(?<![0-9])\d{5,}(?![0-9])/g, '[id]'],
   // segredo colado em texto livre (msg de erro custom, log com interpolacao):
   // chave=valor proibida (password/senha/token/secret/apikey...)
   [/\b(password|senha|token|secret|apikey|api_key|authorization|cookie)\b\s*[=:]\s*\S+/gi, '$1=[redacted]'],
@@ -101,7 +107,18 @@ function scrubNode(node: unknown): unknown {
     for (const [key, value] of Object.entries(node as Record<string, unknown>)) {
       if (isForbiddenKey(key)) continue;
       const cleaned = scrubNode(value);
-      if (cleaned !== undefined) out[key] = cleaned;
+      if (cleaned === undefined) continue;
+      // poda em profundidade (P0-1b do review): objeto/array que ficou VAZIO
+      // depois do pente-fino (ex.: {auth:{token:1}} -> {auth:{}}) nao deixa
+      // rastro de key oca — a estrutura do dado proibido nao e metadado util
+      if (
+        cleaned !== null &&
+        typeof cleaned === 'object' &&
+        Object.keys(cleaned as object).length === 0
+      ) {
+        continue;
+      }
+      out[key] = cleaned;
     }
     return out;
   }
@@ -113,8 +130,21 @@ function scrubNode(node: unknown): unknown {
  * depois do scrub e o que o GlitchTip ve. Se NAO SOBRA NADA alem de
  * identidade nua (ex.: um evento cujo unico conteudo era user.email), devolve
  * null e o evento morre aqui.
+ *
+ * `hint` (2o arg do beforeSend) carrega os ANEXOS do envelope — que NAO passam
+ * pelo evento e contornariam o scrub.Politica: NENHUM anexo sai da maquina
+ * (`hint.attachments` zerado) e os produtores ficam desligados nos inits
+ * (web: jamais o plugin pinia; node: defaults v11 sem extraErrorData/zod).
  */
-export function scrubEvent(event: ScrubableEvent): ScrubableEvent | null {
+export function scrubEvent(
+  event: ScrubableEvent,
+  hint?: { attachments?: unknown[] },
+): ScrubableEvent | null {
+  // P0-1a: zerados aqui (defesa final); os produtores de anexo estao desligados
+  // nos inits dos 4 processos.
+  if (hint && Array.isArray(hint.attachments) && hint.attachments.length > 0) {
+    hint.attachments.length = 0;
+  }
   const out: ScrubableEvent = { ...event };
 
   // 1) request inteiro fora: headers/corps de rota sao os canos por onde a

@@ -153,7 +153,60 @@ describe('ObservabilidadeReadService.llmUsage (C4 — admin-only)', () => {
     ]);
     const res = await svc.llmUsage({ groupBy: 'user' });
     expect(llmCall.groupBy.mock.calls[0]![0]!.by).toEqual(['userId']);
+    // ordem contratada (P2-5): custo 5 (u1) antes de custo 0 (sem_usuario)
     expect(res.buckets.map((b) => b.key)).toEqual(['u1', 'sem_usuario']);
+  });
+
+  // P1-6 do review: isolamento de bucket — o caminho da KEY (null→"sem_usuario"
+  // fica por ultimo no sort) e da leitura de tokens NAO pode contaminar outro
+  // bucket. Um unico grupo com dados completos + assertions exatas.
+  it('bucket unico: soma inteira isolada do bucket null (chave e leitura independentes)', async () => {
+    const { svc, llmCall } = make();
+    llmCall.groupBy.mockResolvedValueOnce([
+      {
+        userId: null,
+        _count: { _all: 4 },
+        _sum: { inputTokens: 8, outputTokens: 4, costUsdMicros: null },
+      },
+      {
+        userId: 'u7',
+        _count: { _all: 2 },
+        _sum: { inputTokens: 100, outputTokens: 50, costUsdMicros: 350 },
+      },
+    ]);
+    const res = await svc.llmUsage({ groupBy: 'user' });
+    // ordem contratada: maior custo primeiro (P2-5) — u7 (350) antes do null (0)
+    expect(res.buckets.map((b) => b.key)).toEqual(['u7', 'sem_usuario']);
+    expect(res.buckets[0]).toEqual({
+      key: 'u7',
+      calls: 2,
+      inputTokens: 100,
+      outputTokens: 50,
+      costUsdMicros: 350,
+      callsWithoutUsage: 0,
+    });
+    // bucket null: custo null vira 0 na soma + denuncia as 4 chamadas sem usage
+    expect(res.buckets[1]).toEqual({
+      key: 'sem_usuario',
+      calls: 4,
+      inputTokens: 8,
+      outputTokens: 4,
+      costUsdMicros: 0,
+      callsWithoutUsage: 4,
+    });
+  });
+
+  // P2-4: sem `from` o escopo default sao os ultimos 90 dias (auditavel)
+  it('sem from: where cria gte default de ~90 dias atras', async () => {
+    const { svc, llmCall } = make();
+    llmCall.groupBy.mockResolvedValueOnce([]);
+    await svc.llmUsage({});
+    const where = llmCall.groupBy.mock.calls[0]![0]!.where;
+    expect(where.createdAt.gte).toBeInstanceOf(Date);
+    const ageMs = Date.now() - (where.createdAt.gte as Date).getTime();
+    const ninetyDays = 90 * 24 * 60 * 60 * 1000;
+    expect(ageMs).toBeGreaterThanOrEqual(ninetyDays - 60_000);
+    expect(ageMs).toBeLessThanOrEqual(ninetyDays + 60_000);
   });
 });
 

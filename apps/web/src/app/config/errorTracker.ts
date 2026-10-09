@@ -19,9 +19,16 @@ export function setupErrorTracker(app: App): void {
     environment: env.sentryEnvironment ?? 'development',
     // tracing OFF por default (decisao #7 do humano); religar = ADR novo
     tracesSampleRate: 0,
+    // P0-1a (defesa dupla): o browser nao lista anexos nos defaults, e o pinia
+    // plugin so existe se nos registrarmos — jamais registrar (o estado dos
+    // stores tem e-mail). Hint.attachments e zerado pelo scrubEvent de qualquer
+    // forma. `normalizeDepth` limitado + max string length = o scrub varre uma
+    // arvore previsivel (P2-12 do review).
+    normalizeDepth: 3,
+    maxValueLength: 250,
     // sendDefaultPii nao existe no @sentry/vue v11 (a ausencia e a politica):
     // o browser tambem nao manda PII default; o pente-fino e o scrubEvent.
-    beforeSend: (event) => scrubEvent(event as never) as never,
+    beforeSend: (event, hint) => scrubEvent(event as never, hint as never) as never,
   });
 }
 

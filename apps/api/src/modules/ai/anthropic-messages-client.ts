@@ -18,7 +18,13 @@ export interface MessagesCreateResult {
   stop_reason: string | null;
   /** Fase 9 (observabilidade): modelo que respondeu; `usage` ausente => undefined (jamais chute). */
   model?: string;
-  usage?: { input_tokens: number; output_tokens: number };
+  usage?: {
+    input_tokens: number;
+    output_tokens: number;
+    /** Tokens de cache Anthropic (P2-2): capturados para auditoria de custo. */
+    cache_read_input_tokens?: number;
+    cache_creation_input_tokens?: number;
+  };
 }
 
 /**

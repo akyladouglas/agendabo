@@ -46,6 +46,10 @@ const HASH_PREFIX = 16;
 export class BotEventsService {
   private readonly logger = new Logger(BotEventsService.name);
   private readonly hashSecret: string;
+  // P2-10 do review: LRU limitado (300) — o bot atende a mesma populacao o dia
+  // todo; recalcular HMAC por turno e trabalho bobo. Mapa simples com evicao
+  // por ordem de insercao (sem dependencia).
+  private readonly hashCache = new Map<string, string>();
 
   constructor(
     private readonly prisma: PrismaService,
@@ -56,10 +60,18 @@ export class BotEventsService {
 
   /** Hash deterministico do telegramId com salt (mesmo id => mesmo hash). */
   hashTelegramId(telegramId: string): string {
-    return createHmac('sha256', this.hashSecret)
+    const cached = this.hashCache.get(telegramId);
+    if (cached !== undefined) return cached;
+    const hash = createHmac('sha256', this.hashSecret)
       .update(telegramId)
       .digest('hex')
       .slice(0, HASH_PREFIX);
+    if (this.hashCache.size >= 300) {
+      const oldest = this.hashCache.keys().next().value;
+      if (oldest !== undefined) this.hashCache.delete(oldest);
+    }
+    this.hashCache.set(telegramId, hash);
+    return hash;
   }
 
   /**

@@ -45,6 +45,10 @@ export class AnthropicClientProvider implements AnthropicMessagesClient {
           ? {
               input_tokens: response.usage.input_tokens,
               output_tokens: response.usage.output_tokens,
+              // P2-2 do review: cache a preco diferenciado (leitura = 10% do
+              // input). Captura honesta: so o numero cru do SDK, null ausente.
+              cache_read_input_tokens: response.usage.cache_read_input_tokens ?? undefined,
+              cache_creation_input_tokens: response.usage.cache_creation_input_tokens ?? undefined,
             }
           : undefined,
       };
@@ -63,6 +67,11 @@ export class AnthropicClientProvider implements AnthropicMessagesClient {
    * telemetria nunca derruba nem atrasa a fala do usuario. Uma linha POR
    * tentativa, inclusive a de escalada. Sem contexto = linha sem userId + warn
    * (em producao contexto vazio e bug — o warn e o alarme).
+   *
+   * O `create` pode REJEITAR de forma síncrona (serializacao de input invalido,
+   * validacao local do Prisma) — dentro de `void` isso viraria unhandled
+   * rejection e o OnUncaughtException derrubaria o processo inteiro por um
+   * log. Por isso o try/catch envolver o disparo, alem do .catch (P1-5).
    */
   private registrar(
     result: MessagesCreateResult,
@@ -77,24 +86,32 @@ export class AnthropicClientProvider implements AnthropicMessagesClient {
       );
     }
     const cost = this.estimateCostMicros(result.usage);
-    void this.prisma.llmCall
-      .create({
-        data: {
-          userId: userId ?? null,
-          purpose: resolvedPurpose,
-          outcome,
-          modelUsed: result.model ?? null,
-          inputTokens: result.usage?.input_tokens ?? null,
-          outputTokens: result.usage?.output_tokens ?? null,
-          costUsdMicros: cost,
-          latencyMs: Date.now() - startedAt,
-        },
-      })
-      .catch((err: unknown) => {
-        this.logger.error(
-          `llm_calls: falha ao registrar ${resolvedPurpose}/${outcome}: ${String(err)}`,
-        );
-      });
+    try {
+      this.prisma.llmCall
+        .create({
+          data: {
+            userId: userId ?? null,
+            purpose: resolvedPurpose,
+            outcome,
+            modelUsed: result.model ?? null,
+            inputTokens: result.usage?.input_tokens ?? null,
+            outputTokens: result.usage?.output_tokens ?? null,
+            cacheReadInputTokens: result.usage?.cache_read_input_tokens ?? null,
+            cacheCreationInputTokens: result.usage?.cache_creation_input_tokens ?? null,
+            costUsdMicros: cost,
+            latencyMs: Date.now() - startedAt,
+          },
+        })
+        .catch((err: unknown) => {
+          this.logger.error(
+            `llm_calls: falha ao registrar ${resolvedPurpose}/${outcome}: ${String(err)}`,
+          );
+        });
+    } catch (err) {
+      this.logger.error(
+        `llm_calls: falha ao registrar ${resolvedPurpose}/${outcome}: ${String(err)}`,
+      );
+    }
   }
 
   /**
