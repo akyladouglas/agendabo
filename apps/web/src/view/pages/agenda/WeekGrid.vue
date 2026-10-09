@@ -44,26 +44,33 @@
           data-testid="week-day-grid"
         >
           <!-- 24 linhas de uma hora cada (alturas IGUAIS ⇒ a régua % da página vale
-               para toda a grade; a célula vazia abre a criação NAQUELE dia+hora) -->
+               para toda a grade; a célula vazia abre a criação NAQUELE dia+hora).
+               Rótulo da hora em TODA linha (visual da visão Dia, R.23) + linha
+               pontilhada na hora atual -->
           <div
             v-for="hour in HOURS"
             :key="hour"
             role="row"
+            class="relative border-b border-border/60 last:border-b-0"
             :data-testid="`week-cell-${day.date}-${hour}`"
           >
             <button
               type="button"
-              class="od-move block h-8 w-full text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-              :class="((day.nowCell ?? 24) > Number(hour) ? 'opacity-60' : '') || ''"
+              class="od-move relative block h-8 w-full text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              :class="(day.nowCell ?? 24) > Number(hour) ? 'opacity-60' : ''"
               :aria-label="`Criar ${hour}:00 de ${day.heading.weekday} ${day.heading.label}`"
               @click="emit('cellClick', day.date, hour)"
             >
               <span
                 v-if="hour === day.rulerHour"
-                class="pointer-events-none block border-t border-dashed border-border text-[10px] tabular-nums text-muted-foreground"
+                class="pointer-events-none absolute inset-x-0 top-0 border-t border-dashed border-danger/70"
+                :aria-hidden="true"
+              />
+              <span
+                class="pointer-events-none block pt-0.5 pl-1 text-[10px] font-semibold tabular-nums text-muted-foreground"
                 :aria-hidden="true"
               >
-                {{ hour }}:00
+                {{ hour }}
               </span>
             </button>
           </div>
