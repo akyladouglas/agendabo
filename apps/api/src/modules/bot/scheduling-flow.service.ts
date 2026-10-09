@@ -46,6 +46,7 @@ import {
   type EdicaoPayloadBruto,
   type ExtracaoPayloadBruto,
 } from './extraction-ruler';
+import type { BotEventsService } from '../observabilidade/bot-events.service';
 
 /** Borda zod dos callbacks de teclado (callback_data nao e confiavel por natureza). */
 const dayChoiceSchema = z.object({
@@ -115,6 +116,13 @@ export class SchedulingFlowService {
     private readonly reminderInterpreter: ReminderInterpreterService,
     private readonly schedulingInterpreter: SchedulingInterpreterService,
     private readonly editInterpreter: AppointmentEditInterpreterService,
+    /**
+     * Telemetria do fluxo (Fase 9 / spec observabilidade B2): registro de
+     * interacoes em `bot_events`. NUNCA decide nada — eventos descrevem o que
+     * a maquina/regra ja decidiu (ADR-0017). O service chama POS-commit e o
+     * proprio registrador e best-effort (jamais lanca).
+     */
+    private readonly botEvents: BotEventsService,
   ) {
     this.ttlMs = this.config.get('BOT_SESSION_TTL_MINUTES', { infer: true }) * 60_000; // decisao D2 do plano (30 min)
     this.minConfidence = this.config.get('MIN_CONFIDENCE_TO_ACCEPT', { infer: true });
@@ -175,12 +183,80 @@ export class SchedulingFlowService {
   private openFlow(user: BotUser, now: Date): void {
     const fresh = this.machine.newSession(now);
     this.sessions.set(user.telegramId, fresh);
+    this.evento(user, 'flow_started', 'ok', { stage: 'flow.titulo' });
     void this.send(user.telegramId, this.machine.startReplies(user.name));
   }
 
   /** Relógio da borda (testes substituem este método p/ determinismo). */
   private now(): Date {
     return new Date();
+  }
+
+  /**
+   * Fase 9 (spec B2): fire-and-forget deliberado — o turno NAO espera o
+   * banco de telemetria. `registrar` ja e best-effort (nunca lança); o
+   * `.catch` e cinto de seguranca contra bug futuro do registrador: nada em
+   * `bot_events` pode mudar uma fala/resposta do usuario (ADR-0017).
+   */
+  private evento(
+    user: BotUser,
+    type: Parameters<BotEventsService['registrar']>[1],
+    outcome: Parameters<BotEventsService['registrar']>[2],
+    input?: Parameters<BotEventsService['registrar']>[3],
+  ): void {
+    void this.botEvents.registrar(user, type, outcome, input).catch(() => undefined);
+  }
+
+  /** Outcome do evento `llm_extraction` a partir do veredito da régua/espaço do interpretador. */
+  private extractionOutcome(
+    kind: ExtractedClassified['kind'] | 'falhou' | 'unparseable',
+  ): 'ok' | 'parse_fail' | 'low_confidence' {
+    if (kind === 'falhou' || kind === 'unparseable' || kind === 'sem_quando' || kind === 'consumida')
+      return 'parse_fail';
+    if (kind === 'fraco' || kind === 'suspeito') return 'low_confidence';
+    return 'ok';
+  }
+
+  /**
+   * `appointmentId` do metadata `conflict_dialog` (uuid-only por contrato). O
+   * conflito do CRIAR não tem id gravado (nada existe ainda) nem pode carregar
+   * título/data do conflitante (proibido — ADR-0017); usa o id do alvo da edição
+   * quando houver, senão o nil-uuid (a linha marca o evento, o conteúdo fica fora).
+   */
+  private conflictDialogId(session: FlowSession): string {
+    return session.candidate.edit?.appointmentId ?? '00000000-0000-0000-0000-000000000000';
+  }
+
+  /** Registro da classificação do turno (ok OU falha — parse_fail é o caso que a fila existe p/ ver). */
+  private eventoIntent(
+    user: BotUser,
+    classified: { ok: true; intent: string; confidence: number } | { ok: false; reason: string },
+    stage: string,
+  ): void {
+    if (classified.ok) {
+      this.evento(user, 'intent_classified', 'ok', {
+        stage,
+        metadata: { intent: classified.intent, confidence: classified.confidence },
+      });
+      return;
+    }
+    this.evento(user, 'llm_extraction', 'parse_fail', {
+      stage,
+      metadata: { purpose: 'intent_classification', outcome: 'parse_fail' },
+    });
+  }
+
+  /** Outcome do evento do interpretador de edição (veredito da borda, sem conteúdo). */
+  private editVerdictOutcome(verdict: {
+    location?: { kind: string };
+    change?: { kind: string } | null;
+  }): 'ok' | 'parse_fail' | 'low_confidence' {
+    if (verdict.location?.kind === 'ask_descricao') return 'parse_fail';
+    if (verdict.change && verdict.change.kind !== 'ok') {
+      // reperguntar por confiança baixa da régua vs. fala sem quando: conservador = parse_fail
+      return 'parse_fail';
+    }
+    return 'ok';
   }
 
   /** Um turno: estado -> bordas (LLM/banco) -> maquina -> respostas/persistencia. */
@@ -198,6 +274,10 @@ export class SchedulingFlowService {
         `bot: sessao de ${user.telegramId} expirou (TTL ${this.ttlMs}ms) — descartada`,
       );
       this.sessions.delete(user.telegramId);
+      this.evento(user, 'flow_aborted', 'aborted', {
+        stage: 'session_expired',
+        metadata: { reason: 'ttl' },
+      });
       session = undefined;
     }
 
@@ -212,6 +292,7 @@ export class SchedulingFlowService {
     }
 
     const conflictPending = session.step === 'conflito';
+    const wasInConflict = conflictPending;
     const context: IntentFlowContext = { inFlow: true, step: session.step, conflictPending };
     // Passo deterministico (teclado) nao precisa do LLM; o que o usuario FALA sim.
     const deterministic = Boolean(partial.dayChoice || partial.timeChoice);
@@ -222,6 +303,13 @@ export class SchedulingFlowService {
       !deterministic && session.step === 'lembrete'
         ? await this.interpretReminder(partial.text ?? '')
         : undefined;
+    if (reminder) {
+      // evento do interpretador do passo lembrete (atalho determinístico = ok sem LLM)
+      this.evento(user, 'llm_extraction', reminder.ok ? 'ok' : 'parse_fail', {
+        stage: `flow.${session.step}`,
+        metadata: { purpose: 'reminder_extraction', outcome: reminder.ok ? 'ok' : 'parse_fail' },
+      });
+    }
     // Portão do atalho (Fase 4): a 1ª fala solta do criar é extração livre + régua
     // (spec regra 8). O portão é a máquina: `criar_aberto` OU `titulo` intocado (só
     // quando a fala chegou vazia de processamento — teclado/nada vira texto do passo).
@@ -233,6 +321,13 @@ export class SchedulingFlowService {
     const extracted = openCreate
       ? await this.runExtraction(partial.text ?? '', user, offsetMinutes, now)
       : undefined;
+    if (extracted) {
+      const outcome = this.extractionOutcome(extracted.kind);
+      this.evento(user, 'llm_extraction', outcome, {
+        stage: `flow.${session.step}`,
+        metadata: { purpose: 'scheduling_extraction', outcome },
+      });
+    }
     // Fala livre nos passos de edição QUANDO o passo espera re-interpretação:
     // localização pendente (sem alvo) ou mudança de horário em `edit_propor`
     // (1 chamada LLM/turno). `edit_descricao` COM alvo é a confirmação de cancelar
@@ -261,12 +356,20 @@ export class SchedulingFlowService {
           editMode,
         )
       : undefined;
+    if (editVerdict) {
+      const outcome = this.editVerdictOutcome(editVerdict);
+      this.evento(user, 'llm_extraction', outcome, {
+        stage: `flow.${session.step}`,
+        metadata: { purpose: 'edit_interpretation', outcome },
+      });
+    }
     const justOpenedEdit = this.consumedTurns.get(user.telegramId) === true;
     this.consumedTurns.delete(user.telegramId);
     const classified =
       reminder || deterministic || extracted || editVerdict || justOpenedEdit
         ? undefined
         : await this.classifier.classify(partial.text ?? '', context);
+    if (classified) this.eventoIntent(user, classified, `flow.${session.step}`);
 
     // Consulta de agenda com o fluxo de criar ABERTO (Fase 2, decisão #5): responde
     // a consulta e volta ao mesmo passo — o estado do candidato fica intacto e o
@@ -279,6 +382,10 @@ export class SchedulingFlowService {
         now,
         session.step,
       );
+      this.evento(user, 'query_answered', 'ok', {
+        stage: `flow.${session.step}`,
+        metadata: { count: result.count ?? undefined },
+      });
       await this.telegram.sendMessage(user.telegramId, result.replies[0] ?? '');
       // volta à pergunta do passo atual, sem reclassificar (1 chamada LLM/turno).
       if (session.step === 'criar_aberto') {
@@ -315,6 +422,46 @@ export class SchedulingFlowService {
 
     if (outcome.done) this.sessions.delete(user.telegramId);
     await this.send(user.telegramId, outcome.replies);
+
+    // --- registro pós-resposta (Fase 9 / spec B2): a fala do usuário JÁ saiu;
+    // os eventos descrevem o que a máquina decidiu neste turno (ADR-0017).
+    // Sessão QUE terminou sem escrita = desistência/aborto da máquina.
+    if (outcome.done && !outcome.create && !outcome.needsReview && !outcome.update) {
+      this.evento(user, 'flow_aborted', 'aborted', {
+        stage: `flow.${session.step}`,
+        metadata: { reason: 'user_exit' },
+      });
+    }
+    // sessão que continua no passo `conflito` ACHADO AGORA (findConflict da máquina
+    // acabou de apresentar o conflitante ao usuário = diálogo de conflito no chat).
+    // O `resolved` nasce quando o usuário responde ao passo (abaixo, no passo saindo
+    // de `conflito`) — um par dialog/resolved por rodada.
+    if (!outcome.done && session.step === 'conflito' && !wasInConflict) {
+      this.evento(user, 'conflict_dialog', 'conflict', {
+        stage: 'flow.conflito',
+        metadata: { appointmentId: this.conflictDialogId(session) },
+      });
+    }
+    if (wasInConflict && session.step !== 'conflito') {
+      // o metadata `conflict_resolved` só tem `strategy` (a variante zod com
+      // `count` não existe na prática: o dialog guarda 1 linha e o resolved
+      // corresponde a ela). Estratégia pela máquina: ramo de conflito do criar
+      // (sessão ainda viva = usuário foi para o dia/hora = move-self; sessão
+      // encerrada tratada abaixo).
+      this.evento(user, 'conflict_resolved', 'ok', {
+        stage: outcome.done ? 'flow.done' : `flow.${session.step}`,
+        metadata: { strategy: outcome.done ? 'move_other' : 'move_self' },
+      });
+    }
+    if (outcome.update) {
+      this.evento(user, 'edit_applied', 'ok', {
+        stage: 'flow.edit',
+        metadata: {
+          appointmentId: outcome.update.appointmentId,
+          fields: Object.keys(outcome.update.patch),
+        },
+      });
+    }
 
     if (outcome.create) {
       await this.persist(user, outcome.create);
@@ -645,6 +792,9 @@ export class SchedulingFlowService {
       tries: 0,
     };
     this.sessions.set(user.telegramId, session);
+    this.evento(user, 'flow_started', 'ok', {
+      stage: action === 'cancel' ? 'flow.cancelar_descricao' : 'flow.edit_descricao',
+    });
     // O turno que ABRIU a edição já gastou a classificação de intenção do usuário;
     // a sessão abre com [editResumed=true] para o próximo turno (escolha "1", "sim")
     // não re-classificar a fala (que é DADO do passo — regra 22).
@@ -737,6 +887,7 @@ export class SchedulingFlowService {
     }
 
     const classified = await this.classifier.classify(text, { inFlow: false });
+    this.eventoIntent(user, classified, 'off_flow');
     if (!classified.ok || classified.confidence < this.minConfidence) {
       await this.telegram.sendMessage(telegramId, BOT_MESSAGES.pediuEsclarecimento);
       return;
@@ -754,6 +905,13 @@ export class SchedulingFlowService {
         // abriu o fluxo ainda pode ser o título — nada se perde).
         const existing = await this.existingConfirmedFuture(user.id, now);
         const extracted = await this.runExtraction(text, user, offsetMinutes, now);
+        {
+          const outcome = this.extractionOutcome(extracted.kind);
+          this.evento(user, 'llm_extraction', outcome, {
+            stage: 'off_flow.criar_gate',
+            metadata: { purpose: 'scheduling_extraction', outcome },
+          });
+        }
         const openable =
           extracted.kind === 'aceito' ||
           extracted.kind === 'quando_parcial' ||
@@ -778,6 +936,7 @@ export class SchedulingFlowService {
         }
         fresh.step = 'criar_aberto';
         this.sessions.set(user.telegramId, fresh);
+        this.evento(user, 'flow_started', 'ok', { stage: 'flow.criar_aberto' });
         const outcome = await this.machine.handleTurn({
           session: fresh,
           user,
@@ -818,6 +977,10 @@ export class SchedulingFlowService {
     priorPrompts: number,
   ): Promise<void> {
     const result = await this.runAgendaQuery(user, text, offsetMinutes, now, inFlowStep);
+    this.evento(user, 'query_answered', 'ok', {
+      stage: 'off_flow',
+      metadata: { count: result.count },
+    });
     for (const reply of result.replies) {
       await this.telegram.sendMessage(user.telegramId, reply);
     }
@@ -858,6 +1021,7 @@ export class SchedulingFlowService {
       return await this.agendaQuery.run(user, { text, offsetMinutes, now, inFlowStep });
     } catch (err) {
       this.logger.error(`bot: falha na consulta de agenda p/ ${user.id}: ${String(err)}`);
+      this.evento(user, 'query_answered', 'error', { stage: 'off_flow' });
       return {
         replies: [
           'Deu um probleminha aqui do meu lado e eu não consegui consultar 😞 Tenta de novo?',
@@ -920,7 +1084,7 @@ export class SchedulingFlowService {
     }
   }
 
-  /** Criacao via AppointmentsService (mesmo caminho da web, D7). Falha logada, nunca engolida calada. */
+  /** `flow_completed` só com id REAL (create do service confirmado). */
   private async persist(
     user: BotUser,
     create: {
@@ -936,7 +1100,7 @@ export class SchedulingFlowService {
     },
   ): Promise<void> {
     try {
-      await this.appointments.create(
+      const created = await this.appointments.create(
         user.id,
         {
           title: create.title,
@@ -947,6 +1111,12 @@ export class SchedulingFlowService {
         },
         { origin: 'bot' },
       );
+      // pós-commit (D-P6): a linha existe, o id existe — auditoria com o id,
+      // nunca com o título (proibido pelo zod do metadata).
+      this.evento(user, 'flow_completed', 'ok', {
+        stage: 'flow.criado',
+        metadata: { appointmentId: created.id },
+      });
     } catch (err) {
       if (err instanceof AppointmentConflictError) {
         // corrida entre a checagem da maquina e o create: avisa e nao cria (1.1).
@@ -956,6 +1126,11 @@ export class SchedulingFlowService {
           user.timezone,
         );
         this.logger.warn(`bot: conflito de corrida ao criar p/ ${user.id} — nada foi salvo`);
+        this.evento(user, 'conflict_dialog', 'conflict', {
+          stage: 'flow.criado',
+          // sem id: nada foi gravado; nil-uuid marca o evento sem conteúdo (ADR-0017)
+          metadata: { appointmentId: '00000000-0000-0000-0000-000000000000' },
+        });
         await this.telegram.sendMessage(
           user.telegramId,
           BOT_MESSAGES.conflito({ title: err.conflictWith.title, range }),
@@ -998,6 +1173,18 @@ export class SchedulingFlowService {
       this.logger.log(
         `bot: needs_review salvo p/ ${user.id} (${needsReview.reviewReason}) — zero outbox`,
       );
+      // motivo do evento: vocabulário FECHADO do contracts. Mapeamento defensivo
+      // por substring (o reviewReason da régua é texto humano); o pior caso e
+      // 'parse_fail', que descreve honestamente "a régua nao confiou".
+      const reason = /confian/i.test(needsReview.reviewReason)
+        ? 'low_confidence'
+        : /conflito/i.test(needsReview.reviewReason)
+          ? 'conflict_aborted'
+          : 'parse_fail';
+      this.evento(user, 'needs_review', 'needs_review', {
+        stage: 'flow.régua',
+        metadata: { reason },
+      });
     } catch (err) {
       this.logger.error(`bot: falha ao salvar needs_review p/ ${user.id}: ${String(err)}`);
       await this.telegram.sendMessage(
@@ -1026,6 +1213,10 @@ export class SchedulingFlowService {
         // A sessão já encerrou com o "Feito!" (a máquina emitiu done). Reabre a sessão
         // no passo de re-pergunta do quando (spec C13) para o usuário tentar outro horário.
         this.logger.log(`bot: conflito ao editar ${update.appointmentId} — re-pergunta o quando`);
+        this.evento(user, 'conflict_dialog', 'conflict', {
+          stage: 'flow.edit_propor',
+          metadata: { appointmentId: update.appointmentId },
+        });
         // Estado completo da re-pergunta (spec C13): a máquina monta a mensagem de
         // conflito a partir de `edit` + `editConflict` no próximo turno (re-posta a
         // cada fala sem quando; limite de 3 tentativas incluiu esta).
@@ -1078,8 +1269,16 @@ export class SchedulingFlowService {
   private async applyCancelAppointment(user: BotUser, appointmentId: string): Promise<void> {
     try {
       await this.appointments.remove(user.id, appointmentId);
+      this.evento(user, 'cancelled', 'ok', {
+        stage: 'flow.cancelar',
+        metadata: { appointmentId, via: 'bot' },
+      });
     } catch (err) {
       this.logger.error(`bot: falha ao cancelar compromisso p/ ${user.id}: ${String(err)}`);
+      this.evento(user, 'cancelled', 'error', {
+        stage: 'flow.cancelar',
+        metadata: { appointmentId, via: 'bot' },
+      });
       await this.telegram.sendMessage(
         user.telegramId,
         'Deu um probleminha aqui do meu lado e eu não consegui cancelar 😞 Tenta de novo?',

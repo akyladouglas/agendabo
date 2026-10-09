@@ -25,6 +25,10 @@ export const userSchema = z.object({
   name: z.string().nullable(),
   /** Resumo diario ligado/desligado (Aberto #2 -> (a)). */
   resumoDiarioAtivo: z.boolean(),
+  /** Admin da plataforma (Fase 9 / ADR-0017; primeiro usuario do sistema). */
+  isAdmin: z.boolean(),
+  /** Rollout: ve os proprios eventos do bot so com flag ligada pelo admin. */
+  observabilidadeEventosAtivo: z.boolean(),
 });
 
 export type UserDto = z.infer<typeof userSchema>;

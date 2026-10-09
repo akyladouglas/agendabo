@@ -28,6 +28,12 @@ export interface AgendaQueryResult {
   replies: string[];
   /** true quando o bot perguntou o período — o próximo turno continua a consulta. */
   awaitingPeriod: boolean;
+  /**
+   * Nº de compromissos listados (Fase 9/observabilidade B2: o evento
+   * `query_answered` guarda o TOTAL, nunca título/data). Ausente quando a
+   * resposta foi só a pergunta de período (nada foi consultado ainda).
+   */
+  count?: number;
 }
 
 /**
@@ -92,6 +98,7 @@ export class AgendaQueryService {
     return {
       replies: this.buildListReply(rows, range, input.offsetMinutes),
       awaitingPeriod: false,
+      count: rows.length,
     };
   }
 

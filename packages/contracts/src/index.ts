@@ -6,6 +6,7 @@ export * from './api/auth';
 export * from './api/appointments';
 export * from './api/review';
 export * from './api/user';
+export * from './api/observability';
 export * from './llm/extrairAgendamento';
 export * from './llm/interpretarConsulta';
 export * from './llm/interpretarEdicao';

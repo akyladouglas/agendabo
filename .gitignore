@@ -24,3 +24,5 @@ CLAUDE.md
 .vscode/
 .DS_Store
 Thumbs.db
+
+.commit-msg.txt

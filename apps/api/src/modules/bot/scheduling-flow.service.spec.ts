@@ -85,6 +85,9 @@ function make() {
     { interpretar: jest.fn().mockResolvedValue({ ok: false, reason: 'unparseable' }) } as never,
     schedulingInterpreter as never,
     editInterpreter as never,
+    // bot_events (Fase 9): mock plano — este spec cobre o FLUXO, o registro e
+    // assertado em scheduling-flow-events.spec.ts.
+    { registrar: jest.fn().mockResolvedValue(undefined) } as never,
   );
   // relogio do servico congelado (determinismo do atalho "hoje"/datas UTC)
   (svc as unknown as { now: () => Date }).now = () => new Date(`${TODAY_LOCAL}T10:00:00Z`);

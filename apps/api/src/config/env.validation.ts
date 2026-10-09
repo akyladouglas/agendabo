@@ -35,6 +35,35 @@ const envSchema = z.object({
   MIN_CONFIDENCE_TO_ACCEPT: z.coerce.number().min(0).max(1).default(0.7),
   /** Spec Fase 1: inatividade que descarta a sessao de conversa do bot (memoria). */
   BOT_SESSION_TTL_MINUTES: z.coerce.number().int().positive().default(30),
+
+  /**
+   * Fase 9 — Observabilidade (spec observabilidade; ADR-0016/0017).
+   * Tracker: SDK Sentry apontando para o GlitchTip SaaS (ou qualquer destino
+   * do protocolo). DSN ausente => processo liga sem tracker (testes/dev sem
+   * rede) — mesma flexibilidade de TELEGRAM_BOT_TOKEN/ANTHROPIC_API_KEY.
+   */
+  SENTRY_DSN: z.string().min(1).optional(),
+  /** Tracing OFF ate producao (decisao humana #7); ligar = mudar 1 env. */
+  SENTRY_TRACES_SAMPLE_RATE: z.coerce.number().min(0).max(1).default(0),
+  SENTRY_ENVIRONMENT: z.string().min(1).default('development'),
+  /** Identificador de release carimbado nas events (deploy; local = dev). */
+  SENTRY_RELEASE: z.string().min(1).optional(),
+
+  /**
+   * Salt do HMAC do telegramIdHash em bot_events (D-P3 do plano): NAO reusar
+   * JWT_SECRET — um segredo, um proposito. Obrigatorio: evento sem salt fraco
+   * e correlacionavel por dicionario.
+   */
+  EVENTS_HASH_SECRET: z.string().min(16, REQUIRED),
+
+  /**
+   * Precos da estimativa de custo do LLM em USD por milhao de tokens (D-P8).
+   * Obrigatorios de proposito: o sistema se recusa a estimar custo sem preco
+   * declarado (nada de numero chutado no codigo). Estimativa declarada — nao e
+   * billing da Anthropic (ADR-0017).
+   */
+  LLM_PRICE_INPUT_USD_PER_MTOK: z.coerce.number().nonnegative(),
+  LLM_PRICE_OUTPUT_USD_PER_MTOK: z.coerce.number().nonnegative(),
 });
 
 export type Env = z.infer<typeof envSchema>;

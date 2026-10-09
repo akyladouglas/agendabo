@@ -8,7 +8,12 @@ import {
   rescheduleAppointmentInputSchema,
 } from '@agendabo/contracts';
 import { findConflict, planRelocation } from '@agendabo/schedule-core';
-import { AppointmentOrigin, AppointmentStatus, type NotificationRuleType, Prisma } from '@prisma/client';
+import {
+  AppointmentOrigin,
+  AppointmentStatus,
+  type NotificationRuleType,
+  Prisma,
+} from '@prisma/client';
 import type { AppointmentDto } from '@agendabo/contracts';
 
 /** Alias local do enum Prisma (usado no default de `listOverlapping`). */

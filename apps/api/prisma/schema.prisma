@@ -21,6 +21,55 @@ enum AppointmentOrigin {
   web
 }
 
+/// Tipos conhecidos de interacao do bot (Fase 9 / ADR-0017). Falar um tipo novo
+/// e decisao de codigo com teste — nunca fala livre do usuario.
+enum BotEventType {
+  flow_started
+  flow_completed
+  flow_aborted
+  intent_classified
+  llm_extraction
+  conflict_dialog
+  conflict_resolved
+  needs_review
+  cancelled
+  edit_applied
+  query_answered
+}
+
+/** Desfecho da interacao registrada no bot_events (`escalated` mora em llm_calls, nao aqui). */
+enum BotEventOutcome {
+  ok
+  needs_review
+  conflict
+  error
+  aborted
+  /// a saida do LLM nao parseou / nao convenceu a regia (Fase 9)
+  parse_fail
+  /// parseou mas abaixo do limiar de confianca — pode virar needs_review
+  low_confidence
+}
+
+/// Finalidade da chamada LLM (espelha os 5 services de IA + classificador).
+enum LlmCallPurpose {
+  intent_classification
+  scheduling_extraction
+  reminder_extraction
+  query_interpretation
+  edit_interpretation
+  escalation
+}
+
+/// Desfecho da chamada LLM (especulativo: parse falho / confianca baixa /
+/// escalada — os casos que a fila de revisao existe para cobrir).
+enum LlmCallOutcome {
+  ok
+  parse_fail
+  low_confidence
+  escalated
+  error
+}
+
 enum NotificationRuleType {
   none
   before_hours
@@ -56,6 +105,14 @@ model User {
   name             String?
   /// Resumo diario ligado/desligado (Aberto #2 -> (a): desligado => nada e agendado)
   resumoDiarioAtivo Boolean  @default(true)
+  /// Admin da plataforma (Fase 9 / ADR-0017): primeiro usuario do sistema vira
+  /// admin no signup; a trava anti-corrida e o indice parcial unico criado na
+  /// migracao fase9_observabilidade (`@@unique` do Prisma NAO expressa WHERE
+  /// parcial — mesma licao do digest do outbox e do hash de reset).
+  isAdmin           Boolean  @default(false)
+  /// Rollout (spec observabilidade B5/B6): usuario comum ve os PROPRIOS eventos
+  /// do bot so com esta flag ligada pelo admin. Default false => todos fora.
+  observabilidadeEventosAtivo Boolean @default(false)
   createdAt        DateTime  @default(now())
   updatedAt        DateTime  @updatedAt
 
@@ -63,6 +120,10 @@ model User {
   refreshTokens RefreshToken[]
   /// Linhas de outbox do usuario (digest diario nao tem compromisso — Fase 3)
   notificationOutbox NotificationOutbox[]
+  /// Auditoria de interacoes do bot (Fase 9 / ADR-0017)
+  botEvents BotEvent[]
+  /// Chamadas LLM atribuidas a este usuario (Fase 9; chamada sem dono e null)
+  llmCalls  LlmCall[]
 
   @@map("users")
 }
@@ -186,4 +247,57 @@ model RefreshToken {
   user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@map("refresh_tokens")
+}
+
+/// Auditoria de interacoes do bot (Fase 9 / ADR-0017). PROIBIDO por contrato
+/// (zod dos contracts, testado): fala do usuario, titulo/nota de compromisso.
+/// telegramId cru NAO existe aqui — so o hash com salt (D-P3 do plano).
+/// Retencao: para sempre (decisao humana 2026-10-09).
+model BotEvent {
+  id String @id @default(uuid()) @db.Uuid
+  /// Tipos conhecidos (enum); `stage` carrega a etapa fina da maquina sem
+  /// exigir migration por fala nova.
+  type    BotEventType
+  /// Etapa/intencao fina (texto controlado pelo codigo, nao pelo usuario).
+  stage   String?
+  outcome BotEventOutcome
+  /// sha256 HMAC com EVENTS_HASH_SECRET truncado — correlacao de incidentes
+  /// sem identidade crua (ADR-0017). Null quando o evento nao tem dono de conta.
+  telegramIdHash String?
+  /// Metadados estruturados validados por zod ANTES de gravar (contracts):
+  /// enums/numeros/ids apenas.
+  metadata Json?
+  createdAt DateTime @default(now())
+
+  userId String @db.Uuid
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@index([type, createdAt])
+  @@map("bot_events")
+}
+
+/// Tokens/custo por chamada LLM (Fase 9 / ADR-0017). Capture centralizado no
+/// provider Anthropic (unico ponto das 5 saidas); SEM conteudo da conversa.
+/// Custo e ESTIMATIVA declarada (preco env x tokens) em micro-USD inteiro.
+model LlmCall {
+  id String @id @default(uuid()) @db.Uuid
+  purpose    LlmCallPurpose
+  outcome    LlmCallOutcome
+  modelUsed  String?
+  /// `usage` ausente na resposta => null (jamais chute).
+  inputTokens  Int?
+  outputTokens Int?
+  /// Micro-USD (1e-6 USD), inteiro — float somado em SQL e armadilha (ADR-0017).
+  costUsdMicros Int?
+  latencyMs     Int?
+  createdAt     DateTime @default(now())
+
+  /// Chamada sem dono (ex.: fluxo sem sessao) e null, nunca chute de userId.
+  userId String? @db.Uuid
+  user   User?   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@index([purpose, createdAt])
+  @@map("llm_calls")
 }
