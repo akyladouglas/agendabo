@@ -33,14 +33,14 @@
         role="gridcell"
         :aria-label="cellAria(cell)"
         :aria-selected="cell.date === props.anchorKey || undefined"
-        class="od-move min-w-0 border-b border-r border-border p-1"
+        class="od-move min-h-24 min-w-0 border-b border-r border-border p-1 md:min-h-36"
         :class="cell.class"
         :data-cell-key="`day:${cell.date}`"
         :data-drop-target="drag && drag.dropKey.value === `day:${cell.date}` ? 'true' : 'false'"
       >
         <button
           type="button"
-          class="flex h-full min-h-11 w-full flex-col gap-1 rounded-md text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          class="flex h-full w-full flex-col gap-1 rounded-md text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           :aria-label="cellAria(cell)"
           :data-testid="`cell-${cell.date}`"
           @click="emit('dayClick', cell)"
@@ -121,7 +121,9 @@
  * Grade do Mês (Fase 7, spec B/F.9): BURRA — recebe as 42 células prontas com os
  * itens/chips já resolvidos pela página; ZERO regra de data ou conflito aqui (E.4).
  * Desktop: 7 colunas com chips; mobile: bolinhas. Clique na célula → Dia/criação
- * (decidido pela página); clique no chip → detalhes.
+ * (decidido pela página); clique no chip → detalhes. Altura mínima por célula
+ * (`min-h-24`/`md:min-h-36`) para a grade respirar mesmo vazia; com mais itens
+ * que os 3 chips, a linha cresce junto (célula elástica).
  */
 import { computed } from 'vue';
 import { AlertTriangle } from 'lucide-vue-next';
