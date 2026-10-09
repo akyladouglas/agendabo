@@ -158,6 +158,46 @@ export function userWeekendRange(date: Date, offsetMinutes: number): { start: Da
   return { start: saturday.start, end: new Date(saturday.start.getTime() + 2 * DAY) };
 }
 
+/**
+ * Período da GRADE DO MÊS (visão Mês da web, Fase 7): 6×7 = 42 dias CIVIS que cobrem
+ * o mês civil de `date`, com a primeira linha começando no DOMINGO 00:00 local ≤ dia 1
+ * (convenção da grade vigente — spec calendario-visoes D5/Aberto #1). Half-open
+ * [domingo inicial, domingo inicial + 42 dias). A grade é sempre de 6 linhas: meses de
+ * 5 linhas ganham uma linha extra de mês vizinho (decorativa, esmaecida) — o período da
+ * query cobre tudo. Mesma base de dias locais de `userWeekRange` (ADR-002).
+ */
+export function monthGridRange(date: Date, offsetMinutes: number): { start: Date; end: Date } {
+  const month = userMonthRange(date, offsetMinutes);
+  // O weekday do DIA 1 local: nunca getUTCDay() do instante UTC (com offset != 0 o dia
+  // UTC pode ser outro — gotcha: meia-noite local -03:00 cai no dia anterior em UTC).
+  const { year, month: m, day } = utcToZonedParts(month.start, offsetMinutes);
+  const firstDow = new Date(Date.UTC(year, m - 1, day)).getUTCDay(); // 0 = domingo
+  const start = new Date(month.start.getTime() - firstDow * DAY);
+  return { start, end: new Date(start.getTime() + 42 * DAY) };
+}
+
+/**
+ * Âncora (meia-noite local) do mês civil deslocado em `shiftMonths` meses (negativo volta
+ * meses; transborda ano naturalmente — mesma técnica de `shiftDayRange`). Trocar de mês
+ * ancora no DIA 1 do mês destino (Aberto #6 da spec calendario-visoes). Para "voltar a
+ * Hoje" a web devolve `now` como âncora (estado interno); `shiftMonthRange(now, off, 0)`
+ * é o dia 1 do mês corrente.
+ */
+export function shiftMonthRange(date: Date, offsetMinutes: number, shiftMonths: number): Date {
+  const month = userMonthRange(date, offsetMinutes);
+  return addLocalMonths(month.start, offsetMinutes, shiftMonths);
+}
+
+/**
+ * Âncora (meia-noite local) do ano civil deslocado em `shiftYears` anos (negativo volta
+ * anos). Como `shiftMonthRange`, ancora no DIA 1 do mês de janeiro do ano destino
+ * (01/01 local); "Hoje" = a web devolve `now` como âncora.
+ */
+export function shiftYearRange(date: Date, offsetMinutes: number, shiftYears: number): Date {
+  const year = userYearRange(date, offsetMinutes);
+  return addLocalMonths(year.start, offsetMinutes, 12 * shiftYears);
+}
+
 /** Meia-noite local (UTC) de `date` deslocada em `months` meses locais (transborda ano). */
 function addLocalMonths(midnightUtc: Date, offsetMinutes: number, months: number): Date {
   const { year, month } = utcToZonedParts(midnightUtc, offsetMinutes);

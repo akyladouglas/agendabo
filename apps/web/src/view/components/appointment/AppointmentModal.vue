@@ -182,6 +182,9 @@ const titles: Record<AppointmentFormMode, string> = {
 
 /**
  * Sessão de edição: o form é (re)construído quando o modal ABRE com estas props.
+ * `presetDate` entra no watch: quando o modal já está montado (o `:key` da página
+ * igual) e a página só troca a PRESET (célula do calendário → criar), o form
+ * antigo sobreviveria com a data/hora da abertura anterior.
  * `shallowRef` de propósito: o objeto do composable NUNCA é aprofundado — os refs
  * internos (`range`, `timezone`…) permanecem refs e o template os desembrulha.
  */
@@ -196,7 +199,7 @@ watch(
 );
 
 watch(
-  [session, () => props.mode, () => props.appointment],
+  [session, () => props.mode, () => props.appointment, () => props.presetDate],
   () => {
     form.value = props.open
       ? useAppointmentForm({

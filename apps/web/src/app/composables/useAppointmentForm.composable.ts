@@ -92,12 +92,21 @@ function fromAppointment(app: AppointmentWithRules | ReviewWithRules, timezone: 
   };
 }
 
+/** Hora default ao criar a partir do calendário (Aberto #5 da spec calendario-visoes). */
+export const DEFAULT_CREATE_HOUR = 9;
+
+/**
+ * Valores vazios do form de criação. Sem `date`: hoje com a hora AGORA (comportamento
+ * vigente). Com `date` (clique na célula do calendário): a data do dia + **09:00 local**
+ * (Aberto #5 — o dia vem do calendário, a hora é o default aprovada).
+ */
 function emptyValues(timezone: string, date?: Date): AppointmentFormValues {
   const day = date ?? new Date();
+  const isPreset = date !== undefined;
   return {
     title: '',
     date: toLocalDateString(day, timezone),
-    time: toLocalTimeString(day, timezone),
+    time: isPreset ? `${String(DEFAULT_CREATE_HOUR).padStart(2, '0')}:00` : toLocalTimeString(day, timezone),
     durationMinutes: 60,
     notes: '',
     rules: [],

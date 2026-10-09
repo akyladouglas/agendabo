@@ -23,12 +23,12 @@ não mata job em voo). Postgres = verdade dos disparos (outbox); Redis = só ent
 
 ## Packages & apps
 
-| Unit                     | Papel                                                  | Regras                              |
-| ------------------------ | ------------------------------------------------------ | ----------------------------------- |
-| `packages/contracts`     | zod único p/ bordas API↔web↔LLM + tool schemas         | fonte de DTO; CJS build             |
-| `packages/schedule-core` | domínio puro: conflito, triggers, datas                | `.ia/rules/schedule-core.md`        |
-| `apps/api`               | Nest 10 + Prisma + BullMQ + Telegraf + Anthropic SDK   | `.ia/rules/default-architecture.md` |
-| `apps/web`               | Vue 3 + Vite + Tailwind 4 + radix-vue + TanStack Query | `.ia/rules/vue.md`                  |
+| Unit                     | Papel                                                                                            | Regras                              |
+| ------------------------ | ------------------------------------------------------------------------------------------------ | ----------------------------------- |
+| `packages/contracts`     | zod único p/ bordas API↔web↔LLM + tool schemas                                                   | fonte de DTO; CJS build             |
+| `packages/schedule-core` | domínio puro: conflito, triggers, datas, calendário (`calendar.ts` — visões da Fase 7, ADR-0013) | `.ia/rules/schedule-core.md`        |
+| `apps/api`               | Nest 10 + Prisma + BullMQ + Telegraf + Anthropic SDK                                             | `.ia/rules/default-architecture.md` |
+| `apps/web`               | Vue 3 + Vite + Tailwind 4 + radix-vue + TanStack Query                                           | `.ia/rules/vue.md`                  |
 
 ## API — módulos
 
@@ -119,4 +119,6 @@ ia-docs único lar dos ADRs, e o grafo de imports (`CROSS_MODULE_EDGES` em
 regras decidem. **0009**: worker de notificações como processo próprio (Fase 3).
 **0010**: régua do needs_review no criar; cancelar pelo chat apaga; editar nunca vira
 revisão (Fase 4). **0011**: web avisa gatilho de lembrete retroativo (inverte a
-silenciosidade da Fase 3 na borda web — ADR escrito na Fase 5).
+silenciosidade da Fase 3 na borda web — ADR escrito na Fase 5). **0012**: magic link no
+reset de senha (Fase 5.5). **0013**: calendário sem lib externa — grade própria, regra de
+visões em `schedule-core/calendar.ts` (Fase 7).

@@ -4,6 +4,10 @@
     :aria-label="props.ariaLabel"
     @update:model-value="emit('update:modelValue', String($event))"
   >
+    <!-- TabsIndicator NÃO pode ser filho direto de TabsRoot: o radix-vue faz
+         `deactivate()` dele no unmount e quebra (nextSibling null) ao trocar o
+         conteúdo externo junto com as tabs. O componente já não renderiza nada
+         visível aqui (era `class="hidden"`). -->
     <TabsList
       :class="
         cn(
@@ -21,12 +25,11 @@
         {{ opt.label }}
       </TabsTrigger>
     </TabsList>
-    <TabsIndicator class="hidden" />
   </TabsRoot>
 </template>
 
 <script setup lang="ts">
-import { TabsIndicator, TabsList, TabsRoot, TabsTrigger } from 'radix-vue';
+import { TabsList, TabsRoot, TabsTrigger } from 'radix-vue';
 import { cn } from '@/app/utils/cn';
 import type { HTMLAttributes } from 'vue';
 

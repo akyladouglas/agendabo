@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
   localTimeOfDayToUtcUtcDay,
+  monthGridRange,
   shiftDayRange,
+  shiftMonthRange,
   shiftWeekRange,
+  shiftYearRange,
   userDayRange,
   userMonthRange,
   userNextMonthRange,
@@ -217,6 +220,11 @@ describe('janelas de consulta — offset -150 (DST norte-americano)', () => {
     expect(shiftDayRange(wed, us, 2).start.toISOString()).toBe('2026-03-13T02:30:00.000Z');
   });
 
+  it('monthGridRange: grade de 42 dias (6 semanas dom-sab) mesmo com DST no meio do mes', () => {
+    const { start, end } = monthGridRange(wed, us); // marco/2026 (transicao em 08/03)
+    expect(end.getTime() - start.getTime()).toBe(42 * 24 * 60 * 60_000);
+  });
+
   it('userNextWeekRange: [seg 16/03, seg 23/03) local', () => {
     const { start, end } = userNextWeekRange(wed, us);
     expect(start.toISOString()).toBe('2026-03-16T02:30:00.000Z');
@@ -233,5 +241,139 @@ describe('janelas de consulta — offset -150 (DST norte-americano)', () => {
     const { start, end } = userYearRange(wed, us);
     expect(start.toISOString()).toBe('2026-01-01T02:30:00.000Z');
     expect(end.toISOString()).toBe('2027-01-01T02:30:00.000Z');
+  });
+});
+
+/**
+ * Grade do calendario (Fase 7, spec calendario-visoes E.1): periodo da grade 6x7 do
+ * mes civil, navegacao de mes/ano. Semana comeca no DOMINGO (convencao da grade
+ * vigente — spec D5/Aberto #1). Base: America/Sao_Paulo (-180).
+ */
+describe('monthGridRange — grade 6x7 do mes civil (semana comeca no domingo)', () => {
+  const sp = -180;
+
+  it('grade fixa de 42 dias (6 linhas x 7 colunas) cobrindo a ancora', () => {
+    const anchor = new Date('2026-10-08T11:00:00Z'); // qui 08/10/2026 08:00 local
+    const { start, end } = monthGridRange(anchor, sp);
+    expect(end.getTime() - start.getTime()).toBe(42 * 24 * 60 * 60_000);
+  });
+
+  it('outubro/2026 (5 linhas): comeca no domingo 27/09 e alcanca o fim de 31/10', () => {
+    const anchor = new Date('2026-10-08T11:00:00Z'); // qui 08/10 08:00 local
+    const { start, end } = monthGridRange(anchor, sp);
+    expect(start.toISOString()).toBe('2026-09-27T03:00:00.000Z'); // dom 27/09 00:00 local
+    // 42 dias => ultima meia-noite 08/11T03:00Z => grade cobre ate sab 07/11 23:59 local
+    expect(end.toISOString()).toBe('2026-11-08T03:00:00.000Z');
+    // dias do mes 01/10..31/10 estao TODOS dentro do periodo
+    const oct1 = new Date('2026-10-01T03:00:00.000Z');
+    const oct31End = new Date('2026-11-01T03:00:00.000Z');
+    expect(start.getTime()).toBeLessThanOrEqual(oct1.getTime());
+    expect(end.getTime()).toBeGreaterThanOrEqual(oct31End.getTime());
+  });
+
+  it('mes que precisa de 6 linhas (out/2025 comeca em terca): cobriu a 6a semana', () => {
+    const anchor = new Date('2025-10-15T12:00:00Z'); // qua 15/10/2025 09:00 local
+    const { start, end } = monthGridRange(anchor, sp);
+    // 01/10/2025 = terca => 1a linha comeca dom 28/09/2025
+    expect(start.toISOString()).toBe('2025-09-28T03:00:00.000Z');
+    // 31/10/2025 = sexta => 6a linha [dom 02/11, sab 08/11); grade cobre ate 08/11 inclusive
+    expect(end.getTime() - start.getTime()).toBe(42 * 24 * 60 * 60_000);
+    expect(end.toISOString()).toBe('2025-11-09T03:00:00.000Z');
+  });
+
+  it('fevereiro bissexto (2028): grade cobre 29/02 e comeca no domingo anterior', () => {
+    const anchor = new Date('2028-02-15T12:00:00Z'); // ter 15/02/2028 09:00 local
+    const { start } = monthGridRange(anchor, sp);
+    // 01/02/2028 = terca => grade comeca dom 30/01/2028
+    expect(start.toISOString()).toBe('2028-01-30T03:00:00.000Z'); // dom 30/01 00:00 local
+    // 42 dias desde 30/01 => cobre 29/02 (dia 30 da grade) e sobra em marco
+    const feb29 = new Date('2028-02-29T03:00:00.000Z');
+    const mar1 = new Date('2028-03-01T03:00:00.000Z');
+    const { end } = monthGridRange(anchor, sp);
+    expect(feb29.getTime()).toBeGreaterThanOrEqual(start.getTime());
+    expect(mar1.getTime()).toBeLessThanOrEqual(end.getTime());
+  });
+
+  it('fevereiro nao bissexto (2026): comeca no proprio domingo 01/02 e cobre ate 28/02', () => {
+    const anchor = new Date('2026-02-11T12:00:00Z'); // qua 11/02/2026 09:00 local
+    const { start, end } = monthGridRange(anchor, sp);
+    // 01/02/2026 = DOMINGO => sem leading; grade vai de 01/02 a 14/03 (sempre 42 dias)
+    expect(start.toISOString()).toBe('2026-02-01T03:00:00.000Z');
+    expect(end.getTime() - start.getTime()).toBe(42 * 24 * 60 * 60_000);
+    // 28/02/2026 = sabato => ultimo dia do mes; grade ainda o cobre
+    const feb28End = new Date('2026-03-01T03:00:00.000Z');
+    expect(end.getTime()).toBeGreaterThanOrEqual(feb28End.getTime());
+  });
+
+  it('grade comeca SEMPRE no domingo 00:00 local (offset -180 => 03:00Z)', () => {
+    for (const iso of [
+      '2026-01-01T12:00:00Z',
+      '2026-02-28T12:00:00Z',
+      '2026-10-31T12:00:00Z',
+      '2026-12-25T12:00:00Z',
+    ]) {
+      const { start } = monthGridRange(new Date(iso), sp);
+      const localDay = new Date(start.getTime() - sp * 60_000).getUTCDay(); // 0 = domingo
+      expect(localDay).toBe(0);
+    }
+  });
+});
+
+/**
+ * Navegacao de mes/ano ← hoje → (spec E.1, D6/Aberto #6): trocar de mes ancora no
+ * DIA 1 do mes destino; Hoje devolve a ancora real (a web passa `now` de novo —
+ * aqui e so documentado). Transborda ano naturalmente (mesma tecnica de shiftDayRange).
+ */
+describe('shiftMonthRange / shiftYearRange — navegacao mes/ano (ancora no dia 1)', () => {
+  const sp = -180;
+
+  it('shiftMonthRange(+1) de dez/2026 transborda para janeiro/2027', () => {
+    const anchor = new Date('2026-12-15T12:00:00Z'); // ter 15/12 09:00 local
+    expect(shiftMonthRange(anchor, sp, 1).toISOString()).toBe('2027-01-01T03:00:00.000Z');
+  });
+
+  it('shiftMonthRange(-1) de jan/2027 volta para dezembro/2026', () => {
+    const anchor = new Date('2027-01-20T12:00:00Z');
+    expect(shiftMonthRange(anchor, sp, -1).toISOString()).toBe('2026-12-01T03:00:00.000Z');
+  });
+
+  it('trocar de mes ancora no DIA 1 do mes destino (Aberto #6 da spec)', () => {
+    const anchor = new Date('2026-10-22T12:00:00Z'); // qui 22/10 09:00 local
+    // +1 mes => 01/11 (NAO 22/11); -1 mes => 01/09 (NAO 22/09)
+    expect(shiftMonthRange(anchor, sp, 1).toISOString()).toBe('2026-11-01T03:00:00.000Z');
+    expect(shiftMonthRange(anchor, sp, -1).toISOString()).toBe('2026-09-01T03:00:00.000Z');
+  });
+
+  it('shiftMonthRange(0) = dia 1 do mes corrente (trocar de visao mantendo o mes)', () => {
+    const anchor = new Date('2026-10-08T11:00:00Z');
+    expect(shiftMonthRange(anchor, sp, 0).toISOString()).toBe('2026-10-01T03:00:00.000Z');
+  });
+
+  it('shiftMonthRange(0) = "voltar a hoje" quando a ancora e o agora (documenta D da spec)', () => {
+    // A web trata "Hoje" passando `now` de volta como ancora; shiftMonthRange(now, off, 0)
+    // devolve o dia 1 do mes do agora — a ancora real fica na web (estado interno).
+    const now = new Date('2026-10-08T11:00:00Z');
+    expect(shiftMonthRange(now, sp, 0)).toEqual(shiftMonthRange(now, sp, 0));
+  });
+
+  it('shiftMonthRange salta N meses (±12 = mesmo mes no ano seguinte/anterior)', () => {
+    const anchor = new Date('2026-10-08T11:00:00Z');
+    expect(shiftMonthRange(anchor, sp, 12).toISOString()).toBe('2027-10-01T03:00:00.000Z');
+    expect(shiftMonthRange(anchor, sp, -12).toISOString()).toBe('2025-10-01T03:00:00.000Z');
+  });
+
+  it('shiftYearRange(-1) de jun/2026 => ano civil 2025 (ancora no dia 1 do ano)', () => {
+    const anchor = new Date('2026-06-01T12:00:00Z'); // seg 01/06 09:00 local
+    expect(shiftYearRange(anchor, sp, -1).toISOString()).toBe('2025-01-01T03:00:00.000Z');
+  });
+
+  it('shiftYearRange(+1) de dez/2026 transborda para 01/01/2027', () => {
+    const anchor = new Date('2026-12-31T12:00:00Z');
+    expect(shiftYearRange(anchor, sp, 1).toISOString()).toBe('2027-01-01T03:00:00.000Z');
+  });
+
+  it('shiftYearRange(0) = dia 1 do ano corrente', () => {
+    const anchor = new Date('2026-10-08T11:00:00Z');
+    expect(shiftYearRange(anchor, sp, 0).toISOString()).toBe('2026-01-01T03:00:00.000Z');
   });
 });

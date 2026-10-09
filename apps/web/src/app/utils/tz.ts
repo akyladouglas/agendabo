@@ -77,6 +77,24 @@ export function formatDayHeading(
   return { label, isToday: key(date) === key(today), weekday };
 }
 
+/** Nome do mês CALENDARIO do instante no fuso ("janeiro"); `short` = "jan". */
+export function monthName(
+  date: Date,
+  timeZone: string,
+  style: 'long' | 'short' = 'long',
+): string {
+  return new Intl.DateTimeFormat('pt-BR', { timeZone, month: style }).format(date).replace('.', '');
+}
+
+/** Mês CALENDARIO (1-12) e ano do instante no fuso — só leitura de partes, p/ menu ir-para. */
+export function monthCalendarOf(date: Date, timeZone: string): { month: number; year: number } {
+  const parts = new Intl.DateTimeFormat('en-US', { timeZone, year: 'numeric', month: 'numeric' })
+    .formatToParts(date)
+    .reduce<Record<string, string>>((acc, p) => ({ ...acc, [p.type]: p.value }), {});
+  // en-US numeric: month=MM, year=YYYY (sem U+200E no formato dos navegadores-alvo)
+  return { month: Number(parts.month), year: Number(parts.year) };
+}
+
 /** "d MMM – d MMM" (rota entre meses funciona: `28 set – 4 out`). */
 export function formatWeekHeading(start: Date, endExclusive: Date, timeZone: string): string {
   const end = new Date(endExclusive.getTime() - 1);
