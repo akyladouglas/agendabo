@@ -52,6 +52,20 @@ export function formatRangeInTz(startsAt: Date, endsAt: Date, timeZone: string):
   return `${time(startsAt)}–${weekday} ${dm} ${time(endsAt)}`;
 }
 
+/**
+ * Instante com **dia completo** no fuso do usuário ("qui 08/10 14:00").
+ * Usado onde o horário pode cair em outro dia (jogada de reagendamento —
+ * a a jogada empurra para depois da meia-noite com frequência; omitir o dia
+ * assusta). Formatação pura de borda.
+ */
+export function formatDateTimeInTz(date: Date, timeZone: string): string {
+  const weekday = new Intl.DateTimeFormat('pt-BR', { timeZone, weekday: 'short' })
+    .format(date)
+    .replace('.', '');
+  const dm = new Intl.DateTimeFormat('pt-BR', { timeZone, day: '2-digit', month: '2-digit' }).format(date);
+  return `${weekday} ${dm} ${formatTimeInTz(date, timeZone)}`;
+}
+
 const WEEKDAYS_PT = ['dom', 'seg', 'ter', 'qua', 'qui', 'sex', 'sáb'];
 
 /** Partes do dia/semana local para o cabeçalho (mock: "Hoje · 8 out"). Formatação pura. */

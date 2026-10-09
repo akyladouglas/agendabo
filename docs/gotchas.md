@@ -126,3 +126,47 @@ grade sempre). Corrigido: Mês/Ano sempre renderizam grade + aviso discreto
 `role=status` acima; texto puro so em Dia/Semana.
 **Se acontecer de novo:** estado de "vazio" e por visao, nao global — perguntar
 sempre "o usuario consegue criar um item a partir desta tela vazia?"
+
+## 13. Cookie de refresh com `Path=/auth` + proxy do vite = F5 deslogado
+
+O cookie `agendabo_refresh` era gravado com `Path=/auth`. Em dev a web fala com a
+API pelo proxy do vite (`/api/auth/...`), e o navegador scopa o cookie pelo caminho
+que ELE viu: `Path=/auth` nao cobre `/api/auth/*` => o F5 mandava `refresh` SEM o
+cookie, recebia 401 e caia no login. O teste manual `curl`/`fetch` no node NAO pega
+(sao requests sem jar de navegador), so o browser real reproduz.
+**Correcao:** `path: '/'` no `REFRESH_COOKIE_OPTS` (rotas de refresh sao publicas e
+o token e opaco de uso unico — escopo raiz nao amplia ataque).
+**Se acontecer de novo:** qualquer bug "loga e nao mantem sessao" = inspecionar o
+`Set-Cookie` (Path/Domain/SameSite) contra o caminho REAL que o browser chama
+(vite proxy reescreve: o browser ve `/api/...`, a API ve `/...`).
+
+## 14. radix-vue: props/eventos proprios dos primitivos NAO sao `modelValue` (switch mudo + check fantasma)
+
+Dois bugs visuais do perfil com a mesma raiz — chamar o primitivo radix com a API
+"genérica" errada:
+
+- `SwitchRoot` expoe `checked`/`update:checked` (NÃO model-value). Com
+  `:model-value` o valor virava ATRIBUTO HTML (`modelvalue="true"`) e o switch
+  ficava SEMPRE visualmente desligado — e o `v-if` da hora do resumo nunca
+  reagia (o evento emitido era `update:checked`, o listener nunca chamava).
+- `SelectItem` renderiza SO o slot `default`; um `<template #indicator>` e
+  engolido em silencio (o check sumia do item selecionado). O `SelectItemIndicator`
+  vai dentro do default, absolute p/ esquerda, e o rotulo em `SelectItemText`
+  (typeahead le so ele — Check dentro do SelectItemText "comia" o lugar do texto).
+  **Se acontecer de novo:** componente UI wrapper de primitivo radix = abrir o
+  `*.d.ts`/docs do radix-vue e conferir o nome EXATO de props/emits/slots; teste
+  de render deve assentar no ESTADO visivel (`aria-checked`/svg presente), nunca
+  so no modelo.
+
+## 15. Erro de dominio novo precisa de handler no controller (ou vira 500)
+
+O smoke E2E da Fase 8 (Etapa 0) pegou `POST /appointments/relocation-options`
+devolvendo **500** no ramo `blocked` (2+ conflitos): o service lancava
+`AppointmentConflictError` mas so o create/reschedule tinham o try/catch que o
+converte em 409 `{message, conflictWith}`. O mesmo valia para o `PATCH :id`
+(o update lancava ConflictError sem handler e a web so tratava 409 de POST).
+**Correcao:** extrair `conflict409()` no controller e envolver as QUATRO rotas
+de escrita que podem conflitar (create, update, reschedule, relocation-options).
+**Se acontecer de novo:** erro de dominio novo = testar a ROTAS (controller), nao
+so o service; teste de service verde nao prova o HTTP. Corpo 409 canonico =
+`{message, conflictWith}` (o `conflict.utils.ts` da web le exactly isso).

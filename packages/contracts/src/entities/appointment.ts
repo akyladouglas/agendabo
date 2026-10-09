@@ -46,7 +46,7 @@ export const appointmentIntervalSchema = z
   });
 
 /** Campos de criacao/edicao (sem refine); a forma refinada vive em `appointmentInputSchema`. */
-const appointmentFields = z.object({
+export const appointmentCreateFieldsSchema = z.object({
   title: z.string().trim().min(1, 'titulo e obrigatorio').max(200),
   startsAt: isoDateSchema,
   endsAt: isoDateSchema,
@@ -56,14 +56,14 @@ const appointmentFields = z.object({
 });
 
 /** Payload para criar compromisso pela web ou confirmar um needs_review. */
-export const appointmentInputSchema = appointmentFields.refine(
+export const appointmentInputSchema = appointmentCreateFieldsSchema.refine(
   (v) => v.endsAt.getTime() > v.startsAt.getTime(),
   { message: 'endsAt deve ser depois de startsAt', path: ['endsAt'] },
 );
 export type AppointmentInput = z.infer<typeof appointmentInputSchema>;
 
 /** Edicao parcial: parte dos campos crus + refine opcional de intervalo. */
-export const appointmentPatchSchema = appointmentFields
+export const appointmentPatchSchema = appointmentCreateFieldsSchema
   .partial()
   .refine(
     (v) => !v.startsAt || !v.endsAt || v.endsAt.getTime() > v.startsAt.getTime(),

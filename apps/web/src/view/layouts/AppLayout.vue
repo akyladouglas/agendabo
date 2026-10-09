@@ -64,7 +64,7 @@
           </button>
 
           <!-- ≥md: usuário + sair -->
-          <div class="hidden min-w-0 items-center gap-1 md:flex">
+          <div class="hidden min-w-0 items-center gap-4 md:flex">
             <span
               class="max-w-[240px] truncate text-sm text-muted-foreground"
               :title="displayName"
@@ -73,7 +73,7 @@
             <Button
               variant="ghost"
               size="sm"
-              class="gap-2"
+              class="gap-2 px-3"
               @click="auth.logout()"
             >
               <LogOut class="h-4 w-4" /> Sair

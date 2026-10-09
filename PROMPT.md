@@ -119,8 +119,27 @@ O fluxo principal começa no **bot do Telegram**:
    revisão (3.3) alimentada por confiança baixa do LLM.
 6. **Web — contas**: cadastro, confirmação por código, login.
 7. **Web — agenda**: calendário (mês/semana/dia/ano) + tela de revisão.
+   _(Fases 0-7 concluídas e commitadas; Fase 7 = commit `fd72027`. Mini-fase
+   de polimento visual + fix do F5 concluída em 2026-10-08.)_
 
 ### Etapas additions pedidas pelo humano (2026-10-08, ordem: depois das acima)
+
+7b. **Fase 8 — Reagendamento Assistido + Grades + Drag-and-drop** _(fase
+única por decisão humana; ordem interna: Etapa 0 → 1 → 2)_. Plano
+atualizado aguardando aprovação em
+`ia-docs/plans/grades-dia-semana-mes.plan.md`.
+Etapa 0: **Reagendamento Assistido** — sobreposição passa a ser
+invariante do produto (o `force` do form web é revogado; a API rejeita
+sempre): ao detectar conflito, regra pura `planRelocation` oferece mover
+o existente OU o movido; cascata não é permitida → não salva. Fecha o
+bug C.11 do form.
+Etapa 1: números de dia sempre visíveis (Mês/Semana) + grade de 24h na
+visão Dia (`hourGrid`/`layoutDayTimeline` no schedule-core, TDD).
+Etapa 2: drag-and-drop com Pointer Events sem lib nova (radix-vue não tem
+DnD; HTML5 DnD não funciona em toque — ADR-0014): Dia muda horário,
+Semana muda horário+dia, Mês muda data preservando hora (o bloco segue
+clicável para ajustar a hora no modal); soltar em conflito abre o
+Reagendamento Assistido; toque desde o início; sem optimistic update.
 
 8. **Mini-fase — "Esqueci a senha"** (reset por magic link): spec aprovada em
    `.ia/specs/auth/esqueci-a-senha-reset-senha.spec.md`.

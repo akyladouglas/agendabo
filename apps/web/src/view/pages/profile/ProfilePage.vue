@@ -57,6 +57,7 @@
               id="profile-resumo"
               v-model="form.resumoDiarioAtivo"
               aria-label="Ligar ou desligar o resumo diário"
+              class="my-[9px]"
             />
           </div>
 

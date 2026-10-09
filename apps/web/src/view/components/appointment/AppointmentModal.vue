@@ -105,8 +105,59 @@
         role="alert"
         data-testid="form-conflict"
       >
-        {{ form.conflictWarning.value }} — você ainda pode salvar, a API re-checa.
+        {{ form.conflictWarning.value }} — dois compromissos nunca ficam sobrepostos; escolha uma
+        jogada abaixo ou ajuste o horário.
       </p>
+
+      <!-- Reagendamento Assistido (Etapa 0, fecha C.11): jogadas vêm prontas do
+           server (planRelocation) — este template só presentationa. -->
+      <div
+        v-if="form.relocationLoading.value"
+        class="rounded-md border border-border bg-muted/40 px-3 py-2 text-sm text-muted-foreground"
+        role="status"
+        data-testid="relocation-loading"
+      >
+        Procurando como encaixar…
+      </div>
+      <div
+        v-else-if="form.relocationBlocked.value"
+        class="rounded-md border border-danger/60 bg-danger/10 px-3 py-2 text-sm text-danger"
+        role="alert"
+        data-testid="relocation-blocked"
+      >
+        Não há como encaixar sem sobreposição. Ajuste o horário para um espaço livre.
+      </div>
+      <div
+        v-else-if="form.relocationOptions.value"
+        class="flex flex-col gap-2 rounded-md border border-border bg-muted/40 p-3"
+        role="group"
+        aria-label="Reagendamento Assistido"
+        data-testid="relocation-section"
+      >
+        <p class="text-sm font-medium text-foreground">
+          Reagendamento Assistido
+        </p>
+        <AppButton
+          v-for="(option, index) in form.relocationOptions.value"
+          :key="`${option.kind}-${index}`"
+          variant="outline"
+          class="justify-start text-left"
+          :data-testid="`relocation-${option.kind}`"
+          :disabled="form.submitting.value"
+          @click="onRelocate(option)"
+        >
+          {{ relocationLabel(option) }}
+        </AppButton>
+        <AppButton
+          variant="ghost"
+          class="justify-start text-muted-foreground"
+          data-testid="relocation-cancel"
+          @click="form.closeRelocation()"
+        >
+          Cancelar
+        </AppButton>
+      </div>
+
       <p
         v-if="form.invalidMessage.value"
         class="rounded-md border border-danger/60 bg-danger/10 px-3 py-2 text-sm text-danger"
@@ -134,7 +185,7 @@
         <AppButton
           type="submit"
           form="appointment-form"
-          :disabled="!form || form.submitting.value"
+          :disabled="!form || form.submitting.value || form.relocationBlocked.value"
         >
           {{ props.mode === 'review' ? 'Aprovar' : 'Salvar' }}
         </AppButton>
@@ -152,8 +203,8 @@
  */
 import { computed, ref, shallowRef, watch } from 'vue';
 import { useAppointmentForm, type AppointmentFormMode } from '@/app/composables/useAppointmentForm.composable';
-import type { AppointmentDto, ReviewAppointmentDto } from '@agendabo/contracts';
-import { formatDayHeading, formatRangeInTz } from '@/app/utils/tz';
+import type { AppointmentDto, RelocationOptionDto, ReviewAppointmentDto } from '@agendabo/contracts';
+import { formatDateTimeInTz, formatDayHeading, formatRangeInTz } from '@/app/utils/tz';
 import AppDialog from '@/view/components/ui/dialog/Dialog.vue';
 import AppButton from '@/view/components/ui/button/Button.vue';
 import AppField from '@/view/components/ui/field/Field.vue';
@@ -224,6 +275,31 @@ const preview = computed(() => {
 async function onSave(): Promise<void> {
   if (!form.value) return;
   const { ok } = await form.value.submit();
+  if (ok) {
+    emit('update:open', false);
+    emit('saved');
+  }
+}
+
+/**
+ * Rótulo da jogada (D-W1) — só formatação de horários prontos do server no fuso
+ * do usuário (dia completo: a jogada pode cruzar a meia-noite). Zero cálculo.
+ */
+function relocationLabel(option: RelocationOptionDto): string {
+  const f = form.value;
+  if (!f) return '';
+  const tz = f.timezone.value;
+  if (option.kind === 'move-other') {
+    return `Mover ${option.other.title} para ${formatDateTimeInTz(option.newStart, tz)}`;
+  }
+  const verb = props.mode === 'create' ? 'Criar' : 'Salvar';
+  return `${verb} ${formatDateTimeInTz(option.newStart, tz)} movendo este para ${formatDateTimeInTz(option.newStart, tz)}`;
+}
+
+/** Confirmar a jogada ⇒ `reschedule` na variante certa (a mutation invalida a agenda). */
+async function onRelocate(option: RelocationOptionDto): Promise<void> {
+  if (!form.value) return;
+  const { ok } = await form.value.confirmRelocation(option);
   if (ok) {
     emit('update:open', false);
     emit('saved');

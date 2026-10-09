@@ -13,12 +13,13 @@
       @update:model-value="emit('update:view', $event as AgendaView)"
     />
     <div
-      class="flex items-center gap-1"
+      class="flex items-center gap-2"
       data-testid="agenda-nav-actions"
     >
       <AppButton
         variant="ghost"
         size="icon"
+        class="aspect-auto w-14"
         aria-label="Período anterior"
         data-testid="nav-prev"
         @click="emit('shift', -1)"
@@ -27,7 +28,7 @@
       </AppButton>
       <AppButton
         variant="ghost"
-        class="px-3"
+        class="px-6"
         data-testid="nav-today"
         @click="emit('today')"
       >
@@ -36,6 +37,7 @@
       <AppButton
         variant="ghost"
         size="icon"
+        class="aspect-auto w-14"
         aria-label="Próximo período"
         data-testid="nav-next"
         @click="emit('shift', 1)"

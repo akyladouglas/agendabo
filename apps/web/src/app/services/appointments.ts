@@ -10,4 +10,9 @@ export const appointmentsApi = {
   remove: (id: string) => http.delete(`/appointments/${id}`).then((r) => r.data),
   checkConflict: (body: unknown) =>
     http.post('/appointments/check-conflict', body).then((r) => r.data),
+  /** Reagendamento Assistido (Etapa 0): jogadas lidas server-side (nada em query param). */
+  relocationOptions: (body: unknown) =>
+    http.post('/appointments/relocation-options', body).then((r) => r.data),
+  reschedule: (body: unknown) =>
+    http.post('/appointments/reschedule', body).then((r) => r.data),
 };

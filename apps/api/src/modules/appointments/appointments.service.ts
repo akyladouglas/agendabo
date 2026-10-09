@@ -4,8 +4,10 @@ import {
   appointmentPatchSchema,
   checkConflictInputSchema,
   listAppointmentsQuerySchema,
+  relocationOptionsInputSchema,
+  rescheduleAppointmentInputSchema,
 } from '@agendabo/contracts';
-import { findConflict } from '@agendabo/schedule-core';
+import { findConflict, planRelocation } from '@agendabo/schedule-core';
 import { AppointmentStatus, type NotificationRuleType, Prisma } from '@prisma/client';
 import type { AppointmentDto } from '@agendabo/contracts';
 
@@ -18,6 +20,13 @@ import { OutboxService } from '../notifications/outbox.service';
 export class AppointmentConflictError extends Error {
   constructor(readonly conflictWith: { id: string; title: string; startsAt: Date; endsAt: Date }) {
     super('conflito de horario');
+  }
+}
+
+/** Erro de dominio: a jogada pedida nao existe mais (client obsoleto — D4 da spec). 409 sem escrita. */
+export class RelocationNotAvailableError extends Error {
+  constructor(readonly conflictWith: { id: string; title: string; startsAt: Date; endsAt: Date }) {
+    super('jogada de reagendamento nao disponivel');
   }
 }
 
@@ -80,6 +89,286 @@ export class AppointmentsService {
   }
 
   /**
+   * POST /appointments/relocation-options (spec C2): roda `planRelocation`
+   * SERVER-SIDE com a carga completa (D1 — o "primeiro vão livre" mentiria com
+   * a carga parcial da página). `blocked` (2+ conflitos) vira o MESMO 409 do
+   * check-conflict (corpo `{ message, conflictWith }`) — a UI diferencia
+   * "ofereça jogadas" de "não cabe" pela rota que respondeu.
+   */
+  async relocationOptions(userId: string, raw: unknown) {
+    const input = relocationOptionsInputSchema.parse(raw);
+    const existing = await this.existingFor(userId, input.movedId);
+    const plan = planRelocation(input, existing, { now: this.now(), movedId: input.movedId });
+    if (plan.kind === 'blocked') {
+      const firstConflict = existing
+        .filter((a) => findConflict(input, [a], { now: this.now() }).conflict)
+        .sort((a, b) => a.startsAt.getTime() - b.startsAt.getTime())[0];
+      // `blocked` SEM conflito nomeado não é "2+ choques": é o defensivo da regra
+      // (B6). Não vira o 409 `conflictWith` do form (a UI renderizaria o ISO cru
+      // de um candidato sem título) — as opções vazias já dizem "não cabe".
+      if (firstConflict) throw new AppointmentConflictError(firstConflict);
+    }
+    return plan;
+  }
+
+  /**
+   * POST /appointments/reschedule (spec C3): tx única que move dois compromissos
+   * (ou cria um já resolvendo o conflito) com `findConflict` revalidado DENTRO
+   * da tx (E5/F.2). O server RECOMPUTA a jogada (D4): nunca grava horário
+   * sugerido por client obsoleto. Lados que mudaram de `startsAt` têm lembretes
+   * invalidados + re-materializados na MESMA tx; Redis só pós-commit.
+   */
+  async reschedule(userId: string, raw: unknown) {
+    const input = rescheduleAppointmentInputSchema.parse(raw);
+    const isCreate = input.mode === 'create';
+    const candidate = isCreate
+      ? { startsAt: input.create.startsAt, endsAt: input.create.endsAt }
+      : { startsAt: input.newStart, endsAt: input.newEnd };
+    const movedId = isCreate ? undefined : input.movedId;
+    const otherId = input.otherId;
+
+    // 1. Dono/status dos envolvidos (404 e nada escrito se furar)
+    if (!isCreate) await this.loadOwned(userId, input.movedId);
+    if (otherId) await this.loadOwned(userId, otherId);
+
+    // 2. Pré-checagem com a carga completa (a revalidação de verdade é DENTRO da tx)
+    const existing = await this.existingFor(userId, movedId);
+    this.assertPlanHasMove(input, candidate, existing);
+
+    const now = this.now();
+    const rulesOf = (id: string) =>
+      this.prisma.notificationRule.findMany({ where: { appointmentId: id } });
+
+    const result = await this.prisma.$transaction(async (tx) => {
+      // revalida DENTRO da tx (E5): carga relida + jogada recomputada — e é a
+      // ÚNICA checagem que vale (pré-checagem de leitura fica só como
+      // fail-fast; entre ela e a tx o mundo pode mudar).
+      const fresh = await this.existingForInTx(tx, userId, movedId);
+      this.assertPlanHasMove(input, candidate, fresh, now);
+      const plan = planRelocation(candidate, fresh, { now, movedId });
+      const expectedOtherSlot =
+        plan.kind === 'options'
+          ? plan.options.find((o) => o.kind === 'move-other' && o.other.id === otherId)
+          : undefined;
+      if (otherId && !expectedOtherSlot) {
+        const conflict = fresh.find((a) => findConflict(candidate, [a], { now }).conflict);
+        throw new RelocationNotAvailableError(conflict ?? { id: '', title: '', ...candidate });
+      }
+      if (
+        otherId &&
+        expectedOtherSlot &&
+        expectedOtherSlot.kind === 'move-other' &&
+        !isCreate &&
+        input.otherStart &&
+        input.otherEnd &&
+        (expectedOtherSlot.newStart.getTime() !== input.otherStart.getTime() ||
+          expectedOtherSlot.newEnd.getTime() !== input.otherEnd.getTime())
+      ) {
+        // client obsoleto: a jogada que ele viu mudou de horário (D4)
+        throw new RelocationNotAvailableError({ id: '', title: '', ...candidate });
+      }
+
+      const sideEffects: { outboxIds: string[]; triggers: { firesAt: Date }[] }[] = [];
+      const dropTypes: NotificationRuleType[] = [];
+
+      const moveSide = async (
+        id: string,
+        next: { startsAt: Date; endsAt: Date },
+        current: { startsAt: Date; endsAt: Date },
+      ) => {
+        const timeChanged = current.startsAt.getTime() !== next.startsAt.getTime();
+        if (!timeChanged) return;
+        await this.outbox.invalidateForAppointment(tx, id);
+        const rules = await rulesOf(id);
+        const materialized = await this.outbox.materializeInTx(
+          tx,
+          { id, userId, startsAt: next.startsAt },
+          rules.map((r) => ({ type: r.type, value: r.value })),
+          now,
+        );
+        sideEffects.push({ outboxIds: materialized.outboxIds, triggers: materialized.triggers });
+        dropTypes.push(...materialized.droppedRuleTypes);
+      };
+
+      let moved: AppointmentDto & { notificationRules: unknown[] };
+      let other: AppointmentDto & { notificationRules: unknown[] } = null as never;
+
+      if (isCreate) {
+        const parsedCreate = appointmentInputSchema.parse(input.create);
+        if (otherId) {
+          const otherRow = await tx.appointment.findFirst({
+            where: { id: otherId, userId },
+            include: { notificationRules: true },
+          });
+          if (!otherRow) throw new NotFoundException();
+          const slot = this.expectMoveOtherSlot(candidate, fresh, movedId, otherId, undefined, now);
+          await moveSide(otherId, slot, { startsAt: otherRow.startsAt, endsAt: otherRow.endsAt });
+          other = (await tx.appointment.update({
+            where: { id: otherId },
+            data: { startsAt: slot.startsAt, endsAt: slot.endsAt },
+            include: { notificationRules: true },
+          })) as unknown as AppointmentDto & { notificationRules: unknown[] };
+        }
+        const hasRules = parsedCreate.notificationRules.some((r) => r.type !== 'none');
+        const created = await tx.appointment.create({
+          data: {
+            title: parsedCreate.title,
+            startsAt: parsedCreate.startsAt,
+            endsAt: parsedCreate.endsAt,
+            notes: parsedCreate.notes ?? null,
+            userId,
+            origin: 'web',
+            status: 'confirmed',
+            notificationRules: { create: parsedCreate.notificationRules.map(toRuleCreate) },
+          },
+          include: { notificationRules: true },
+        });
+        if (hasRules) {
+          const materialized = await this.outbox.materializeInTx(
+            tx,
+            { id: created.id, userId, startsAt: created.startsAt },
+            parsedCreate.notificationRules.map((r) => ({ type: r.type, value: r.value ?? null })),
+            now,
+          );
+          sideEffects.push({
+            outboxIds: materialized.outboxIds,
+            triggers: materialized.triggers,
+          });
+          dropTypes.push(...materialized.droppedRuleTypes);
+        }
+        moved = created as unknown as AppointmentDto & { notificationRules: unknown[] };
+      } else {
+        const movedRow = await tx.appointment.findFirst({
+          where: { id: input.movedId, userId },
+          include: { notificationRules: true },
+        });
+        if (!movedRow) throw new NotFoundException();
+        await moveSide(input.movedId, candidate, {
+          startsAt: movedRow.startsAt,
+          endsAt: movedRow.endsAt,
+        });
+        moved = (await tx.appointment.update({
+          where: { id: input.movedId },
+          data: { startsAt: candidate.startsAt, endsAt: candidate.endsAt },
+          include: { notificationRules: true },
+        })) as unknown as AppointmentDto & { notificationRules: unknown[] };
+
+        if (otherId) {
+          const otherRow = await tx.appointment.findFirst({
+            where: { id: otherId, userId },
+            include: { notificationRules: true },
+          });
+          if (!otherRow) throw new NotFoundException();
+          const slot = this.expectMoveOtherSlot(
+            candidate,
+            fresh,
+            input.movedId,
+            otherId,
+            input.otherStart && input.otherEnd
+              ? { startsAt: input.otherStart, endsAt: input.otherEnd }
+              : undefined,
+            now,
+          );
+          await moveSide(otherId, slot, { startsAt: otherRow.startsAt, endsAt: otherRow.endsAt });
+          other = (await tx.appointment.update({
+            where: { id: otherId },
+            data: { startsAt: slot.startsAt, endsAt: slot.endsAt },
+            include: { notificationRules: true },
+          })) as unknown as AppointmentDto & { notificationRules: unknown[] };
+        }
+      }
+
+      return { moved, other: other ?? null, sideEffects, dropTypes };
+    });
+
+    // Redis NUNCA dentro da tx (padrão existente)
+    const jobs = result.sideEffects.flatMap((s) =>
+      s.triggers.map((t, i) => ({ outboxId: s.outboxIds[i]!, firesAt: t.firesAt })),
+    );
+    if (jobs.length > 0) await this.outbox.enqueueJobs(jobs, now);
+
+    return {
+      moved: result.moved,
+      other: result.other,
+      droppedRules: result.dropTypes,
+    };
+  }
+
+  /**
+   * Valida o plano da escrita com `planRelocation` (regra única): destino livre
+   * (ignorado o movido) ⇒ ok; senão exige que a jogada pedida exista. `otherId`
+   * presente ⇒ a jogada esperada é `move-other` com esse outro; ausente ⇒ o
+   * pedido é o próprio destino (renomeio) e ele precisa estar livre.
+   */
+  private assertPlanHasMove(
+    input: { mode: 'move' | 'create'; movedId?: string; otherId?: string },
+    candidate: { startsAt: Date; endsAt: Date },
+    existing: {
+      id: string;
+      title: string;
+      startsAt: Date;
+      endsAt: Date;
+    }[],
+    now?: Date,
+  ): void {
+    const plan = planRelocation(candidate, existing, { now, movedId: input.movedId });
+    if (plan.kind === 'ok') return;
+    if (plan.kind === 'blocked') {
+      const firstConflict = existing
+        .filter((a) => findConflict(candidate, [a], { now }).conflict)
+        .sort((a, b) => a.startsAt.getTime() - b.startsAt.getTime())[0];
+      if (firstConflict) throw new AppointmentConflictError(firstConflict);
+      throw new AppointmentConflictError({ id: '', title: '', ...candidate });
+    }
+    // options: sem `otherId` o client pede destino livre OU move-self (o form
+    // manda o horário da jogada); com `otherId`, exige `move-other` com esse
+    // outro — client obsoleto não escreve nada (D4).
+    if (!input.otherId) return;
+    const moveOther = plan.options.find(
+      (o) => o.kind === 'move-other' && o.other.id === input.otherId,
+    );
+    if (!moveOther) {
+      const conflict = existing.find((a) => findConflict(candidate, [a], { now }).conflict);
+      throw new RelocationNotAvailableError(conflict ?? { id: '', title: '', ...candidate });
+    }
+  }
+
+  /**
+   * Extrai o slot `move-other` da jogada recomputada (D4: server manda no
+   * horário). Se a jogada `move-other` sumiu (2+ conflitos agora), é conflito
+   * comum; se ela MUDOU de horário (client viu 15:00, a regra manda 20:00), a
+   * recusa protege o clique do usuário — o form re-consulta as opções.
+   */
+  private expectMoveOtherSlot(
+    candidate: { startsAt: Date; endsAt: Date },
+    existing: { id: string; title: string; startsAt: Date; endsAt: Date }[],
+    movedId: string | undefined,
+    otherId: string,
+    requestedSlot: { startsAt: Date; endsAt: Date } | undefined,
+    now: Date,
+  ): { startsAt: Date; endsAt: Date } {
+    const plan = planRelocation(candidate, existing, { now, movedId });
+    if (plan.kind !== 'options') {
+      const conflict = existing.find((a) => findConflict(candidate, [a], { now }).conflict);
+      throw new AppointmentConflictError(conflict ?? { id: '', title: '', ...candidate });
+    }
+    const opt = plan.options.find((o) => o.kind === 'move-other' && o.other.id === otherId);
+    if (!opt || opt.kind !== 'move-other') {
+      const conflict = existing.find((a) => findConflict(candidate, [a], { now }).conflict);
+      throw new RelocationNotAvailableError(conflict ?? { id: '', title: '', ...candidate });
+    }
+    const slot = { startsAt: opt.newStart, endsAt: opt.newEnd };
+    if (
+      requestedSlot &&
+      (requestedSlot.startsAt.getTime() !== slot.startsAt.getTime() ||
+        requestedSlot.endsAt.getTime() !== slot.endsAt.getTime())
+    ) {
+      throw new RelocationNotAvailableError({ id: '', title: '', ...slot });
+    }
+    return slot;
+  }
+
+  /**
    * Criação (web/bot): N regras + linhas do outbox na MESMA transação (spec regra 6);
    * jobs BullMQ entram na fila SÓ depois do commit (Redis nunca dentro de tx).
    * Gatilho no passado = zero linhas (descartado pelo schedule-core); a web recebe
@@ -139,7 +428,8 @@ export class AppointmentsService {
    * Edição pela web/API (spec regra 9): quando `startsAt`/`endsAt`/`notificationRules`
    * mudam, as linhas `pending` viram `cancelled` na MESMA transação e novas linhas
    * nascem dos dados novos; jobs antigos na fila viram no-op (regra 12). Edição que
-   * não toca em nada disso não mexe no outbox.
+   * não toca em nada disso não mexe no outbox. Conflito é SEMPRE 409 (ADR-0015 —
+   * sem override: sobreposição é invariante do produto).
    */
   async update(
     userId: string,
@@ -236,13 +526,43 @@ export class AppointmentsService {
     if (count === 0) throw new NotFoundException();
   }
 
-  /** Carga dos compromissos futuros do usuario para a checagem deterministica. */
+  /**
+   * Carga dos compromissos do usuario para a checagem deterministica.
+   * ADR-0015/D6: `needs_review` conta como obstáculo (a checagem antiga só via
+   * `confirmed` — era o vetor real da sobreposição).
+   */
   private async existingFor(userId: string, ignoreId?: string) {
     const rows = await this.prisma.appointment.findMany({
-      where: { userId, status: 'confirmed', endsAt: { gt: new Date() } },
+      where: {
+        userId,
+        status: { in: ['confirmed', 'needs_review'] },
+        endsAt: { gt: this.now() },
+      },
       orderBy: { startsAt: 'asc' },
     });
     return rows.filter((r) => r.id !== ignoreId);
+  }
+
+  /** Mesma carga, lida DENTRO da tx (E5: revalidação anti-corrida). */
+  private async existingForInTx(tx: Prisma.TransactionClient, userId: string, ignoreId?: string) {
+    const rows = await tx.appointment.findMany({
+      where: {
+        userId,
+        status: { in: ['confirmed', 'needs_review'] },
+        endsAt: { gt: this.now() },
+      },
+      orderBy: { startsAt: 'asc' },
+    });
+    return rows.filter((r) => r.id !== ignoreId);
+  }
+
+  /** Dono + status (movível: confirmado OU em revisão). 404 se furar (E5). */
+  private async loadOwned(userId: string, id: string) {
+    const row = await this.prisma.appointment.findFirst({
+      where: { id, userId, status: { in: ['confirmed', 'needs_review'] } },
+    });
+    if (!row) throw new NotFoundException();
+    return row;
   }
 
   private async assertNoConflict(

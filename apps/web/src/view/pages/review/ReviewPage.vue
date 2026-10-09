@@ -14,7 +14,7 @@
         </AppBadge>
       </div>
       <p class="text-sm text-muted-foreground">
-        Compromissos que o bot não entendeu com confiança. Confira, corrija se
+        Compromissos que o bot não entendeu com confiança. Revise, corrija se
         preciso e aprove — ou descarte.
       </p>
 
@@ -56,7 +56,7 @@
           aria-hidden="true"
         />
         <p class="text-sm font-medium text-foreground">
-          Nada para conferir ✅
+          Nada para revisar ✅
         </p>
         <p class="text-xs text-muted-foreground">
           Quando o bot não tiver certeza sobre um compromisso, ele aparece aqui.

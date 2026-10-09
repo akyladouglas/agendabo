@@ -20,7 +20,11 @@ const REFRESH_COOKIE_OPTS = {
   httpOnly: true,
   secure: process.env.NODE_ENV === 'production',
   sameSite: 'lax' as const,
-  path: '/auth',
+  // path raiz de propósito: em dev a web chama a API pelo proxy do vite
+  // (`/api/auth/...`). Um cookie com Path=/auth NAO cobre /api/auth/* e o
+  // F5 ia para o login (bug do F5, smoke 2026-10-08). As rotas de refresh
+  // são públicas e o valor e opaco de uso unico — escopo raiz nao amplia nada.
+  path: '/',
 };
 
 @Controller('auth')
@@ -141,7 +145,9 @@ export class AuthController {
       ...REFRESH_COOKIE_OPTS,
       maxAge: this.config.get('REFRESH_TOKEN_TTL_DAYS', { infer: true }) * 86_400_000,
     });
-    return { accessToken: result.accessToken };
+    // devolve `user` junto (shape de sessao do login): o bootstrap da web
+    // restaura a sessao no F5 so com esta chamada (bug do F5, smoke 2026-10-08).
+    return { accessToken: result.accessToken, user: result.user };
   }
 
   @Public()

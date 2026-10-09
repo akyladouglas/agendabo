@@ -6,11 +6,15 @@ import { toast } from 'vue-sonner';
 import {
   appointmentInputSchema,
   notificationRuleInputSchema,
+  rescheduleMoveInputSchema,
+  rescheduleCreateInputSchema,
   type AppointmentDto,
   type AppointmentPatch,
   type CheckConflictResult,
   type CreateAppointmentInput,
   type NotificationRuleInput,
+  type RelocationOptionDto,
+  type RescheduleResult,
   type ReviewAppointmentDto,
 } from '@agendabo/contracts';
 import {
@@ -23,8 +27,11 @@ import { useCheckConflict } from './mutations/useCheckConflict.mutation';
 import { useCreateAppointmentMutation } from './mutations/useCreateAppointment.mutation';
 import { useUpdateAppointmentMutation } from './mutations/useUpdateAppointment.mutation';
 import { useConfirmReviewMutation } from './mutations/useConfirmReview.mutation';
+import { useRelocationOptionsMutation } from './mutations/useRelocationOptions.mutation';
+import { useRescheduleMutation } from './mutations/useReschedule.mutation';
 import { conflictMessage } from '../utils/conflict';
 import {
+  formatDateTimeInTz,
   formatRangeInTz,
   localDateTimeToUtc,
   toLocalDateString,
@@ -174,10 +181,23 @@ export function useAppointmentForm(options: {
   const create = useCreateAppointmentMutation();
   const update = useUpdateAppointmentMutation();
   const confirmReview = useConfirmReviewMutation();
+  const relocation = useRelocationOptionsMutation();
+  const reschedule = useRescheduleMutation();
 
   const conflictWarning = ref<string | null>(null);
   const submitError = ref<string | null>(null);
   const invalidMessage = ref<string | null>(null);
+
+  // ---- Reagendamento Assistido (Etapa 0, fecha C.11) ---------------------
+  // A web NÃO calcula jogada nenhuma: `planRelocation` roda server-side e as
+  // opções chegam prontas (opções de horário formatáveis pela UI).
+
+  /** true enquanto o fetch de jogadas está em voo. */
+  const relocationLoading = ref(false);
+  /** Opções de jogada para o candidato atual (`null` = seção fechada). */
+  const relocationOptions = ref<RelocationOptionDto[] | null>(null);
+  /** "Não há como encaixar sem sobreposição" (opções vazias — B6/D-W3). */
+  const relocationBlocked = ref(false);
 
   /** Instantes UTC derivados (reativos) — null enquanto as strings são inválidas. */
   const range = computed(() => resolveRange(values, timezone.value));
@@ -243,9 +263,57 @@ export function useAppointmentForm(options: {
   /** Assinatura do último horário verificado (só re-checa se mexeu em data/hora/duração). */
   let checkedSignature: string | null = null;
 
+  /** Assinatura do último horário com jogadas pedidas (não repetir fetch no mesmo slot). */
+  let relocationSignature: string | null = null;
+
   function invalidateCheck(): void {
     checkedSignature = null;
     conflictWarning.value = null;
+    closeRelocation();
+  }
+
+  /** Fecha a seção de jogadas sem salvar nada (Cancelar — D-W1). */
+  function closeRelocation(): void {
+    relocationSignature = null;
+    relocationOptions.value = null;
+    relocationBlocked.value = false;
+  }
+
+  /**
+   * Chama `POST /appointments/relocation-options` com o candidato atual
+   * (+`movedId` em edição) e abre a seção com o que vier. O 409 (2+ conflitos
+   * = "não cabe") deixa a mensagem de conflito inline cobrir (D-W3) — as
+   * jogadas ficam fechadas e o salvar continua impossível enquanto houver
+   * choque (a API rejeita sempre — ADR-0015).
+   */
+  async function openRelocationOptions(force = false): Promise<void> {
+    const r = range.value;
+    if (!r) return;
+    const sig = `${r.startsAt.toISOString()}|${r.endsAt.toISOString()}`;
+    if (!force && sig === relocationSignature && relocationOptions.value !== null) return;
+    relocationSignature = sig;
+    relocationBlocked.value = false;
+    relocationLoading.value = true;
+    try {
+      const result = await relocation.mutateAsync({
+        startsAt: r.startsAt,
+        endsAt: r.endsAt,
+        movedId: options.appointment?.id,
+      });
+      if (result.kind === 'ok') {
+        relocationOptions.value = null;
+      } else {
+        relocationOptions.value = result.options;
+        relocationBlocked.value = result.options.length === 0;
+      }
+    } catch {
+      // 409 ("não cabe") ou falha de rede: sem jogadas — a mensagem de
+      // conflito já exibida cobre o caso.
+      relocationOptions.value = null;
+      relocationBlocked.value = false;
+    } finally {
+      relocationLoading.value = false;
+    }
   }
 
   async function ensureConflictCheck(): Promise<void> {
@@ -295,8 +363,103 @@ export function useAppointmentForm(options: {
       create.isPending.value ||
       update.isPending.value ||
       confirmReview.isPending.value ||
-      checkConflict.isPending.value,
+      checkConflict.isPending.value ||
+      relocation.isPending.value ||
+      reschedule.isPending.value,
   );
+
+  /**
+   * Confirmar uma jogada (D-W2): um único `POST /appointments/reschedule` com a
+   * variante certa. O server RECOMPUTA a jogada (D4) — por isso o `otherStart/
+   * otherEnd` enviados na variante move são EXATAMENTE o slot que a UI mostrou
+   * (jogada mudada ⇒ 409 e nada escrito, e as opções são re-consultadas).
+   *   - criação move-other ⇒ variante create com o payload do form + `otherId`
+   *     (a variante create NÃO tem otherStart/otherEnd);
+   *   - criação move-self  ⇒ variante create com startsAt/endsAt = slot da opção;
+   *   - edição move-other  ⇒ variante move: movido → candidato do form, `otherId`
+   *     → slot da opção (otherStart/otherEnd = newStart/newEnd da opção);
+   *   - edição move-self   ⇒ variante move só com newStart/newEnd = slot (sem otherId).
+   */
+  async function confirmRelocation(option: RelocationOptionDto): Promise<{ ok: boolean }> {
+    const isEdit = Boolean(options.appointment);
+    const input = buildInput();
+    const r = range.value;
+    if (!input || !r) return { ok: false };
+
+    let payload;
+    if (isEdit) {
+      payload =
+        option.kind === 'move-other'
+          ? rescheduleMoveInputSchema.parse({
+              mode: 'move',
+              movedId: options.appointment!.id,
+              otherId: option.other.id,
+              newStart: r.startsAt,
+              newEnd: r.endsAt,
+              otherStart: option.newStart,
+              otherEnd: option.newEnd,
+            })
+          : rescheduleMoveInputSchema.parse({
+              mode: 'move',
+              movedId: options.appointment!.id,
+              newStart: option.newStart,
+              newEnd: option.newEnd,
+            });
+    } else {
+      payload =
+        option.kind === 'move-other'
+          ? rescheduleCreateInputSchema.parse({
+              mode: 'create',
+              create: {
+                title: input.title,
+                startsAt: input.startsAt,
+                endsAt: input.endsAt,
+                notes: input.notes,
+                notificationRules: input.notificationRules,
+              },
+              otherId: option.other.id,
+            })
+          : rescheduleCreateInputSchema.parse({
+              mode: 'create',
+              create: {
+                title: input.title,
+                startsAt: option.newStart,
+                endsAt: option.newEnd,
+                notes: input.notes,
+                notificationRules: input.notificationRules,
+              },
+            });
+    }
+
+    try {
+      const result = (await reschedule.mutateAsync(payload)) as RescheduleResult;
+      const tz = timezone.value;
+      // Toast do MOVIDO/criado; dia completo porque a jogada empurra para
+      // depois da meia-noite com frequência (nota de implementação da spec).
+      const movedDate = new Date(result.moved.startsAt);
+      // No modo revisão, o salvamento real é a aprovação (F-B3); o texto não
+      // pode prometer algo que ainda não aconteceu.
+      const verb = options.mode === 'review' ? 'Ajustado' : 'Reagendado';
+      toast.success(`${verb} para ${formatDateTimeInTz(movedDate, tz)}`);
+      warnDropped(result);
+      closeRelocation();
+      return { ok: true };
+    } catch (err) {
+      const conflict = conflictMessage(err, (s, e) => formatRangeInTz(s, e, timezone.value));
+      if (conflict) {
+        // corrida / jogada mudada (D4): mostra o conflito e re-consulta as
+        // jogadas com a carga atual — o usuário decide de novo (force: a
+        // assinatura é a mesma, mas o mundo mudou no server).
+        conflictWarning.value = conflict;
+        await openRelocationOptions(true);
+      } else {
+        submitError.value =
+          (err as { response?: { data?: { message?: string } } })?.response?.data?.message ??
+          'Algo deu errado, tente de novo.';
+      }
+      return { ok: false };
+    }
+  }
 
   /** Salvar: valida → check-conflict (se horário novo) → chama a API do modo. */
   async function submit(): Promise<{ ok: boolean }> {
@@ -341,11 +504,15 @@ export function useAppointmentForm(options: {
         await confirmReview.mutateAsync({ id: options.appointment.id, ...input });
         toast.success('Aprovado — saiu da fila de revisão.');
       }
+      closeRelocation();
       return { ok: true };
     } catch (err) {
       const conflict = conflictMessage(err, (s, e) => formatRangeInTz(s, e, timezone.value));
       if (conflict) {
         conflictWarning.value = conflict;
+        // C.11 fechado: conflito detectado (create/update/review) ⇒ oferece a
+        // jogada em vez de só exibir a mensagem (D-W1).
+        await openRelocationOptions();
       } else {
         submitError.value =
           (err as { response?: { data?: { message?: string } } })?.response?.data?.message ??
@@ -368,5 +535,11 @@ export function useAppointmentForm(options: {
     invalidateCheck,
     buildInput,
     submit,
+    // Reagendamento Assistido (Etapa 0)
+    relocationLoading,
+    relocationOptions,
+    relocationBlocked,
+    closeRelocation,
+    confirmRelocation,
   };
 }

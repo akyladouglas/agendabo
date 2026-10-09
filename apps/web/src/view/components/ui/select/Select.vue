@@ -27,12 +27,15 @@
             v-for="opt in props.options"
             :key="opt.value"
             :value="opt.value"
-            class="relative flex min-h-11 cursor-pointer select-none items-center gap-2 rounded-md py-2 pl-8 pr-3 text-sm text-foreground outline-none data-[highlighted]:bg-muted"
+            class="relative flex min-h-11 cursor-pointer select-none items-center rounded-md py-2 pl-8 pr-3 text-sm text-foreground outline-none data-[highlighted]:bg-muted"
           >
+            <!-- radix-vue 1.9: SelectItem sò renderiza o slot `default` (o slot
+                 nomeado `indicator` e engolido). O indicador fica dentro do
+                 default, posicionado absolute p/ esquerda; o rotulo vai em
+                 SelectItemText (o typeahead do select le SO ele — por isso o
+                 Check nao pode estar dentro dele). -->
             <SelectItemIndicator class="absolute left-2 inline-flex items-center">
-              <SelectItemText as-child>
-                <Check class="h-4 w-4 text-primary" />
-              </SelectItemText>
+              <Check class="h-4 w-4 text-primary" />
             </SelectItemIndicator>
             <SelectItemText>{{ opt.label }}</SelectItemText>
           </SelectItem>

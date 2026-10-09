@@ -107,8 +107,11 @@ export class ReviewService {
 
   /** Carga da checagem: confirmed futuros do usuário, sem o próprio id. */
   private async existingConfirmed(userId: string, ignoreId: string): Promise<AppointmentLike[]> {
+    // ADR-0015/D6: `needs_review` conta como obstáculo (a fila mostra ⚠️ e o item
+    // pode ser confirmado a qualquer momento — ignorá-lo criaria sobreposição
+    // latente proibida pela invariante).
     const rows = await this.prisma.appointment.findMany({
-      where: { userId, status: 'confirmed', endsAt: { gt: new Date() } },
+      where: { userId, status: { in: ['confirmed', 'needs_review'] }, endsAt: { gt: new Date() } },
       orderBy: { startsAt: 'asc' },
       select: { id: true, title: true, startsAt: true, endsAt: true },
     });

@@ -1,18 +1,20 @@
 <template>
   <SwitchRoot
     :id="props.id"
-    :model-value="props.modelValue"
+    :checked="props.modelValue"
     :disabled="props.disabled"
     :class="
       cn(
-        'od-move relative inline-flex h-11 w-[60px] shrink-0 items-center rounded-full border border-border bg-surface-2 px-1 data-[state=checked]:border-primary data-[state=checked]:bg-primary disabled:pointer-events-none disabled:opacity-50',
+        // visual compacto; o alvo de toque (>=44px) vem do padding vertical no
+        // wrapper da pagina, nao da pinta do controle
+        'od-move relative inline-flex h-7 w-[46px] shrink-0 items-center rounded-full border border-border bg-surface-2 px-1 data-[state=checked]:border-primary data-[state=checked]:bg-primary disabled:pointer-events-none disabled:opacity-50',
         props.class,
       )
     "
-    @update:model-value="emit('update:modelValue', Boolean($event))"
+    @update:checked="emit('update:modelValue', Boolean($event))"
   >
     <SwitchThumb
-      class="od-move block h-8 w-8 rounded-full bg-background shadow transition-transform data-[state=checked]:translate-x-5"
+      class="od-move block h-5 w-5 rounded-full bg-background shadow transition-transform data-[state=checked]:translate-x-[18px]"
     />
   </SwitchRoot>
 </template>
