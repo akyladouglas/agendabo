@@ -27,6 +27,9 @@ export class AnthropicClientProvider implements AnthropicMessagesClient {
     // D-P8: o env e em MICRO-USD/Mtok e obrigatorio, mas o construtor nao
     // chuta — preco ausente/<=0 (test sem env) desliga a estimativa (custo
     // null), nunca 0 "degratis". Guard numerico: o tipo pode menteR (test mock).
+    // Atencao: o env declara UM preco (o do PRIMARIO); a escalada usa o mesmo
+    // numero — escolha do humano (2026-10-09): custo declarado e estimativa de
+    // teto com uma chave, nao billing por modelo (tabela completa no ADR-0017).
     const toMicro = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
     this.priceInMicro = toMicro(this.config.get('LLM_PRICE_INPUT_USD_PER_MTOK', { infer: true }));
     this.priceOutMicro = toMicro(this.config.get('LLM_PRICE_OUTPUT_USD_PER_MTOK', { infer: true }));
@@ -118,9 +121,14 @@ export class AnthropicClientProvider implements AnthropicMessagesClient {
    * Estimativa declarada em micro-USD INTEIRO (ADR-0017: float somado em SQL e
    * armadilha). Conta exata com inteiros: microUSD/Mtok * tokens / 1e6 =
    * micro-USD (1 Mtok = 1e6 tokens). `round` so absorve FP de tokens gigantes.
-   * escalada usa o MESMO preco do primario (spec: estimativa declarada, nao
-   * billing); precos por modelo = env extra quando doer (ADR-0017). Sem usage
-   * ou sem preco declarado (env) => null: recusa estimar sem preco (D-P8).
+   *
+   * A formula NAO precifica cache: os tokens de cache Anthropic ja vem no
+   * `input_tokens` e custam 0.1x-2x o preco de input, entao o custo declarado
+   * e o TETO (com cache, o real e menor) — escolha do humano (2026-10-09):
+   * estimativa simples e conservadora, a tabela de precos completa (com os
+   * multiplicadores de cache) mora no ADR-0017 para recalcular depois.
+   * Sem usage ou sem preco declarado (env) => null: recusa estimar sem
+   * preco (D-P8).
    */
   private estimateCostMicros(usage?: {
     input_tokens: number;

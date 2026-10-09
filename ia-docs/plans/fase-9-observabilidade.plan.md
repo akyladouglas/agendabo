@@ -195,6 +195,13 @@ humana com tabela oficial de precos) e UI de auditoria (fora de escopo da spec).
   fluxo só envia `appointmentId` — decisão de produto registrada, sem código;
   AdminGuard ganhou spec próprio (4 testes). Docs: gotcha #22, ADRs 0016/0017
   emendados, spec B5/cenário/D12/C4 atualizados.
+- 2026-10-09 — **Precificação de LLM fechada pelo humano (item aberto do
+  relatório da Etapa 7)**: usar somente Claude e manter a estimativa
+  SIMPLIFICADA como regra (cache fora da fórmula = custo declarado é o TETO).
+  Modelos atuais: primário `claude-haiku-4-5-20251001` ($1/$5/Mtok — env atual
+  já estava correto) e escalada `claude-sonnet-5-5` ($2/$10). Tabela de preços
+  oficial documentada no ADR-0017 (a salvaguarda do "recalcular quando doer");
+  comment no provider e no schema atualizados. Sem mudança de código de regra.
 - 2026-10-09 — **Etapa 7 FEITA / fase encerrada**: pacote aplicado (Log acima),
   migration `20261009230000_llm_calls_cache_tokens` aplicada em dev, `pnpm
 sync:ia` rodado, gates completos verdes pós-correções (build 0; test: contracts

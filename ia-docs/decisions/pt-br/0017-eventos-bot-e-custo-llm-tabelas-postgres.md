@@ -82,12 +82,28 @@ error`), `createdAt` UTC + índices. Capture **centralizado no provider
   ADR-0016).
 - `schedule-core` permanece intocado (telemetria é I/O); nenhuma decisão de
   negócio muda de lugar; nenhuma fala do bot muda.
-- O custo estimado (costUsdMicros) usa os precos CHEIOS de input/output (env) e nao
-  precifica cache. A linha de llm_calls guarda os tokens de cache que o SDK
-  informa (cache_read_input_tokens/cache_creation_input_tokens, NULL = nao
-  informado) para auditoria futura; a precificacao de cache fica pendente de
-  decisao humana (tabela oficial de precos no env) — o custo declarado é
-  conservador (>= real quando houve cache-read).
+- O custo estimado (`costUsdMicros`) usa os precos CHEIOS de input/output (env) e nao
+  precifica cache. A linha de `llm_calls` guarda os tokens de cache que o SDK
+  informa (`cache_read_input_tokens`/`cache_creation_input_tokens`, NULL = nao
+  informado) para auditoria futura.
+
+> **Decisão humana (2026-10-09, pós-revisão)**: a estimativa SIMPLIFICADA está
+> FECHADA como regra — custo declarado = (input × preço_input + output ×
+> preço_output), cache FORA da fórmula (o valor declarado é o TETO: com cache,
+> o real é menor). Modelos usados (2026-10-09, Claude API): primário
+> `claude-haiku-4-5-20251001` ($1/$5 por Mtok — o env atual está correto) e
+> escalada `claude-sonnet-5-5` ($2/$10). A tabela de preços oficial (a
+> salvaguarda deste ADR), para recalcular se um dia doer:
+>
+> | Modelo                    | Input $/Mtok | Output $/Mtok | Cache write 5m | Cache read |
+> | ------------------------- | ------------ | ------------- | -------------- | ---------- |
+> | claude-haiku-4-5-20251001 | 1.00         | 5.00          | 1.25           | 0.10       |
+> | claude-sonnet-5-5         | 2.00         | 10.00         | 2.50           | 0.10       |
+>
+> (Fonte: rate card Claude API, out/2026. Cache write 1h = 2× o input; cache
+> read do Sonnet 5.5 = 0,05× o input — os dois multiplicadores ficam fora da
+> fórmula por decisão acima.)
+
 - Leituras agregadas (/llm-usage) tem escopo default de **90 dias** quando rom
   ausente: a retencao integral (decisao do humano) nao pode transformar a leitura
   em full-table scan eterno.
