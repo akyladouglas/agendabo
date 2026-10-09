@@ -282,6 +282,18 @@ describe('Visão Dia com grade (grades-dia-semana-mes Etapa 1)', () => {
     expect(cls).not.toMatch(/(^|\s)hidden(\s|$)/);
   });
 
+  it('regressão: semana VAZIA mostra as 7 colunas (dias navegáveis) + aviso discreto, nunca o ícone vazio', async () => {
+    const h = mountAgenda({ items: [] });
+    await settle();
+    await tab(h, 'week');
+    // as 7 colunas continuam lá (cada uma é alvo de navegar/criar — B.7)
+    expect(h.w.findAll('[data-testid^="week-day-20"]').length).toBe(7);
+    expect(h.w.find('[data-testid="week-day-number-2026-10-08"]').exists()).toBe(true);
+    // aviso discreto em texto, SEM o bloco de ícone (Inbox) do empty antigo
+    expect(h.w.text()).toContain('Nada nesta semana.');
+    expect(h.w.find('[data-testid="week-empty-icon"]').exists()).toBe(false);
+  });
+
   it('navegação ‹ mantém a grade no novo dia (grade navegável)', async () => {
     // SEM compromissos no período: o dia 09 está vazio e a grade continua lá.
     const h = mountAgenda({ items: [] });

@@ -110,19 +110,6 @@
         <AppSkeleton class="h-16" />
       </div>
 
-      <div
-        v-else-if="bodyKind === 'empty'"
-        class="flex flex-col items-center gap-2 rounded-lg border border-dashed border-border py-12 text-center"
-      >
-        <Inbox
-          class="h-8 w-8 text-muted-foreground"
-          aria-hidden="true"
-        />
-        <p class="text-sm text-muted-foreground">
-          {{ emptyText }}
-        </p>
-      </div>
-
       <!-- visão Dia (Etapa 1.3): GRADE de horas (clicável → criar dia+hora) + a
            LISTA do dia ABAIXO (notações/anexos legíveis — a grade não os substitui).
            Vazio: a grade continua (é o alvo de criar) com aviso discreto (R.15). -->
@@ -202,8 +189,17 @@
         </ul>
       </div>
 
-      <!-- visão Semana: cards-colunas dom..sáb com agrupamento por dia civil -->
+      <!-- visão Semana: cards-colunas dom..sáb com agrupamento por dia civil.
+           Vazio: aviso discreto ACIMA das colunas — os 7 dias continuam lá
+           (navegáveis/criáveis, mesma regra Mês/Dia — R.15/B.7). -->
       <div v-else-if="bodyKind === 'week'">
+        <p
+          v-if="isEmpty"
+          class="mb-3 text-sm text-muted-foreground"
+          role="status"
+        >
+          {{ emptyText }}
+        </p>
         <WeekGrid
           :days="weekDays"
           :drag="agendaDrag.drag"
@@ -363,7 +359,7 @@
  * Dia = lista vigente (C.11); Revisão intocada.
  */
 import { computed, ref } from 'vue';
-import { Inbox, Plus } from 'lucide-vue-next';
+import { Plus } from 'lucide-vue-next';
 import { conflictedIds, firstConflictLabel, type CalendarDay } from '@agendabo/schedule-core';
 import type { AppointmentDto } from '@agendabo/contracts';
 import { useAgendaPage } from '@/app/composables/useAgendaPage.composable';
@@ -630,18 +626,16 @@ const isEmpty = computed(() => !appointmentsQuery.isFetching.value && items.valu
  * deixava um irmão órfão do âncora do fragmento ao trocar de branch, e o update
  * seguinte morria em removeFragment (nextSibling null) — gotcha da Fase 7.
  */
-const bodyKind = computed<'error' | 'skeleton-month' | 'skeleton-year' | 'skeleton' | 'empty' | 'day' | 'week' | 'month' | 'year'>(() => {
+const bodyKind = computed<'error' | 'skeleton-month' | 'skeleton-year' | 'skeleton' | 'day' | 'week' | 'month' | 'year'>(() => {
   if (appointmentsQuery.isError.value) return 'error';
   if (appointmentsQuery.isPending.value) {
     if (agenda.view.value === 'month') return 'skeleton-month';
     if (agenda.view.value === 'year') return 'skeleton-year';
     return 'skeleton';
   }
-  // VAZIO só faz sentido em Semana. Dia agora tem GRADE (grades-dia-semana-mes
-  // 1.3): mesmo vazio o dia é navegável/criável — o aviso "Nada neste dia." fica
-  // DENTRO do ramo 'day', acima da grade (R.15). Mês/Ano SEMPRE renderizam a grade.
-  if (isEmpty.value && agenda.view.value !== 'day' && agenda.view.value !== 'month' && agenda.view.value !== 'year')
-    return 'empty';
+  // VAZIO nunca engole uma grade: Dia/Semana/Mês/Ano SEMPRE renderizam (a grade é
+  // o alvo de clique p/ criar — B.7 — e o meio de navegar). O aviso "Nada nesta
+  // …" fica DENTRO do próprio ramo, discreto, acima da grade (R.15).
   return agenda.view.value;});
 const emptyText = computed(() => {
   switch (agenda.view.value) {
