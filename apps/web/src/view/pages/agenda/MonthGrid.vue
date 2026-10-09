@@ -1,38 +1,35 @@
 <template>
-  <!-- grade 6×7 semântica (a11y F.11): linha = role="row", célula = role="gridcell" -->
+  <!-- R8/a11y (review 2026-10-09): estrutura de BOTÕES puros — `role="grid"` foi
+       DERRUBADO porque o keyboard interaction model do grid (setas + uma entrada
+       na tab sequence) não é implementado; prometer o role e não cumprir é pior
+       para leitor de tela do que a lista de botões (todos já com aria-label
+       completo). Decisão registrada no plano grades-dia-semana-mes (R8). -->
   <div
-    role="grid"
     :aria-label="`Mês de ${props.monthName}`"
     data-testid="month-grid"
   >
     <!-- cabeçalho dom..sáb (mesma convenção das células — weekRows/monthCells) -->
     <div
-      role="row"
       class="grid grid-cols-7 border-b border-border text-center text-xs font-semibold text-muted-foreground"
+      aria-hidden="true"
     >
       <div
         v-for="d in WEEKDAY_LABELS"
         :key="d.short"
-        role="columnheader"
-        :aria-label="d.full"
         class="py-1.5"
       >
-        <span aria-hidden="true">{{ d.short }}</span>
+        {{ d.short }}
       </div>
     </div>
 
     <div
       v-for="(week, wi) in weeks"
       :key="wi"
-      role="row"
       class="grid grid-cols-7"
     >
       <div
         v-for="cell in week"
         :key="cell.date"
-        role="gridcell"
-        :aria-label="cellAria(cell)"
-        :aria-selected="cell.date === props.anchorKey || undefined"
         class="od-move min-h-24 min-w-0 border-b border-r border-border p-1 md:min-h-36"
         :class="cell.class"
         :data-cell-key="`day:${cell.date}`"
@@ -42,6 +39,7 @@
           type="button"
           class="flex h-full w-full flex-col gap-1 rounded-md text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           :aria-label="cellAria(cell)"
+          :aria-current="cell.date === props.anchorKey ? 'date' : undefined"
           :data-testid="`cell-${cell.date}`"
           @click="emit('dayClick', cell)"
         >
@@ -67,6 +65,7 @@
               <AlertTriangle
                 v-if="chip.review"
                 class="h-3 w-3 shrink-0 text-warning"
+                role="img"
                 aria-label="pendente de revisão"
               />
               <span class="shrink-0 tabular-nums text-muted-foreground">{{ chip.time }}</span>

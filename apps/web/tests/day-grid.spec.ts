@@ -194,7 +194,8 @@ describe('Visão Dia com grade (grades-dia-semana-mes Etapa 1)', () => {
     expect(h.w.find('[data-testid="day-slot-00"]').exists()).toBe(true);
     expect(h.w.find('[data-testid="day-slot-23"]').exists()).toBe(true);
     // a célula 00:00 LOCAL existe mesmo com o dia começando às 03:00Z (meia-noite local)
-    expect(h.w.find('[data-testid="day-slot-00"]').attributes('aria-label')).toContain('00:00');
+    // R7/a11y: o rótulo vive no BOTÃO (o gridcell pai não repete mais o aria-label)
+    expect(h.w.find('[data-testid="day-slot-button-00"]').attributes('aria-label')).toContain('00:00');
   });
 
   it('bloco posicionado com estilo top/height % do layoutDayTimeline (11:00–12:30 SP)', async () => {

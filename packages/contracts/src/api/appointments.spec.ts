@@ -84,6 +84,32 @@ describe('rescheduleAppointmentInputSchema', () => {
       }),
     ).toThrow();
   });
+
+  it('chave desconhecida (ex.: `force`): REJEITA — borda strict (R10, ADR-0015)', () => {
+    // o default do zod é STRIP; a decisão do review é não deixar um `force`
+    // retrabalhado passar despercebido em NENHUM input da fase.
+    expect(() =>
+      rescheduleAppointmentInputSchema.parse({
+        mode: 'move',
+        movedId: id1,
+        newStart: '2026-10-12T17:00:00.000Z',
+        newEnd: '2026-10-12T18:00:00.000Z',
+        force: true,
+      }),
+    ).toThrow();
+    expect(() =>
+      rescheduleAppointmentInputSchema.parse({
+        mode: 'create',
+        create: {
+          title: 'Consulta',
+          startsAt: '2026-10-12T14:00:00.000Z',
+          endsAt: '2026-10-12T15:00:00.000Z',
+          notificationRules: [],
+        },
+        overrideConflict: true,
+      }),
+    ).toThrow();
+  });
 });
 
 describe('relocationOptionsInputSchema', () => {

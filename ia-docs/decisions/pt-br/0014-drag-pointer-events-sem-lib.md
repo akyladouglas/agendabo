@@ -2,7 +2,7 @@
 
 - **Status:** Aceite
 - **Data:** 2026-10-09
-- **Contexto:** ADR-0015 (Fase 8, Etapa 2)
+- **Contexto:** Fase 8, Etapa 2 (insumo do ADR-0015, que é da Etapa 0)
 
 ## Contexto
 
@@ -33,12 +33,14 @@ sem nenhuma biblioteca nova:
 - o arrasto é um **overlay fantasma** (`pointer-events-none`, clonado do bloco)
   que segue o ponteiro; o bloco original fica esmaecido no lugar;
 - a célula-alvo é resolvida por hit-test via `data-cell-key` (registry das
-  células de cada visão: Dia = `dia:HH`, Semana = `YYYY-MM-DD:HH`, Mês =
-  `YYYY-MM-DD`) lido com `document.elementFromPoint` sob o ponteiro;
+  células de cada visão: Dia = `hour:<ISO-meia-noite-local-da-hora>`, Semana e
+  Mês = `day:<YYYY-MM-DD>` — na Semana a COLUNA inteira é a célula, ajuste de
+  hora por drop ficou no backlog) lido com `document.elementFromPoint` sob o
+  ponteiro;
 - `pointerup` **na célula de origem** = no-op; **fora de qualquer célula** ou
   **ESC** = cancela (fantasma some, bloco volta ao lugar, **zero pedido à API**);
 - o novo intervalo é **sempre transladação determinística no `schedule-core`**
-  (`dropOffsetToRange`): o drop diz só o deslocamento, a web nunca recalcula
+  (`dropTargetFromKey` + `dropTargetRange`): o drop diz só o deslocamento, a web nunca recalcula
   duração nem data; o payload do drop cai direto no fluxo da Etapa 0
   (`check-conflict` → `reschedule` transacional) — **sem optimistic update**.
 

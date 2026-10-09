@@ -102,6 +102,9 @@ model NotificationRule {
   appointmentId String      @db.Uuid
   appointment   Appointment @relation(fields: [appointmentId], references: [id], onDelete: Cascade)
 
+  /// Review R4 (perf): `rulesOf`/`deleteMany` por compromisso no reschedule
+  /// faziam seq-scan (a FK sozinha nao gera indice no Postgres).
+  @@index([appointmentId])
   @@map("notification_rules")
 }
 
@@ -130,6 +133,9 @@ model NotificationOutbox {
   ruleType NotificationRuleType?
 
   @@index([status, firesAt])
+  /// Review R4 (perf): `invalidateForAppointment` no reschedule procurava por
+  /// appointmentId com seq-scan (dentro da tx!). FK nao indexa no Postgres.
+  @@index([appointmentId])
   /// Idempotencia do digest: 1 linha por (usuario, kind, dia). `@@unique` do Prisma
   /// nao expressa indice PARCIAL — a constraint real e o CREATE UNIQUE INDEX ...
   /// WHERE "appointmentId" IS NULL criado no SQL da migração fase3_outbox_kind.

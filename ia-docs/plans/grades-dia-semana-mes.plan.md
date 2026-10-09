@@ -263,7 +263,7 @@ Implementar com **Pointer Events** (unifica mouse+toque), hook próprio:
 
 ## Arquivos
 
-- **Novos**: `DayGrid.vue`, `useDragAppointment.ts`, `tests/drag-appointment.spec.ts`, `useRescheduleMutation.ts`, `RescheduleDialog` (o Reagendamento Assistido), ADR-0014 (Pointer Events sem lib) + ADR-0015 (fim do `force`/sobreposição invariante), spec `.ia/specs/agenda/reagendamento-assistido.spec.md` (Etapa 0) + `.ia/specs/web/grades-drag-agenda.spec.md` (Etapas 1–2, pré-código)
+- **Novos**: `DayGrid.vue`, `useDragAppointment.ts`, `tests/drag-appointment.spec.ts`, `useRescheduleMutation.ts`, `RescheduleDialog` (o Reagendamento Assistido), ADR-0014 (Pointer Events sem lib) + ADR-0015 (fim do `force`/sobreposição invariante), spec `.ia/specs/agenda/reagendamento-assistido.spec.md` (Etapa 0). **Correção R9 (2026-10-09):** a spec `.ia/specs/web/grades-drag-agenda.spec.md` prometida aqui NUNCA foi criada; as Etapas 1–2 estão cobertas pelas notas de pós-entrega deste plano (seção "Atualização 2026-10-09") + `calendario-visoes.spec.md` (C.10 subscrito) + ADR-0014/0015
 - **Editados**: `MonthGrid.vue`, `WeekGrid.vue`, `AgendaPage.vue`, `useAgendaPage.composable.ts`, `useAppointmentForm.ts` (preset com hora + remove force), `AppointmentModal.vue` (preset hora + opções de reagendamento), `calendar.ts`+`index.ts` (schedule-core), `appointments.controller/service` (reschedule + remove force), `agenda.service.ts` (conflitos no range do dia), `packages/contracts` (schemas sem `force` + reschedule), specs/README, `docs/gotchas.md` se necessário
 
 ## Definition of Done
@@ -274,3 +274,25 @@ Gates verdes + spec/planos registrados + ADR-0014 + deparo humano.
 
 Redimensionar bloco (mudar duração arrastando a base) — backlog; drag na
 Lista; recorrência/lixeira; Fases 6 residual/9; mensagens de erro da web.
+
+---
+
+## Fechamento da fase — pacote de correções do review multi-agente (2026-10-09)
+
+Review `fd72027..HEAD` (6 especialistas + consolidador). Decisões do humano:
+corrida do reschedule FECHADA com SELECT ... FOR UPDATE; pacote TODO agora.
+
+- [x] R1 (bloqueador): bot pré-check alinha a confirmed+needs_review (scheduling-flow) + teste
+- [x] R2 (corrida): FOR UPDATE nas linhas em conflito dentro da tx do reschedule (ADR-0015 nota D9)
+- [x] R3 (teste): reschedule move SEM otherId — semântica real confirmada com o humano: 1 conflito = o MOVIDO vai ao destino (move-self recomputado, D4); 2+ = 409. Ambos os ramos testados; comentário do service corrigido
+- [x] R4 (perf): índice Prisma notification_rules.appointmentId + notification_outbox.appointmentId (migração `20261009150000_review_r4_fk_indexes` aplicada)
+- [x] R5 (seg): window.__agenda atrás de import.meta.env.DEV
+- [x] R6 (perf): cache de Intl.DateTimeFormat em tz.ts (tick de 60s não re-formata tudo)
+- [x] R7 (a11y): período = sr-only h2 "Calendário" + <p aria-live> (o heading vira live region; h2 filho do h1 fica sr-only p/ outline válida); drop-live aria-atomic + limpa-antes-de-escrever; onCancel do drag ANUNCIADO (ramo `!target` também); label duplicado gridcell+botão removido (rótulo só no botão); botão Hoje `aria-current=date` + disabled quando já é hoje; chevron/check/menu/logout aria-hidden; role=img no ícone de revisão (Dia/Semana/Mês)
+- [x] R8 (a11y): DECISÃO registrada — `role="grid"`/row/gridcell DERRUBADOS das 3 grades (Day/Week/Month): sem keyboard interaction model (setas/uma-entrada) o role promete o que não cumpre; estrutura virou lista de botões com aria-label completo; `aria-selected` → `aria-current="date"` na âncora do Mês; teste de contagem migrado p/ testid
+- [x] R9 (docs): PROMPT.md (esqueci-a-senha e Fase 8 concluídas), spec de visões (C.10 subscrito + D2/D7 superseded + fora-de-escopo riscado), architecture-overview (reschedule/relocation/invariante/FOR UPDATE), gotchas #16 (mojibake PowerShell — nascido deste pacote), ADR-0014 dropOffsetToRange -> dropTargetFromKey/dropTargetRange + cabeçalho Contexto corrigido + keys reais, spec reagendamento C1 (strict + otherStart/otherEnd D4-prática), F-B1 nota R1 bot×web, ADR-0015 D9 + aberto R1; spec inexistente grades-drag-agenda corrigida na seção Arquivos. **Glossário: adiado (nit)**
+- [x] R10 (nit): .strict() nos zod de entrada do reschedule/relocation + teste de rejeição (`force` retrabalhado não passa)
+
+Backlog novo nascido aqui: classe CSS `od-drag-block` decorativa (touch-action é
+inline — documentar ou remover), célula da Semana 32px (decisão de produto),
+extrair repository quando mexer em `appointments.service.ts` de novo.

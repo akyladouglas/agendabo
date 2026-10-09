@@ -158,18 +158,30 @@ describe('ReviewService (fila needs_review — Fase 4)', () => {
   });
 
   it('confirm com conflito (spec E16): AppointmentConflictError e NENHUMA escrita', async () => {
+    // Datas RELATIVAS a `new Date()` (o service chama o relógio real na carga e
+    // no findConflict — compromissos passados são ignorados pela regra). Um
+    // fixture absoluto apodrece em ~3 dias e o teste passa a falhar sem bug
+    // nenhum (aconteceu no gate de 2026-10-09: confirmava "agora +2 dias" já
+    // no passado do fixture).
     const m = make();
+    const base = new Date();
+    base.setUTCHours(12, 0, 0, 0);
+    const day = 86_400_000;
     const other = {
       id: 'a9',
       title: 'Reunião de time',
-      startsAt: new Date('2026-10-09T15:30:00Z'),
-      endsAt: new Date('2026-10-09T16:30:00Z'),
+      startsAt: new Date(base.getTime() + 2 * day + 5.5 * 3_600_000),
+      endsAt: new Date(base.getTime() + 2 * day + 6.5 * 3_600_000),
     };
     m.findMany.mockResolvedValue([other]); // confirmed futuro sobreposto
 
-    await expect(m.svc.confirm('u1', 'r1', CONFIRM_BODY)).rejects.toBeInstanceOf(
-      AppointmentConflictError,
-    );
+    await expect(
+      m.svc.confirm('u1', 'r1', {
+        title: 'Consulta no dentista',
+        startsAt: new Date(base.getTime() + 2 * day + 5 * 3_600_000).toISOString(),
+        endsAt: new Date(base.getTime() + 2 * day + 6 * 3_600_000).toISOString(),
+      }),
+    ).rejects.toBeInstanceOf(AppointmentConflictError);
 
     expect(m.$transaction).not.toHaveBeenCalled();
     expect(m.update).not.toHaveBeenCalled();

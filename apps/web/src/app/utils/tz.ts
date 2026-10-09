@@ -3,20 +3,43 @@
  * ao `realTzOffset` da API) e FORMATAR para exibição. Nenhum cálculo de período/
  * conflito mora aqui — isso vem de `@agendabo/schedule-core` (gotcha 3: consumido
  * via alias de fonte) ou da API.
+ *
+ * R6/perf (review 2026-10-09): os `Intl.DateTimeFormat` agora passam por um
+ * cache por (locale, opções). O tick do "agora" (60 s) + os computeds das grades
+ * chamam a formatação dezenas de vezes por minuto; construir o formatter a cada
+ * chamada custava ~0,19 ms vs ~0,016 ms com ele cacheado (medição do revisor).
+ * As OPÇÕES usadas aqui são constantes de módulo → a chave do cache é estável.
  */
+
+const formatterCache = new Map<string, Intl.DateTimeFormat>();
+
+/** Formatter cacheado por (locale + opções). Mesma semântica, 12× mais barato. */
+function fmt(locale: string, opts: Intl.DateTimeFormatOptions): Intl.DateTimeFormat {
+  const key = `${locale}|${JSON.stringify(opts)}`;
+  let f = formatterCache.get(key);
+  if (!f) {
+    f = new Intl.DateTimeFormat(locale, opts);
+    formatterCache.set(key, f);
+  }
+  return f;
+}
+
+const OFFSET_OPTS: Intl.DateTimeFormatOptions = {
+  hourCycle: 'h23',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+  hour: '2-digit',
+  minute: '2-digit',
+  second: '2-digit',
+};
+const EN_CA_DAY: Intl.DateTimeFormatOptions = { year: 'numeric', month: '2-digit', day: '2-digit' };
+const PT_WEEKDAY_SHORT: Intl.DateTimeFormatOptions = { weekday: 'short' };
+const PT_DM: Intl.DateTimeFormatOptions = { day: '2-digit', month: '2-digit' };
 
 /** Minutos leste de UTC observados em `at` (mesmo algoritmo do worker da API). */
 export function measureTzOffset(timeZone: string, at: Date): number {
-  const parts = new Intl.DateTimeFormat('en-US', {
-    timeZone,
-    hourCycle: 'h23',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-  }).formatToParts(at);
+  const parts = fmt('en-US', { timeZone, ...OFFSET_OPTS }).formatToParts(at);
   const get = (t: string) => Number(parts.find((p) => p.type === t)?.value ?? 0);
   const asUtc = Date.UTC(
     get('year'),
@@ -31,24 +54,18 @@ export function measureTzOffset(timeZone: string, at: Date): number {
 
 /** "HH:mm" no fuso do usuário (exibição pura). */
 export function formatTimeInTz(date: Date, timeZone: string): string {
-  return new Intl.DateTimeFormat('pt-BR', {
-    timeZone,
-    hour: '2-digit',
-    minute: '2-digit',
-    hourCycle: 'h23',
-  }).format(date);
+  return fmt('pt-BR', { timeZone, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(date);
 }
 
 /** "14:00–15:30" (ou "18:00–sex 09/10 00:30" quando o fim vaza o dia) no tz do usuário. */
 export function formatRangeInTz(startsAt: Date, endsAt: Date, timeZone: string): string {
-  const day = (d: Date) =>
-    new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(d);
+  const day = (d: Date) => fmt('en-CA', { timeZone, ...EN_CA_DAY }).format(d);
   const time = (d: Date) => formatTimeInTz(d, timeZone);
   if (day(startsAt) === day(endsAt)) return `${time(startsAt)}–${time(endsAt)}`;
-  const weekday = new Intl.DateTimeFormat('pt-BR', { timeZone, weekday: 'short' })
+  const weekday = fmt('pt-BR', { timeZone, ...PT_WEEKDAY_SHORT })
     .format(endsAt)
     .replace('.', '');
-  const dm = new Intl.DateTimeFormat('pt-BR', { timeZone, day: '2-digit', month: '2-digit' }).format(endsAt);
+  const dm = fmt('pt-BR', { timeZone, ...PT_DM }).format(endsAt);
   return `${time(startsAt)}–${weekday} ${dm} ${time(endsAt)}`;
 }
 
@@ -59,10 +76,10 @@ export function formatRangeInTz(startsAt: Date, endsAt: Date, timeZone: string):
  * assusta). Formatação pura de borda.
  */
 export function formatDateTimeInTz(date: Date, timeZone: string): string {
-  const weekday = new Intl.DateTimeFormat('pt-BR', { timeZone, weekday: 'short' })
+  const weekday = fmt('pt-BR', { timeZone, ...PT_WEEKDAY_SHORT })
     .format(date)
     .replace('.', '');
-  const dm = new Intl.DateTimeFormat('pt-BR', { timeZone, day: '2-digit', month: '2-digit' }).format(date);
+  const dm = fmt('pt-BR', { timeZone, ...PT_DM }).format(date);
   return `${weekday} ${dm} ${formatTimeInTz(date, timeZone)}`;
 }
 
@@ -74,17 +91,11 @@ export function formatDayHeading(
   timeZone: string,
   today: Date,
 ): { label: string; isToday: boolean; weekday: string } {
-  const key = (d: Date) =>
-    new Intl.DateTimeFormat('en-CA', {
-      timeZone,
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-    }).format(d);
-  const label = new Intl.DateTimeFormat('pt-BR', { timeZone, day: 'numeric', month: 'short' })
+  const key = (d: Date) => fmt('en-CA', { timeZone, ...EN_CA_DAY }).format(d);
+  const label = fmt('pt-BR', { timeZone, day: 'numeric', month: 'short' })
     .format(date)
     .replace('.', '');
-  const weekdayEn = new Intl.DateTimeFormat('en-US', { timeZone, weekday: 'short' })
+  const weekdayEn = fmt('en-US', { timeZone, ...PT_WEEKDAY_SHORT })
     .format(date)
     .replace('.', '');
   const weekday = WEEKDAYS_PT[['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].indexOf(weekdayEn)] ?? '';
@@ -97,12 +108,12 @@ export function monthName(
   timeZone: string,
   style: 'long' | 'short' = 'long',
 ): string {
-  return new Intl.DateTimeFormat('pt-BR', { timeZone, month: style }).format(date).replace('.', '');
+  return fmt('pt-BR', { timeZone, month: style }).format(date).replace('.', '');
 }
 
 /** Mês CALENDARIO (1-12) e ano do instante no fuso — só leitura de partes, p/ menu ir-para. */
 export function monthCalendarOf(date: Date, timeZone: string): { month: number; year: number } {
-  const parts = new Intl.DateTimeFormat('en-US', { timeZone, year: 'numeric', month: 'numeric' })
+  const parts = fmt('en-US', { timeZone, year: 'numeric', month: 'numeric' })
     .formatToParts(date)
     .reduce<Record<string, string>>((acc, p) => ({ ...acc, [p.type]: p.value }), {});
   // en-US numeric: month=MM, year=YYYY (sem U+200E no formato dos navegadores-alvo)
@@ -112,17 +123,16 @@ export function monthCalendarOf(date: Date, timeZone: string): { month: number; 
 /** "d MMM – d MMM" (rota entre meses funciona: `28 set – 4 out`). */
 export function formatWeekHeading(start: Date, endExclusive: Date, timeZone: string): string {
   const end = new Date(endExclusive.getTime() - 1);
-  const fmt = new Intl.DateTimeFormat('pt-BR', { timeZone, day: 'numeric', month: 'short' });
-  const month = (d: Date) =>
-    new Intl.DateTimeFormat('pt-BR', { timeZone, month: 'short' }).format(d).replace('.', '');
-  const day = (d: Date) => new Intl.DateTimeFormat('pt-BR', { timeZone, day: 'numeric' }).format(d);
+  const f = fmt('pt-BR', { timeZone, day: 'numeric', month: 'short' });
+  const month = (d: Date) => fmt('pt-BR', { timeZone, month: 'short' }).format(d).replace('.', '');
+  const day = (d: Date) => fmt('pt-BR', { timeZone, day: 'numeric' }).format(d);
   if (month(start) === month(end)) return `${day(start)} – ${day(end)} ${month(end)}`;
-  return `${fmt.format(start).replace('.', '')} – ${fmt.format(end).replace('.', '')}`;
+  return `${f.format(start).replace('.', '')} – ${f.format(end).replace('.', '')}`;
 }
 
 /** Data "YYYY-MM-DD" do dia civil do usuário (p/ <input type="date">). */
 export function toLocalDateString(date: Date, timeZone: string): string {
-  return new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(date);
+  return fmt('en-CA', { timeZone, ...EN_CA_DAY }).format(date);
 }
 
 /** Hora "HH:mm" do instante no dia civil local (p/ <input type="time">). */

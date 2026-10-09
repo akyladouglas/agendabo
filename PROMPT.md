@@ -125,9 +125,11 @@ O fluxo principal começa no **bot do Telegram**:
 ### Etapas additions pedidas pelo humano (2026-10-08, ordem: depois das acima)
 
 7b. **Fase 8 — Reagendamento Assistido + Grades + Drag-and-drop** _(fase
-única por decisão humana; ordem interna: Etapa 0 → 1 → 2)_. Plano
-atualizado aguardando aprovação em
-`ia-docs/plans/grades-dia-semana-mes.plan.md`.
+única por decisão humana; ordem interna: Etapa 0 → 1 → 2)_. **Concluída
+2026-10-09** (etapas 0-2 + ajustes de UI pedidos; ADR-0014/0015; plano
+`ia-docs/plans/grades-dia-semana-mes.plan.md`; smoke humano: só toque real
+em device pendente). Pós-fase: Semana virou grade de horas por coluna
+(dom..sáb, heading da grade) e o ir-para usa AppSelect (tema escuro).
 Etapa 0: **Reagendamento Assistido** — sobreposição passa a ser
 invariante do produto (o `force` do form web é revogado; a API rejeita
 sempre): ao detectar conflito, regra pura `planRelocation` oferece mover
@@ -142,7 +144,9 @@ clicável para ajustar a hora no modal); soltar em conflito abre o
 Reagendamento Assistido; toque desde o início; sem optimistic update.
 
 8. **Mini-fase — "Esqueci a senha"** (reset por magic link): spec aprovada em
-   `.ia/specs/auth/esqueci-a-senha-reset-senha.spec.md`.
+   `.ia/specs/auth/esqueci-a-senha-reset-senha.spec.md`. **Concluída**
+   (commit `3cbcea6`, ADR-0012): endpoints `/auth/forgot-password` + reset,
+   telas web e testes entregues.
 9. **Última etapa — Observabilidade**:
    - **Erros/ performance da plataforma**: Sentry (ou similar) na API, worker e
      web — DSN em `.env`, ambiente/release nas events, sem dados pessoais na

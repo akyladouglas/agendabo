@@ -32,6 +32,10 @@ function make(opts: { rows?: Record<string, ReturnType<typeof appt>> } = {}) {
   const rows = opts.rows ?? {};
   const calls: string[] = [];
   const tx = {
+    // R2 (corrida/ADR-0015 D9): existingForInTx virou `SELECT ... FOR UPDATE`
+    // via $queryRaw — o mock devolve as MESMAS linhas (a trava não existe no
+    // mock; o que se testa é o caminho do raw, não o Postgres).
+    $queryRaw: async () => Object.values(rows),
     appointment: {
       findFirst: async ({ where }: { where: Record<string, unknown> }) =>
         rows[where.id as string] ?? null,
@@ -167,6 +171,51 @@ describe('AppointmentsService.reschedule — variante move', () => {
     expect(calls.indexOf('outbox.materialize')).toBeLessThan(calls.indexOf('outbox.enqueue'));
     expect(calls.indexOf('outbox.enqueue')).toBeGreaterThan(calls.indexOf('tx.commit'));
     expect(res.other).toBeNull();
+  });
+
+  it('destino com 1 conflito SEM otherId: ESCREVADO como jogada move-self (produto aprovado — servidor recomputa a jogada, D4)', async () => {
+    // R3 (review 2026-10-09): coberto por teste a pedido do revisor. A
+    // semântica REAL (confirmada com o humano) é: sem otherId o client está
+    // pedindo o DESTINO; se há exatamente 1 conflito, o servidor recomputa a
+    // jogada move-self e escreve — o 409 fica para blocked (2+ conflitos). O
+    // comentário de assertPlanHasMove dizia "ele precisa estar livre"; a
+    // regra de verdade é planRelocation (destino com 1 conflito = options
+    // move-self) e está documentada no service agora.
+    const M = appt(ID1, '2026-10-12T09:00:00Z', '2026-10-12T10:00:00Z');
+    const A = appt(ID2, '2026-10-12T14:00:00Z', '2026-10-12T15:00:00Z');
+    const { svc, calls } = make({ rows: { [ID1]: M, [ID2]: A } });
+
+    const res = await svc.reschedule('u1', {
+      mode: 'move',
+      movedId: ID1,
+      newStart: '2026-10-12T14:30:00.000Z',
+      newEnd: '2026-10-12T15:30:00.000Z',
+    });
+
+    // o MOVIDO é que vai para o destino (move-self); o obstáculo NÃO é tocado
+    expect(res.moved.startsAt).toEqual(new Date('2026-10-12T14:30:00.000Z'));
+    expect(res.other).toBeNull();
+    expect(calls).toContain('tx.update:' + ID1);
+    expect(calls).not.toContain('tx.update:' + ID2);
+  });
+
+  it('destino com 2+ conflitos SEM otherId: 409 AppointmentConflictError e NADA escrito', async () => {
+    const M = appt(ID1, '2026-10-12T09:00:00Z', '2026-10-12T10:00:00Z');
+    const A = appt(ID2, '2026-10-12T14:00:00Z', '2026-10-12T15:00:00Z');
+    const B = appt(ID3, '2026-10-12T16:00:00Z', '2026-10-12T17:00:00Z');
+    const { svc, calls } = make({ rows: { [ID1]: M, [ID2]: A, [ID3]: B } });
+
+    await expect(
+      svc.reschedule('u1', {
+        mode: 'move',
+        movedId: ID1,
+        newStart: '2026-10-12T14:30:00.000Z',
+        newEnd: '2026-10-12T16:30:00.000Z',
+      }),
+    ).rejects.toThrow(AppointmentConflictError);
+    expect(calls).not.toContain('tx.update:' + ID1);
+    expect(calls).not.toContain('tx.update:' + ID2);
+    expect(calls).not.toContain('tx.update:' + ID3);
   });
 
   it('com otherId: os DOIS são gravados na MESMA tx e os dois lados mudados re-materializam', async () => {

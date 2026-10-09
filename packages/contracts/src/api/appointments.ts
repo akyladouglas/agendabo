@@ -68,6 +68,10 @@ export const relocationOptionsInputSchema = z
     /** Compromisso em edicao (o que esta sendo movido); ausente = criacao. */
     movedId: z.string().uuid().optional(),
   })
+  // R10 (review 2026-10-09): .strict() na borda — chave desconhecida NUNCA passa
+  // despercebida (o default do zod e strip; um `force` retrabalhado aqui seria
+  // silenciosamente engolido — ADR-0015 nao aceita retrocesso suave).
+  .strict()
   .refine((v) => v.endsAt.getTime() > v.startsAt.getTime(), {
     message: 'endsAt deve ser depois de startsAt',
     path: ['endsAt'],
@@ -119,6 +123,8 @@ export const rescheduleMoveInputSchema = z
     otherStart: isoDateSchema.optional(),
     otherEnd: isoDateSchema.optional(),
   })
+  // R10 (review 2026-10-09): ver relocationOptionsInputSchema — borda strict.
+  .strict()
   .refine((v) => v.newEnd.getTime() > v.newStart.getTime(), {
     message: 'newEnd deve ser depois de newStart',
     path: ['newEnd'],
@@ -140,6 +146,8 @@ export const rescheduleCreateInputSchema = z
     create: appointmentCreateFieldsSchema,
     otherId: z.string().uuid().optional(),
   })
+  // R10 (review 2026-10-09): borda strict — ver relocationOptionsInputSchema.
+  .strict()
   .refine((v) => v.create.endsAt.getTime() > v.create.startsAt.getTime(), {
     message: 'endsAt deve ser depois de startsAt',
     path: ['create', 'endsAt'],

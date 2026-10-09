@@ -24,11 +24,17 @@
         data-testid="nav-prev"
         @click="emit('shift', -1)"
       >
-        <ChevronLeft class="h-5 w-5" />
+        <ChevronLeft
+          class="h-5 w-5"
+          aria-hidden="true"
+        />
       </AppButton>
       <AppButton
         variant="ghost"
         class="px-6"
+        :aria-current="props.isToday ? 'date' : undefined"
+        :disabled="props.isToday"
+        :title="props.isToday ? 'Você já está vendo hoje' : 'Ir para hoje'"
         data-testid="nav-today"
         @click="emit('today')"
       >
@@ -42,7 +48,10 @@
         data-testid="nav-next"
         @click="emit('shift', 1)"
       >
-        <ChevronRight class="h-5 w-5" />
+        <ChevronRight
+          class="h-5 w-5"
+          aria-hidden="true"
+        />
       </AppButton>
     </div>
 
@@ -107,6 +116,8 @@ const props = defineProps<{
   monthIndex: number;
   yearOptions: { value: string; label: string }[];
   monthOptions: { value: string; label: string }[];
+  /** A âncora JÁ é hoje (R7/a11y: o botão comunica o estado, não só não-faz-nada). */
+  isToday?: boolean;
 }>();
 
 const emit = defineEmits<{

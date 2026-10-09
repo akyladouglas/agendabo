@@ -22,6 +22,7 @@
         :month-index="agenda.monthIndex.value"
         :year-options="yearOptions"
         :month-options="monthOptions"
+        :is-today="anchorKey === agenda.todayKey.value"
         @update:view="agenda.setView($event)"
         @shift="agenda.shift($event)"
         @today="agenda.goToday()"
@@ -29,12 +30,20 @@
         @jump-month="agenda.goToMonth($event)"
       />
 
-      <!-- período atual. UMA saída interpolada (sem `v-if` de templates irmãos
-           aqui): templates filhos em branco colapsam para um ÚNICO comentário e,
-           no happy-dom, essa troca de nós na hora do patch do bloco quebrava o
-           patchKeyedFragment (nextSibling null) e abortava o update inteiro. -->
+      <!-- período atual: live region (R7/a11y): navegar com ← → /Hoje/ir-para
+           precisa ser ANUNCIADO ao leitor de tela. NÃO é <h2> de propósito: um h2
+           vivo deixaria o h1 "Agenda" sem filho na outline (marcação inválida); o
+           sr-only "Calendário" acima é o heading da região da grade. UMA saída
+           interpolada (sem `v-if` de templates irmãos aqui): templates filhos em
+           branco colapsam para um ÚNICO comentário e, no happy-dom, essa troca de
+           nós na hora do patch do bloco quebrava o patchKeyedFragment
+           (nextSibling null) e abortava o update inteiro. -->
+      <h2 class="sr-only">
+        Calendário
+      </h2>
       <p
         class="text-sm font-medium text-muted-foreground"
+        aria-live="polite"
         data-testid="agenda-heading"
       >
         {{ headingText }}
@@ -52,6 +61,7 @@
       <p
         class="sr-only"
         aria-live="polite"
+        aria-atomic="true"
         data-testid="drop-live"
       >
         {{ agendaDrag.dropAnnouncement.value }}
@@ -394,8 +404,13 @@ import WeekGrid, { type WeekDayView } from './WeekGrid.vue';
 import YearGrid, { type YearDayView, type YearMiniView } from './YearGrid.vue';
 
 const agenda = useAgendaPage();
-// @test-hook: expõe a instância p/ harness de calendar-views.spec (nada de lógica aqui)
-(window as unknown as { __agenda?: typeof agenda }).__agenda = agenda;
+// @test-hook: expõe a instância p/ harness de calendar-views.spec (nada de lógica
+// aqui). R5/seg (review 2026-10-09): só em DEV — em produção isso entregaria a
+// agenda inteira do usuário a qualquer XSS/extensão no DOM. O harness do vitest
+// roda com DEV=true do vite, então os testes seguem funcionando.
+if (import.meta.env.DEV) {
+  (window as unknown as { __agenda?: typeof agenda }).__agenda = agenda;
+}
 const timezone = agenda.timezone;
 const appointmentsQuery = agenda.appointmentsQuery;
 const items = agenda.items;

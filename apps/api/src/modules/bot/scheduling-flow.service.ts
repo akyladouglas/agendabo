@@ -679,11 +679,24 @@ export class SchedulingFlowService {
     }
   }
 
-  /** Carga p/ findConflict: confirmed, endsAt>now, janela futura de 90 dias (spec). */
+  /**
+   * Carga p/ findConflict: endsAt>now, janela futura de 90 dias (spec) e
+   * `confirmed + needs_review` — review multi-agente 2026-10-09/R1: a carga
+   * PRECISA bater com a das fronteiras de escrita (ADR-0015/D6;
+   * `appointments.service.existingFor`). Se o bot só visse `confirmed`, um
+   * `needs_review` concorrente passaria no pré-check do chat e a GRAVAÇÃO
+   * (que valida com a carga nova) devolveria conflito TARDE — mensagem sem
+   * botões de remarcar/abortar e sessão encerrada. Pré-check alinhado = o
+   * conflito é descoberto na hora certa, com o fluxo de resposta certo.
+   */
   private async existingConfirmedFuture(userId: string, now: Date): Promise<AppointmentLike[]> {
     const horizon = new Date(now.getTime() + 90 * 24 * 60 * 60_000);
     const rows = await this.prisma.appointment.findMany({
-      where: { userId, status: 'confirmed', endsAt: { gt: now, lte: horizon } },
+      where: {
+        userId,
+        status: { in: ['confirmed', 'needs_review'] },
+        endsAt: { gt: now, lte: horizon },
+      },
       orderBy: { startsAt: 'asc' },
       select: { id: true, title: true, startsAt: true, endsAt: true },
     });

@@ -31,8 +31,10 @@ mover um dos dois, e o estado nunca fica sobreposto.
   `confirmed`/`needs_review` futuros sobrepostos. Conflito ⇒ **409 e nada
   escrito**. Não existe, em lugar nenhum, "salvar mesmo assim".
 - **`force` não existe nem entra**: os schemas de escrita nunca aceitam a chave
-  (payload antigo que a envie é ignorado — zod descarta campo desconhecido — e
-  o conflito continua 409).
+  (payload antigo que a envie não salva — e o conflito continua 409).
+  **D9a (revisão 2026-10-09/R10):** os inputs da fase são `.strict()` — o
+  default do zod era _descartar em silêncio_; agora chave desconhecida é
+  **rejeitada** (um `force` retrabalhado aparece na cara do cliente, com teste).
 - **Conflito vira Reagendamento Assistido**: a regra pura `planRelocation`
   (schedule-core, TDD) oferece **uma jogada por vez** — mover o existente para
   o primeiro slot livre ≥ fim do candidato, ou mover o movido para o primeiro
@@ -53,6 +55,19 @@ mover um dos dois, e o estado nunca fica sobreposto.
 - Corrida de escrita tratada com dupla revalidação (pré-tx + in-tx), **sem**
   exclusion constraint no Postgres (custo/benefício; janela residual declarada
   na spec F.2).
+- **D9 (revisão multi-agente 2026-10-09, decisão humana)**: a revalidação in-tx
+  com `findMany` não fechava a corrida sob `READ COMMITTED` (snapshot de
+  statement — duas txs concorrentes podiam ambas gravar). A carga in-tx de
+  `reschedule` passou a ser `SELECT ... FOR UPDATE` sobre as linhas futuras do
+  usuário: a transação concorrente bloqueia na trava de linha até o commit e a
+  invariante passa a valer também sob escrita simultânea. Sem exclusion
+  constraint (a trava cobre o acesso serializado pelo usuário; custo/benefício
+  inalterado).
+- **Aberto registrado (R1 da revisão)**: o pré-check do BOT ainda olhava só
+  `confirmed`; foi alinhado a `confirmed + needs_review` (a escrita já rejeitava
+  na hora de gravar, e o handler do bot respondia com mensagem de conflito sem
+  botões e sessão encerrada). Alinhado em 2026-10-09; se algum fluxo futuro do
+  bot montar conflito "tarde", esta é a origem provável.
 
 ## Consequências
 

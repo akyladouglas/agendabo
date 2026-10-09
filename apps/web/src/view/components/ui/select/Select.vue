@@ -14,7 +14,10 @@
       "
     >
       <SelectValue :placeholder="props.placeholder" />
-      <ChevronDown class="h-4 w-4 shrink-0 text-muted-foreground" />
+      <ChevronDown
+        class="h-4 w-4 shrink-0 text-muted-foreground"
+        aria-hidden="true"
+      />
     </SelectTrigger>
     <SelectPortal>
       <SelectContent
@@ -36,7 +39,10 @@
                  SelectItemText (o typeahead do select le SO ele — por isso o
                  Check nao pode estar dentro dele). -->
             <SelectItemIndicator class="absolute left-2 inline-flex items-center">
-              <Check class="h-4 w-4 text-primary" />
+              <Check
+                class="h-4 w-4 text-primary"
+                aria-hidden="true"
+              />
             </SelectItemIndicator>
             <SelectItemText>{{ opt.label }}</SelectItemText>
           </SelectItem>

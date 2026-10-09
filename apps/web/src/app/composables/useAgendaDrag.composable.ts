@@ -1,4 +1,4 @@
-import { ref } from 'vue';
+import { nextTick, ref } from 'vue';
 import { toast } from 'vue-sonner';
 import {
   dropTargetFromKey,
@@ -112,7 +112,9 @@ export function useAgendaDrag(options: UseAgendaDragOptions): UseAgendaDragApi {
   const dropAnnouncement = ref('');
   const pendingRelocation = ref<DropRelocationRequest | null>(null);
 
-  /** Move sem conflito: variante move pura; toast/aria-live só APÓS confirmar. */
+  /** Move sem conflito: variante move pura; toast/aria-live só APÓS confirmar.
+   *  R7/a11y: limpa antes de escrever — mensagem REPETIDA (mesmo texto) não é
+   *  re-anunciada por leitor de tela se o nó nunca ficou vazio entre os drops. */
   async function applyMove(item: AppointmentDto, next: { startsAt: Date; endsAt: Date }): Promise<void> {
     await reschedule.mutateAsync({
       mode: 'move',
@@ -121,6 +123,8 @@ export function useAgendaDrag(options: UseAgendaDragOptions): UseAgendaDragApi {
       newEnd: next.endsAt,
     });
     const msg = `Reagendado para ${formatDateTimeInTz(next.startsAt, options.timezone())}`;
+    dropAnnouncement.value = '';
+    await nextTick();
     dropAnnouncement.value = msg;
     toast.success(msg);
   }
@@ -130,9 +134,24 @@ export function useAgendaDrag(options: UseAgendaDragOptions): UseAgendaDragApi {
     cellLabel: (key) => dropCellLabel(key, options.days(), options.timezone(), options.now()),
     ghostTextOf: (item) =>
       `${item.title} · ${formatRangeInTz(item.startsAt, item.endsAt, options.timezone())}`,
+    // R7/a11y (review 2026-10-09): o hook JÁ avisa ESC/fora-de-célula/pointercancel
+    // aqui — antes nenhum listener estava ligado e o cancelamento era mudo para
+    // leitor de tela ("com aviso" era só comentário).
+    onCancel: (item) => {
+      dropAnnouncement.value = '';
+      void nextTick().then(() => {
+        dropAnnouncement.value = `Nada alterado — ${item.title} continua no horário.`;
+      });
+    },
     onDrop: async (item, cellKey) => {
       const target = dropTargetFromKey(cellKey);
-      if (!target) return; // chave desconhecida: drop abortado — nada é escrito
+      if (!target) {
+        // chave desconhecida: drop abortado — nada é escrito (anunciado, R7)
+        dropAnnouncement.value = '';
+        await nextTick();
+        dropAnnouncement.value = 'Nada alterado — solte sobre uma célula do calendário.';
+        return;
+      }
       const off = measureTzOffset(options.timezone(), item.startsAt);
       const next = dropTargetRange(target, item, off);
       dropBusy.value = true;

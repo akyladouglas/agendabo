@@ -8,11 +8,27 @@ import {
   rescheduleAppointmentInputSchema,
 } from '@agendabo/contracts';
 import { findConflict, planRelocation } from '@agendabo/schedule-core';
-import { AppointmentStatus, type NotificationRuleType, Prisma } from '@prisma/client';
+import { AppointmentOrigin, AppointmentStatus, type NotificationRuleType, Prisma } from '@prisma/client';
 import type { AppointmentDto } from '@agendabo/contracts';
 
 /** Alias local do enum Prisma (usado no default de `listOverlapping`). */
 type $AppointmentStatus = AppointmentStatus;
+
+/** Shape cru do `SELECT ... FOR UPDATE` de existingForInTx (mesmas colunas do model). */
+type RawAppointmentRow = {
+  id: string;
+  title: string;
+  notes: string | null;
+  startsAt: Date;
+  endsAt: Date;
+  status: AppointmentStatus;
+  origin: AppointmentOrigin;
+  rawText: string | null;
+  reviewReason: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+  userId: string;
+};
 import { PrismaService } from '../../shared/prisma/prisma.service';
 import { OutboxService } from '../notifications/outbox.service';
 
@@ -298,7 +314,10 @@ export class AppointmentsService {
    * Valida o plano da escrita com `planRelocation` (regra única): destino livre
    * (ignorado o movido) ⇒ ok; senão exige que a jogada pedida exista. `otherId`
    * presente ⇒ a jogada esperada é `move-other` com esse outro; ausente ⇒ o
-   * pedido é o próprio destino (renomeio) e ele precisa estar livre.
+   * pedido é o DESTINO — 1 conflito ⇒ `move-self` (o servidor recomputa a
+   * jogada, D4), 2+ ⇒ blocked (409 à frente). R3/review 2026-10-09: comentário
+   * anterior dizia "precisa estar livre" — a regra de verdade é o
+   * `planRelocation`, agora com teste de ambos os ramos.
    */
   private assertPlanHasMove(
     input: { mode: 'move' | 'create'; movedId?: string; otherId?: string },
@@ -543,16 +562,34 @@ export class AppointmentsService {
     return rows.filter((r) => r.id !== ignoreId);
   }
 
-  /** Mesma carga, lida DENTRO da tx (E5: revalidação anti-corrida). */
+  /**
+   * Mesma carga, lida DENTRO da tx (E5: revalidação anti-corrida). Review
+   * multi-agente 2026-10-09/R2: `findMany` é snapshot de STATEMENT sob
+   * READ COMMITTED — dois reschedules concorrentes podiam cada um ver um
+   * mundo sem o write do outro e ambos gravar sobreposição (violava a
+   * invariante ADR-0015 na janela mínima entre as txs). `FOR UPDATE` nas
+   * linhas TRAVA a transação concorrente na primeira linha até o commit — o
+   * serializador do intervalo é a própria trava de linha (decisão D9). O
+   * shape é o MESMO do findMany antigo (todas as colunas do model) para não
+   * alterar o contrato de `rescheduleResultSchema`.
+   *
+   * SMOKE REAL no Postgres (2026-10-09): tx A trava + dorme 3 s + escreve; tx B
+   * faz a leitura CRUA (vê o mundo antigo) e depois `FOR UPDATE` — B BLOQUEIA,
+   * acorda com o write do A VISÍVEL e decide sobre o estado novo (a leitura sem
+   * trava continua snapshot velho; é por isso que a ÚNICA checagem que vale é a
+   * desta carga travada).
+   */
   private async existingForInTx(tx: Prisma.TransactionClient, userId: string, ignoreId?: string) {
-    const rows = await tx.appointment.findMany({
-      where: {
-        userId,
-        status: { in: ['confirmed', 'needs_review'] },
-        endsAt: { gt: this.now() },
-      },
-      orderBy: { startsAt: 'asc' },
-    });
+    const rows = await tx.$queryRaw<RawAppointmentRow[]>`
+      SELECT id, title, notes, "startsAt", "endsAt", status, origin, "rawText",
+             "reviewReason", "createdAt", "updatedAt", "userId"
+      FROM "appointments"
+      WHERE "userId" = ${userId}::uuid
+        AND status IN ('confirmed', 'needs_review')
+        AND "endsAt" > ${this.now()}
+      ORDER BY "startsAt" ASC
+      FOR UPDATE
+    `;
     return rows.filter((r) => r.id !== ignoreId);
   }
 

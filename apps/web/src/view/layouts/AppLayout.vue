@@ -76,7 +76,10 @@
               class="gap-2 px-3"
               @click="auth.logout()"
             >
-              <LogOut class="h-4 w-4" /> Sair
+              <LogOut
+                class="h-4 w-4"
+                aria-hidden="true"
+              /> Sair
             </Button>
           </div>
 
@@ -87,7 +90,10 @@
             data-testid="menu-button"
             @click="menuOpen = true"
           >
-            <Menu class="h-6 w-6" />
+            <Menu
+              class="h-6 w-6"
+              aria-hidden="true"
+            />
           </button>
         </div>
       </nav>
@@ -137,7 +143,10 @@
               class="od-move flex min-h-11 w-full items-center gap-2 rounded-md px-3 text-left text-sm font-medium text-danger hover:bg-muted"
               @click="auth.logout(); closeMenu()"
             >
-              <LogOut class="h-4 w-4" /> Sair
+              <LogOut
+                class="h-4 w-4"
+                aria-hidden="true"
+              /> Sair
             </button>
           </div>
         </DialogContent>

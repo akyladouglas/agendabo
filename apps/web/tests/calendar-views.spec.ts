@@ -282,7 +282,9 @@ describe('Agenda — 4 visões (Fase 7)', () => {
     await settle();
     await tab(h, 'month');
     expect(h.w.find('[data-testid="month-grid"]').exists()).toBe(true);
-    expect(h.w.findAll('[role="gridcell"]').length).toBe(42);
+    // R8/a11y: o role="grid" caiu (sem keyboard model) — as 42 células são
+    // botões com testid; a contagem é por testid agora
+    expect(h.w.findAll('[data-testid^="cell-"]')).toHaveLength(42);
     expect(h.w.find('[data-testid="cell-2026-10-08"]').exists()).toBe(true);
     expect(h.w.text()).toContain('outubro');
 

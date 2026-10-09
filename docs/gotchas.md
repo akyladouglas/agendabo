@@ -171,6 +171,18 @@ de escrita que podem conflitar (create, update, reschedule, relocation-options).
 so o service; teste de service verde nao prova o HTTP. Corpo 409 canonico =
 `{message, conflictWith}` (o `conflict.utils.ts` da web le exactly isso).
 
+## 16. `Set-Content`/`Get-Content` do PowerShell corrompem UTF-8 do source (mojibake + BOM)
+
+Reescrever `.vue`/`.ts` pelo PowerShell é armadilha dupla: `Set-Content -Encoding
+utf8` escreve **com BOM**, e `Get-Content` lê UTF-8 como CP1252 quando não
+especificado — os acentos viram mojibake (`só` → `sÃ³`, `em dash` → `_â€”`) e o
+vitest para de casar as strings (`toContain('Nada neste mÃªs.')`). Aconteceu de
+verdade no pacote de correções do review 2026-10-09 (AgendaPage.vue; recuperado com
+`git checkout --` + reaplicação dos patches via edite). **Correção:** nunca round-trip
+de source pelo PowerShell — use o tool de edite (ou `node` com `fs`); se corrompeu,
+restaure do git e refaça o patch cirúrgico. (Corolário do mesmo dia: `pnpm exec <bin>`
+da RAIZ não acha binário de `apps/*` — use `pnpm --filter <pkg> exec`.)
+
 ## 17. dev server servindo módulo transformado SEM o head (const de módulo vira ReferenceError)
 
 A visão Dia da Etapa 1 abriu com `hourGrid` lançando `MINUTE is not defined` no
@@ -213,3 +225,28 @@ Select no unit-test - assert estrutural no gatilho (BUTTON + `aria-expanded` +
 rotulo) e a funcionalidade no SMOKE E2E-browser (ir-para do Mes, verificado
 2026-10-09). **Se acontecer de novo:** "Vitest caught N unhandled errors" +
 stack `dismissableLayer` = popper/foco deixado aberto no teste anterior.
+
+## 20. Fixture de data ABSOLUTA em teste com relógio real = teste-bomba
+
+`findConflict`/`existingFor`/`ReviewService` ignoram compromisso **passado** e
+usam o relógio real como `now` quando o caller não injeta. Um teste que monta o
+"outro" compromisso com data literal (`2026-10-09T15:30:00Z`) vira uma bomba de
+efeito retardado: ele PASSA hoje e FALHA em ~3 dias sem nenhum bug no código —
+o fixture virou passado e a regra (corretamente) deixou de vê-lo como conflito.
+Aconteceu duas vezes no gate de 2026-10-09: `review.service.spec` (confirm com
+conflito) passou a falhar no `pnpm test` inteiro, e o mesmo padrão rondava os
+specs de reschedule (que sobrevivem porque o mock da tx devolve linhas
+independentes de filtro de tempo). **Correção:** em teste que toca relógio real,
+derive as datas de `new Date()` (ex.: `base = hoje 12:00Z + 2 dias`); datas
+literais só onde o `now` é injetado (as suítes com `svc.now = () => NOW`).
+
+## 21. `$queryRaw` com uuid: `::uuid` explicito (ou a API quebra em runtime)
+
+`tx.$queryRaw` manda string como `text`; o Postgres NAO tem operador
+`uuid = text` — `WHERE "userId" = ${userId}` compila, roda no jest (mock) e quebra
+SOMENTE em producao com `42883 operator does not exist`. Escreva `${userId}::uuid`
+(de mesma forma, datas vao como `Date` e funcionam). Pegadinha dobrada: o teste
+unitario mocka `$queryRaw` e nunca ve isso — o smoke do FOR UPDATE (review
+2026-10-09) e que encontrou. **Correcao:** todo raw com coluna uuid/enum faz cast
+explicito; sempre ha de haver ao menos um smoke contra o Postgres real tocando o
+SQL cru.

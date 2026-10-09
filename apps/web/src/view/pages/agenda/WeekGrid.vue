@@ -34,9 +34,9 @@
         </button>
 
         <!-- mini-grade de horas do dia (a grade inteira é a célula de DROP:
-             soltar ⇒ mesmo horário em OUTRO dia — regra `day:` do dropTarget) -->
+             soltar ⇒ mesmo horário em OUTRO dia — regra `day:` do dropTarget).
+             R8/a11y: sem `role="grid"` (sem keyboard model) — lista de botões. -->
         <div
-          role="grid"
           :aria-label="`Horas de ${day.heading.weekday} ${day.heading.label}`"
           class="relative rounded-md border border-border bg-card"
           :data-cell-key="`day:${day.date}`"
@@ -50,7 +50,6 @@
           <div
             v-for="hour in HOURS"
             :key="hour"
-            role="row"
             class="relative border-b border-border/60 last:border-b-0"
             :data-testid="`week-cell-${day.date}-${hour}`"
           >
@@ -113,6 +112,7 @@
               <AlertTriangle
                 v-if="block.review"
                 class="h-3 w-3 shrink-0 text-warning"
+                role="img"
                 aria-label="pendente de revisão"
               />
             </button>

@@ -486,10 +486,14 @@ describe('SchedulingFlowService (bordas)', () => {
     await m.svc.handleText('111', '14:00'); // hora local
     await m.svc.handleText('111', '1h'); // duração -> checagem de conflito (nenhum) -> notas
 
-    // consulta p/ findConflict: só confirmed e endsAt > now
+    // consulta p/ findConflict: confirmed+needs_review e endsAt > now (R1:
+    // alinha com a carga de escrita da API — ADR-0015/D6)
     expect(m.prisma.appointment.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: expect.objectContaining({ userId: 'u1', status: 'confirmed' }),
+        where: expect.objectContaining({
+          userId: 'u1',
+          status: { in: ['confirmed', 'needs_review'] },
+        }),
       }),
     );
 

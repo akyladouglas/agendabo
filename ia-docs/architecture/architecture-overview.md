@@ -23,12 +23,12 @@ não mata job em voo). Postgres = verdade dos disparos (outbox); Redis = só ent
 
 ## Packages & apps
 
-| Unit                     | Papel                                                                                            | Regras                              |
-| ------------------------ | ------------------------------------------------------------------------------------------------ | ----------------------------------- |
-| `packages/contracts`     | zod único p/ bordas API↔web↔LLM + tool schemas                                                   | fonte de DTO; CJS build             |
-| `packages/schedule-core` | domínio puro: conflito, triggers, datas, calendário (`calendar.ts` — visões da Fase 7, ADR-0013) | `.ia/rules/schedule-core.md`        |
-| `apps/api`               | Nest 10 + Prisma + BullMQ + Telegraf + Anthropic SDK                                             | `.ia/rules/default-architecture.md` |
-| `apps/web`               | Vue 3 + Vite + Tailwind 4 + radix-vue + TanStack Query                                           | `.ia/rules/vue.md`                  |
+| Unit                     | Papel                                                                                                                                                                                                          | Regras                              |
+| ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------- |
+| `packages/contracts`     | zod único p/ bordas API↔web↔LLM + tool schemas                                                                                                                                                                 | fonte de DTO; CJS build             |
+| `packages/schedule-core` | domínio puro: conflito, triggers, datas, calendário (`calendar.ts` — visões da Fase 7, ADR-0013); grades da Fase 8: `hourGrid`/`weekGridRows`/`layoutDayTimeline`/`dropTarget`/`relocation` (`planRelocation`) | `.ia/rules/schedule-core.md`        |
+| `apps/api`               | Nest 10 + Prisma + BullMQ + Telegraf + Anthropic SDK                                                                                                                                                           | `.ia/rules/default-architecture.md` |
+| `apps/web`               | Vue 3 + Vite + Tailwind 4 + radix-vue + TanStack Query                                                                                                                                                         | `.ia/rules/vue.md`                  |
 
 ## API — módulos
 
@@ -44,6 +44,11 @@ não mata job em voo). Postgres = verdade dos disparos (outbox); Redis = só ent
   choca). `ReviewService`/`ReviewController` (Fase 4): fila `needs_review` — `GET /review`,
   `POST /review/:id/confirm` (conflito ⇒ 409; sem conflito ⇒ `confirmed` + materializa o
   outbox na MESMA transação, jobs pós-commit) e `POST /review/:id/dismiss` (apaga).
+  **Fase 8 (ADR-0015)**: Reagendamento Assistido — `POST /appointments/relocation-options`
+  (só-leitura) + `POST /appointments/reschedule` (tx única, jogada recomputada pelo
+  server, 409 stale-client). **Sobreposição é invariante do produto**: toda fronteira de
+  escrita rejeita conflito (`confirmed + needs_review` contam), sem override/`force`;
+  a revalidação in-tx usa `SELECT ... FOR UPDATE` (D9) para serializar jogadas concorrentes.
 - `bot`: handler Telegraf fino + máquina de estados do agendamento + `BotAccessService`
   (gate de telegramId confirmado). Único com Telegraf além de `shared/telegram`.
 - `ai`: único com Anthropic SDK; expõe `AnthropicMessagesClient` (interface) + cascata

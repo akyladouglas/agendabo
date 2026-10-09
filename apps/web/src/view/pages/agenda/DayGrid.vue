@@ -1,7 +1,8 @@
 <template>
-  <!-- grade de horas semântica (a11y): linha = role="row", slot = role="gridcell" -->
+  <!-- R8/a11y (review 2026-10-09): sem `role="grid"` — o keyboard interaction model
+       do grid não é implementado (setas/uma-entrada); a grade é uma lista de
+       botões com aria-label completo (registrado no plano, R8). -->
   <div
-    role="grid"
     :aria-label="`Horas de ${props.dayLabel}`"
     data-testid="day-grid"
     class="relative rounded-lg border border-border bg-card"
@@ -12,15 +13,12 @@
     <div
       v-for="slot in props.slots"
       :key="slot.key"
-      role="row"
       class="relative flex h-12 border-b border-border last:border-b-0"
       :class="slot.isPast ? 'opacity-60' : ''"
       :data-cell-key="`hour:${slot.key}`"
       :data-drop-target="drag && drag.dropKey.value === `hour:${slot.key}` ? 'true' : 'false'"
     >
       <div
-        role="gridcell"
-        :aria-label="slot.ariaLabel"
         :data-testid="`day-slot-${slot.hour}`"
         class="flex min-h-11 w-full items-start gap-2 p-1 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
       >
@@ -31,7 +29,10 @@
           :data-testid="`day-slot-button-${slot.hour}`"
           @click="emit('slotClick', slot)"
         >
-          <span class="w-12 shrink-0 pt-0.5 text-xs font-semibold tabular-nums text-muted-foreground">
+          <span
+            class="w-12 shrink-0 pt-0.5 text-xs font-semibold tabular-nums text-muted-foreground"
+            aria-hidden="true"
+          >
             {{ slot.hour }}:00
           </span>
         </button>
@@ -78,6 +79,7 @@
         <AlertTriangle
           v-if="block.review"
           class="h-3 w-3 shrink-0 text-warning"
+          role="img"
           aria-label="pendente de revisão"
         />
       </button>
