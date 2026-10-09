@@ -136,6 +136,19 @@ regressão.
 (números visíveis em viewport estreito; 24 linhas; clicar 14:00 → modal
 14:00; bloco 23h-0h posicionado às 23h).
 
+**FEITO (2026-10-09)** — gates verdes (schedule-core 165 testes: +19 novos
+de `hourGrid`/`layoutDayTimeline`; web 85: +9 de `day-grid.spec`; build/lint/
+lint:arch ok). TDD red-green em `hourGrid.spec.ts`/`layoutDayTimeline.spec.ts`
+(meia-noite local, travessia de dia, sobreposição 2/3, offset ≠ 0). Web: dia
+SEMPRE visível no Mês/Semana (regressão em `day-grid.spec`), `DayGrid.vue` burra
+(linhas `hourGrid` + blocos `layoutDayTimeline` via `useAgendaPage`), célula vazia
+→ criar dia+hora (preset agora leva `hour`), bloco → detalhes; lista do dia
+continua abaixo. Smoke browser FEITO: viewport estreito (navegação pelo menu,
+números do Mês/Semana no DOM sem `hidden`), 24 linhas, clique 14:00 → modal
+14:00, sobrepostos 11:00–12:30/11:30–12:00 lado a lado 50% com top/height
+corretos, bloco → detalhes com Excluir/Editar. Bug pego no smoke: dev server
+servindo módulo transformado sem o head → gotcha #17.
+
 ## Etapa 2 — Drag-and-drop de compromissos
 
 ### 2.1 Mecânica (sem lib nova — decisão a registrar como ADR-0014)

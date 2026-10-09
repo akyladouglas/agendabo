@@ -23,7 +23,12 @@
           <span class="block text-xs font-semibold">
             {{ day.heading.isToday ? 'Hoje' : day.heading.weekday }}
           </span>
-          <span class="block text-sm text-foreground">{{ day.heading.label }}</span>
+          <span
+            class="block text-sm text-foreground"
+            :data-testid="`week-day-number-${day.date}`"
+          >
+            {{ day.heading.label }}
+          </span>
         </button>
 
         <button

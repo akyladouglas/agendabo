@@ -2,6 +2,8 @@ import { computed, onMounted, onUnmounted, ref, watch, type ComputedRef, type Re
 import {
   dayDensity,
   groupByLocalDay,
+  hourGrid,
+  layoutDayTimeline,
   monthCells,
   monthGridRange,
   shiftDayRange,
@@ -14,7 +16,9 @@ import {
   utcToZonedParts,
   type CalendarDay,
   type DateRange,
+  type HourCell,
   type MonthDensity,
+  type TimelineBlock,
 } from '@agendabo/schedule-core';
 import type { AppointmentDto } from '@agendabo/contracts';
 import { useAuthStore } from '../store/authStore';
@@ -107,6 +111,12 @@ export interface UseAgendaPage {
   rows: ComputedRef<CalendarDay[]>;
   /** dateKey → compromissos do dia (E.2 — vale para o período da query atual). */
   byDay: ComputedRef<Map<string, AppointmentDto[]>>;
+  /** Grade de horas da visão Dia (célula por hora local coberta pelo range — 1.1). */
+  hourCells: ComputedRef<HourCell[]>;
+  /** Blocos da visão Dia posicionados em % (layoutDayTimeline sobre `items`). */
+  dayBlocks: ComputedRef<TimelineBlock<AppointmentDto>[]>;
+  /** Offset do fuso no RANGE (meia-noite local do dia focado) — a grade deriva daqui. */
+  rangeOffsetMin: ComputedRef<number>;
   /** Visão Ano: densidade por mês do ano da âncora; dia de hoje (dateKey local). */
   density: ComputedRef<Map<number, MonthDensity>>;
   todayKey: ComputedRef<string>;
@@ -277,6 +287,22 @@ export function useAgendaPage(): UseAgendaPage {
   const rows = computed(() => weekRows(range.value, offset.value, now.value));
   const byDay = computed(() => groupByLocalDay(items.value, offset.value));
 
+  /**
+   * Offset do fuso no RANGE: meia-noite LOCAL do início do período (o MESMO offset
+   * que `buildMonth`/`monthGridRange` derivam — ADR-002, modelo de offset único por
+   * período, limitação E.6). A grade de horas usa exatamente este valor; `offset`
+   * (medido na âncora) coincide com ele quando a âncora é meia-noite local.
+   */
+  const rangeOffsetMin = computed(() => measureTzOffset(timezone.value, range.value.start));
+  /**
+   * Grade de horas da visão Dia (plano grades-dia-semana-mes 1.1/1.3): regra 100%
+   * schedule-core (`hourGrid` + `layoutDayTimeline`) — a página só compõe (E.4).
+   */
+  const hourCells = computed(() => hourGrid(range.value, rangeOffsetMin.value, now.value));
+  const dayBlocks = computed(() =>
+    layoutDayTimeline(items.value, range.value, rangeOffsetMin.value, now.value),
+  );
+
   /** Visão Ano: grade do mês da ÂNCORA + a do mês seguinte (âncora em trailing →
    * hoje na grade certa, que é o mês M+1). Dias do MEIO determinam o mês da grade. */
   const yearMonthCells = computed<CalendarDay[][]>(() => {
@@ -365,6 +391,9 @@ export function useAgendaPage(): UseAgendaPage {
     yearMonthCells,
     rows,
     byDay,
+    hourCells,
+    dayBlocks,
+    rangeOffsetMin,
     density,
     todayKey,
     setView,

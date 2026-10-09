@@ -133,6 +133,17 @@ export function toLocalTimeString(date: Date, timeZone: string): string {
 const MS_MINUTE = 60_000;
 
 /**
+ * Instante UTC da meia-noite LOCAL do `dateKey` ('YYYY-MM-DD') no fuso — o mesmo
+ * cálculo que `setAnchorDate`/`openCreateOn` faziam inline (âncora sempre
+ * normalizada; meio-dia local nunca é madrugada de DST — técnica de
+ * `localDateTimeToUtc`). Borda: só MEDIR offset (Intl), nenhum cálculo de período.
+ */
+export function localMidnightUtc(dateKey: string, timeZone: string): Date {
+  const off = measureTzOffset(timeZone, new Date(`${dateKey}T12:00:00Z`));
+  return new Date(Date.parse(`${dateKey}T00:00:00Z`) - off * 60_000);
+}
+
+/**
  * Monta o instante UTC a partir de `date` (YYYY-MM-DD) + `time` (HH:mm) no fuso do
  * usuário, com bisseção de ambiguidade (uma hora de busca de fallback de 1h — o
  * mesmo modelo de offset fixo do schedule-core aplicado na borda).

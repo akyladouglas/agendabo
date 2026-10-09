@@ -170,3 +170,16 @@ de escrita que podem conflitar (create, update, reschedule, relocation-options).
 **Se acontecer de novo:** erro de dominio novo = testar a ROTAS (controller), nao
 so o service; teste de service verde nao prova o HTTP. Corpo 409 canonico =
 `{message, conflictWith}` (o `conflict.utils.ts` da web le exactly isso).
+
+## 17. dev server servindo módulo transformado SEM o head (const de módulo vira ReferenceError)
+
+A visão Dia da Etapa 1 abriu com `hourGrid` lançando `MINUTE is not defined` no
+browser, com FONTE correta e testes vitest verdes. O transform do vite no dev
+server serviu o arquivo sem as linhas de `const` do topo (cache `.vite` antigo
+do pacote linkado após edição). `fetch` do módulo transformado na URL
+`/@fs/...` mostrou o corpo sem o head.
+**Correção na hora:** limpar `node_modules/.vite` (pacote + web) e recarregar.
+**Se acontecer de novo:** ReferenceError de uma constante que EXISTE na fonte e
+os testes passam = busque no browser o módulo transformado (fetch na URL /@fs/
+ou DevTools Sources); nunca confie só no vitest pra confirmar o bundle do dev
+server.

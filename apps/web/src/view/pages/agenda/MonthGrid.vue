@@ -43,10 +43,12 @@
           :data-testid="`cell-${cell.date}`"
           @click="emit('dayClick', cell)"
         >
-          <!-- desktop: número do dia -->
+          <!-- número do dia SEMPRE visível (grade-drag spec: a data nunca some,
+               nem no mobile) -->
           <span
-            class="hidden self-center rounded-full px-1.5 text-xs font-semibold tabular-nums md:self-start"
+            class="self-center rounded-full px-1.5 text-xs font-semibold tabular-nums md:self-start"
             :class="dayNumberClass(cell)"
+            :data-testid="`daynum-${cell.date}`"
           >
             {{ dayNumber(cell.date) }}
           </span>
@@ -90,14 +92,8 @@
             </button>
           </span>
 
-          <!-- mobile: só bolinhas (Aberto #3 aprovado) -->
+          <!-- mobile: só bolinhas (Aberto #3 aprovado — o número já está acima) -->
           <span class="flex flex-wrap items-center gap-0.5 md:hidden">
-            <span
-              class="text-xs font-semibold tabular-nums"
-              :class="dayNumberClass(cell)"
-            >
-              {{ dayNumber(cell.date) }}
-            </span>
             <span
               v-for="(dot, di) in cell.dots.slice(0, 7)"
               :key="di"

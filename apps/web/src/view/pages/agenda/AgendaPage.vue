@@ -106,60 +106,83 @@
         </p>
       </div>
 
-      <!-- visão Dia: a lista vigente (intocada — spec C.11 + chip de conflito) -->
-      <ul
+      <!-- visão Dia (Etapa 1.3): GRADE de horas (clicável → criar dia+hora) + a
+           LISTA do dia ABAIXO (notações/anexos legíveis — a grade não os substitui).
+           Vazio: a grade continua (é o alvo de criar) com aviso discreto (R.15). -->
+      <div
         v-else-if="bodyKind === 'day'"
-        class="flex flex-col gap-2"
+        class="flex flex-col gap-4"
+        data-testid="day-body"
       >
-        <li
-          v-for="item in items"
-          :key="item.id"
+        <p
+          v-if="isEmpty"
+          class="text-sm text-muted-foreground"
+          role="status"
         >
-          <button
-            type="button"
-            class="od-move flex w-full min-h-11 items-stretch gap-3 rounded-lg border border-border bg-card p-3 text-left hover:border-primary/50"
-            :class="[
-              isPast(item) ? 'opacity-60' : '',
-              conflictTitle(item) ? 'border-danger/70' : '',
-            ]"
-            :title="conflictTitle(item) ?? undefined"
-            :data-conflicted="conflictTitle(item) ? 'true' : undefined"
-            @click="openDetails(item)"
+          {{ emptyText }}
+        </p>
+        <DayGrid
+          :slots="daySlots"
+          :blocks="dayBlocksView"
+          :day-label="headingText"
+          @slot-click="onDaySlotClick"
+          @block-click="openDetails"
+        />
+        <ul
+          v-if="items.length > 0"
+          class="flex flex-col gap-2"
+          data-testid="day-list"
+        >
+          <li
+            v-for="item in items"
+            :key="item.id"
           >
-            <span
-              class="w-0.5 shrink-0 rounded-full"
-              :class="item.status === 'needs_review' ? 'bg-warning' : 'bg-primary/60'"
-              aria-hidden="true"
-            />
-            <span class="w-14 shrink-0 pt-0.5 text-sm font-semibold tabular-nums text-muted-foreground">
-              {{ formatRange(item).split('–')[0] }}
-            </span>
-            <span class="min-w-0 flex-1">
-              <span class="block truncate text-sm font-medium text-foreground">
-                {{ item.title }}
+            <button
+              type="button"
+              class="od-move flex w-full min-h-11 items-stretch gap-3 rounded-lg border border-border bg-card p-3 text-left hover:border-primary/50"
+              :class="[
+                isPast(item) ? 'opacity-60' : '',
+                conflictTitle(item) ? 'border-danger/70' : '',
+              ]"
+              :title="conflictTitle(item) ?? undefined"
+              :data-conflicted="conflictTitle(item) ? 'true' : undefined"
+              @click="openDetails(item)"
+            >
+              <span
+                class="w-0.5 shrink-0 rounded-full"
+                :class="item.status === 'needs_review' ? 'bg-warning' : 'bg-primary/60'"
+                aria-hidden="true"
+              />
+              <span class="w-14 shrink-0 pt-0.5 text-sm font-semibold tabular-nums text-muted-foreground">
+                {{ formatRange(item).split('–')[0] }}
               </span>
-              <span class="mt-1 flex flex-wrap items-center gap-1.5">
-                <AppBadge
-                  v-if="item.status === 'needs_review'"
-                  tone="warning"
-                >
-                  pendente de revisão
-                </AppBadge>
-                <AppBadge
-                  v-if="conflictTitle(item)"
-                  tone="danger"
-                >
-                  ⚠ {{ conflictTitle(item) }}
-                </AppBadge>
-                <AppBadge :tone="item.origin === 'bot' ? 'info' : 'success'">
-                  via {{ item.origin }}
-                </AppBadge>
-                <span class="text-xs text-muted-foreground">{{ formatRange(item) }}</span>
+              <span class="min-w-0 flex-1">
+                <span class="block truncate text-sm font-medium text-foreground">
+                  {{ item.title }}
+                </span>
+                <span class="mt-1 flex flex-wrap items-center gap-1.5">
+                  <AppBadge
+                    v-if="item.status === 'needs_review'"
+                    tone="warning"
+                  >
+                    pendente de revisão
+                  </AppBadge>
+                  <AppBadge
+                    v-if="conflictTitle(item)"
+                    tone="danger"
+                  >
+                    ⚠ {{ conflictTitle(item) }}
+                  </AppBadge>
+                  <AppBadge :tone="item.origin === 'bot' ? 'info' : 'success'">
+                    via {{ item.origin }}
+                  </AppBadge>
+                  <span class="text-xs text-muted-foreground">{{ formatRange(item) }}</span>
+                </span>
               </span>
-            </span>
-          </button>
-        </li>
-      </ul>
+            </button>
+          </li>
+        </ul>
+      </div>
 
       <!-- visão Semana: cards-colunas dom..sáb com agrupamento por dia civil -->
       <div v-else-if="bodyKind === 'week'">
@@ -218,7 +241,7 @@
       v-model:open="formOpen"
       :mode="formMode"
       :appointment="editing"
-      :preset-date="prestartDate"
+      :preset="preset"
       @saved="appointmentsQuery.refetch()"
     />
 
@@ -328,7 +351,7 @@ import {
   formatDayHeading,
   formatRangeInTz,
   formatWeekHeading,
-  measureTzOffset,
+  localMidnightUtc,
   monthName,
   toLocalDateString,
   toLocalTimeString,
@@ -341,6 +364,7 @@ import AppLayout from '@/view/layouts/AppLayout.vue';
 import AppButton from '@/view/components/ui/button/Button.vue';
 import AppSkeleton from '@/view/components/ui/skeleton/Skeleton.vue';
 import AgendaNav from './AgendaNav.vue';
+import DayGrid, { type DayBlockView, type DaySlotView } from './DayGrid.vue';
 import MonthGrid, { type MonthCellView, type MonthChip } from './MonthGrid.vue';
 import WeekGrid, { type WeekCardView, type WeekDayView } from './WeekGrid.vue';
 import YearGrid, { type YearDayView, type YearMiniView } from './YearGrid.vue';
@@ -404,6 +428,46 @@ function chipTime(item: AppointmentDto, day: CalendarDay): string {
   if (item.startsAt < day.start) return `↦ ${t}`;
   if (item.endsAt > day.end) return `${t} ↤`;
   return t;
+}
+
+// ---- Visão Dia (Etapa 1.3): linhas de hora + blocos prontos p/ o DayGrid burro ----
+// Os dados vêm do composable (`hourGrid`/`layoutDayTimeline` do schedule-core); aqui
+// só FORMATAÇÃO e classes — zero regra de data/conflito (E.4).
+const daySlots = computed<DaySlotView[]>(() =>
+  agenda.hourCells.value.map((cell) => ({
+    hour: cell.hourUtc,
+    label: cell.label,
+    key: cell.start.toISOString(),
+    isPast: cell.isPast,
+    ariaLabel: `Criar compromisso às ${cell.label} de ${headingText.value}`,
+  })),
+);
+const dayBlocksView = computed<DayBlockView[]>(() =>
+  agenda.dayBlocks.value.map((b) => ({
+    item: b.item,
+    top: b.top,
+    height: b.height,
+    left: b.column * b.width,
+    width: b.width,
+    time: formatRangeInTz(b.item.startsAt, b.item.endsAt, timezone.value),
+    review: b.item.status === 'needs_review',
+    conflictTitle: conflictTitle(b.item),
+    ariaLabel: `${b.item.title}, ${formatRangeInTz(b.item.startsAt, b.item.endsAt, timezone.value)}${
+      b.isPast ? ' (passado)' : ''
+    }`,
+    class: [
+      b.item.status === 'needs_review' ? 'border-l-2 border-l-warning' : 'border-border',
+      conflictTitle(b.item) ? 'border-danger/70 bg-danger/5' : 'hover:border-primary/50',
+      b.isPast ? 'opacity-60' : '',
+    ].join(' '),
+  })),
+);
+
+/** Clique na célula vazia da grade: criar NAQUELE dia+hora (melhora o `openCreate('')`). */
+function onDaySlotClick(slot: DaySlotView): void {
+  const date = toLocalDateString(agenda.range.value.start, timezone.value);
+  // a célula é uma HORA cheia; o form quer "HH:mm"
+  openCreateOn(date, `${slot.hour}:00`);
 }
 
 // ---- Semana: linhas dom..sáb (weekRows) + agrupamento por dia civil (groupByLocalDay) ----
@@ -551,10 +615,11 @@ const bodyKind = computed<'error' | 'skeleton-month' | 'skeleton-year' | 'skelet
     if (agenda.view.value === 'year') return 'skeleton-year';
     return 'skeleton';
   }
-  // VAZIO só faz sentido em Dia/Semana. Mês/Ano SEMPRE renderizam a grade: a grade
-  // é o alvo de clique para CRIAR compromisso (B.7) — engoli-la num mês/ano vazio
-  // quebraria exatamente o caso "quero marcar algo num dia livre".
-  if (isEmpty.value && agenda.view.value !== 'month' && agenda.view.value !== 'year') return 'empty';
+  // VAZIO só faz sentido em Semana. Dia agora tem GRADE (grades-dia-semana-mes
+  // 1.3): mesmo vazio o dia é navegável/criável — o aviso "Nada neste dia." fica
+  // DENTRO do ramo 'day', acima da grade (R.15). Mês/Ano SEMPRE renderizam a grade.
+  if (isEmpty.value && agenda.view.value !== 'day' && agenda.view.value !== 'month' && agenda.view.value !== 'year')
+    return 'empty';
   return agenda.view.value;});
 const emptyText = computed(() => {
   switch (agenda.view.value) {
@@ -583,7 +648,11 @@ function openDayFrom(dateKey: string): void {
 const formOpen = ref(false);
 const formMode = ref<'create' | 'edit'>('create');
 const editing = ref<AppointmentDto | undefined>(undefined);
-const prestartDate = ref<Date | undefined>(undefined);
+/**
+ * Preset do form de criação: `date` SEMPRE; `hour` "HH:mm" vem da célula da grade
+ * do Dia (sem hora — célula do Mês — o form mantém o default 09:00, Aberto #5).
+ */
+const preset = ref<{ date: Date; hour?: string } | undefined>(undefined);
 
 const detailsItem = ref<AppointmentDto | null>(null);
 const confirmDelete = ref(false);
@@ -596,20 +665,21 @@ const modalKey = computed(() => `${formSession.value}-${formMode.value}-${editin
 function openForm(): void {
   formMode.value = 'create';
   editing.value = undefined;
-  prestartDate.value = undefined;
+  preset.value = undefined;
   formSession.value += 1;
   formOpen.value = true;
 }
 
-/** Criar a partir do calendário (D.16): data da célula, hora default 09:00 no form. */
-function openCreateOn(dateKey: string): void {
+/**
+ * Criar a partir do calendário (D.16): data da célula; com `hour` (grade do Dia) a
+ * hora da célula, sem ela (célula do Mês) o default 09:00 local do form (Aberto #5).
+ * O PRESET é o dia/hora da célula clicada — não a âncora (a âncora move o calendário
+ * inteiro e pegaria "hoje" na primeira célula clicada sem navegação).
+ */
+function openCreateOn(dateKey: string, hour?: string): void {
   formMode.value = 'create';
   editing.value = undefined;
-  // O PRESET é o dia da célula clicada — não a âncora (a âncora move o calendário
-  // inteiro e pegaria "hoje" na primeira célula clicada sem navegação).
-  const noon = new Date(`${dateKey}T12:00:00Z`);
-  const off = measureTzOffset(timezone.value, noon);
-  prestartDate.value = new Date(Date.parse(`${dateKey}T00:00:00Z`) - off * 60_000);
+  preset.value = { date: localMidnightUtc(dateKey, timezone.value), ...(hour ? { hour } : {}) };
   formSession.value += 1;
   formOpen.value = true;
 }
@@ -628,7 +698,7 @@ function editFromDetails(): void {
   if (!detailsItem.value) return;
   formMode.value = 'edit';
   editing.value = detailsItem.value;
-  prestartDate.value = undefined;
+  preset.value = undefined;
   formSession.value += 1;
   formOpen.value = true;
   closeDetails();

@@ -103,17 +103,29 @@ function fromAppointment(app: AppointmentWithRules | ReviewWithRules, timezone: 
 export const DEFAULT_CREATE_HOUR = 9;
 
 /**
- * Valores vazios do form de criação. Sem `date`: hoje com a hora AGORA (comportamento
- * vigente). Com `date` (clique na célula do calendário): a data do dia + **09:00 local**
- * (Aberto #5 — o dia vem do calendário, a hora é o default aprovada).
+ * Preset de criação vindo do calendário: `date` SEMPRE (dia da célula); `hour`
+ * "HH:mm" quando a célula TINHA hora (grade do Dia, Etapa 1.3). Sem `hour` o form
+ * aplica o default 09:00 local (Aberto #5).
  */
-function emptyValues(timezone: string, date?: Date): AppointmentFormValues {
-  const day = date ?? new Date();
-  const isPreset = date !== undefined;
+export interface AppointmentPreset {
+  date: Date;
+  hour?: string;
+}
+
+/**
+ * Valores vazios do form de criação. Sem `preset`: hoje com a hora AGORA (comportamento
+ * vigente). Com `preset` (clique na célula do calendário): a data do dia + a HORA da
+ * célula quando houver, senão 09:00 local (Aberto #5).
+ */
+function emptyValues(timezone: string, preset?: AppointmentPreset): AppointmentFormValues {
+  const day = preset?.date ?? new Date();
+  const isPreset = preset !== undefined;
   return {
     title: '',
     date: toLocalDateString(day, timezone),
-    time: isPreset ? `${String(DEFAULT_CREATE_HOUR).padStart(2, '0')}:00` : toLocalTimeString(day, timezone),
+    time: isPreset
+      ? (preset.hour ?? `${String(DEFAULT_CREATE_HOUR).padStart(2, '0')}:00`)
+      : toLocalTimeString(day, timezone),
     durationMinutes: 60,
     notes: '',
     rules: [],
@@ -164,8 +176,8 @@ export function resolveRange(
 export function useAppointmentForm(options: {
   mode: AppointmentFormMode;
   appointment?: AppointmentDto | ReviewAppointmentDto;
-  /** Para "criar a partir de" um slot vazio da agenda. */
-  presetDate?: Date;
+  /** Para "criar a partir de" um slot vazio da agenda (grade do Dia leva `hour`). */
+  preset?: AppointmentPreset;
 }) {
   const auth = useAuthStore();
   const timezone = computed(() => auth.user?.timezone ?? 'UTC');
@@ -174,7 +186,7 @@ export function useAppointmentForm(options: {
   const values = reactive<AppointmentFormValues>(
     options.appointment
       ? fromAppointment(options.appointment as AppointmentWithRules, timezone.value)
-      : emptyValues(timezone.value, options.presetDate),
+      : emptyValues(timezone.value, options.preset),
   );
 
   const checkConflict = useCheckConflict();

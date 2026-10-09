@@ -202,7 +202,7 @@
  * <md vira bottom-sheet pelo AppDialog.
  */
 import { computed, ref, shallowRef, watch } from 'vue';
-import { useAppointmentForm, type AppointmentFormMode } from '@/app/composables/useAppointmentForm.composable';
+import { useAppointmentForm, type AppointmentFormMode, type AppointmentPreset } from '@/app/composables/useAppointmentForm.composable';
 import type { AppointmentDto, RelocationOptionDto, ReviewAppointmentDto } from '@agendabo/contracts';
 import { formatDateTimeInTz, formatDayHeading, formatRangeInTz } from '@/app/utils/tz';
 import AppDialog from '@/view/components/ui/dialog/Dialog.vue';
@@ -217,7 +217,12 @@ const props = defineProps<{
   open: boolean;
   mode: AppointmentFormMode;
   appointment?: AppointmentDto | ReviewAppointmentDto;
-  presetDate?: Date;
+  /**
+   * Preset de criação (clique no calendário): `date` SEMPRE; `hour` "HH:mm" quando
+   * a célula tinha hora (grade do Dia, Etapa 1.3). Sem `hour` o form mantém o
+   * default 09:00 local (Aberto #5).
+   */
+  preset?: AppointmentPreset;
 }>();
 
 const emit = defineEmits<{
@@ -233,7 +238,7 @@ const titles: Record<AppointmentFormMode, string> = {
 
 /**
  * Sessão de edição: o form é (re)construído quando o modal ABRE com estas props.
- * `presetDate` entra no watch: quando o modal já está montado (o `:key` da página
+ * `preset` entra no watch: quando o modal já está montado (o `:key` da página
  * igual) e a página só troca a PRESET (célula do calendário → criar), o form
  * antigo sobreviveria com a data/hora da abertura anterior.
  * `shallowRef` de propósito: o objeto do composable NUNCA é aprofundado — os refs
@@ -250,13 +255,13 @@ watch(
 );
 
 watch(
-  [session, () => props.mode, () => props.appointment, () => props.presetDate],
+  [session, () => props.mode, () => props.appointment, () => props.preset],
   () => {
     form.value = props.open
       ? useAppointmentForm({
           mode: props.mode,
           appointment: props.appointment,
-          presetDate: props.presetDate,
+          preset: props.preset,
         })
       : null;
   },
