@@ -214,14 +214,11 @@ describe('bot_events no orquestrador do fluxo (spec B2)', () => {
     // abre sessão "na mão" pelo caminho oficial: intent criar sem candidato => openFlow
     // (mais simples: reinjeta sessão velha no mapa interno — o TTL é regra da máquina)
     const stale = new Date('2026-10-05T10:00:00Z').getTime(); // TTL 30min
-    (svc as unknown as { sessions: Map<string, unknown> }).sessions.set(
-      USER.telegramId,
-      {
-        step: 'titulo',
-        candidate: { conflictTries: 0 },
-        lastActivityAt: stale,
-      },
-    );
+    (svc as unknown as { sessions: Map<string, unknown> }).sessions.set(USER.telegramId, {
+      step: 'titulo',
+      candidate: { conflictTries: 0 },
+      lastActivityAt: stale,
+    });
     await svc.turn(USER, { text: 'dentista' });
     expect(events(botEvents)).toContainEqual({
       type: 'flow_aborted',

@@ -7,6 +7,7 @@ import {
   type NotificationRuleInput,
 } from '@agendabo/contracts';
 import type { Env } from '../../config/env.validation';
+import { LlmCallContextService } from './llm-call-context';
 import type {
   MessageCreateTool,
   MessagesCreateParams,
@@ -53,9 +54,11 @@ export class ReminderInterpreterService {
   constructor(
     private readonly client: AnthropicClientProvider,
     private readonly config: ConfigService<Env, true>,
+    private readonly llmCtx: LlmCallContextService,
   ) {}
 
-  async interpretar(texto: string): Promise<ReminderResult> {
+  async interpretar(texto: string, observability?: { userId?: string }): Promise<ReminderResult> {
+    const userId = observability?.userId;
     const shortcut = resolveReminderShortcut(texto);
     if (shortcut) return { ok: true, regras: shortcut, source: 'atalho' };
 
@@ -70,7 +73,10 @@ export class ReminderInterpreterService {
       const escalation = index > 0;
       let response: MessagesCreateResult;
       try {
-        response = await this.client.create(this.buildParams(model, texto));
+        // llm_calls (Fase 9/D-P2): escopo lexico — run() abarge a chamada.
+        response = await this.llmCtx.run({ userId, purpose: 'reminder_extraction' }, () =>
+          this.client.create(this.buildParams(model, texto)),
+        );
       } catch (err) {
         // timeout/erro de rede: única tentativa extra e no modelo de escalada (llm.md #7).
         this.logger.warn(

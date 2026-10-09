@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { classifyIntentSchema, classifyIntentTool, type BotIntent } from '@agendabo/contracts';
 import type { Env } from '../../config/env.validation';
+import { LlmCallContextService } from './llm-call-context';
 import type {
   MessageCreateTool,
   MessagesCreateParams,
@@ -59,9 +60,15 @@ export class IntentClassifierService {
   constructor(
     private readonly client: AnthropicClientProvider,
     private readonly config: ConfigService<Env, true>,
+    private readonly llmCtx: LlmCallContextService,
   ) {}
 
-  async classify(message: string, context?: IntentFlowContext): Promise<IntentResult> {
+  async classify(
+    message: string,
+    context?: IntentFlowContext,
+    observability?: { userId?: string },
+  ): Promise<IntentResult> {
+    const userId = observability?.userId;
     const minConfidence = this.config.get('MIN_CONFIDENCE_TO_ACCEPT', { infer: true });
     const models = [
       this.config.get('LLM_MODEL_PRIMARY', { infer: true }),
@@ -73,7 +80,11 @@ export class IntentClassifierService {
       const escalation = index > 0;
       let response: MessagesCreateResult;
       try {
-        response = await this.client.create(this.buildParams(model, message, context));
+        // llm_calls (Fase 9/D-P2): o escopo e lexico — run() ABARGE a chamada
+        // (nunca o resultado), e o provider le purpose/userId no mesmo store.
+        response = await this.llmCtx.run({ userId, purpose: 'intent_classification' }, () =>
+          this.client.create(this.buildParams(model, message, context)),
+        );
       } catch (err) {
         // timeout/erro de rede: unica tentativa extra e no modelo de escalada (llm.md #7).
         this.logger.warn(

@@ -114,10 +114,14 @@ export class AgendaQueryService {
       month: 'long',
       year: 'numeric',
     }).format(input.now);
-    return this.interpreter.interpret(input.text, {
-      todayLocal,
-      inFlowStep: input.inFlowStep,
-    });
+    return this.interpreter.interpret(
+      input.text,
+      {
+        todayLocal,
+        inFlowStep: input.inFlowStep,
+      },
+      { userId: user.id },
+    );
   }
 
   /** Resposta final: lista formatada no tz (decisões #3/#4/#8/#10 da spec). */

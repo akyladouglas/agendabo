@@ -6,6 +6,7 @@ import type {
   MessagesCreateResult,
 } from './anthropic-messages-client';
 import { IntentClassifierService } from './intent-classifier.service';
+import { LlmCallContextService } from './llm-call-context';
 import type { Env } from '../../config/env.validation';
 
 /** Stub plano do AnthropicMessagesClient (nunca o SDK real — ver testing.md). */
@@ -42,7 +43,7 @@ function env(overrides: Partial<Env> = {}): ConfigService<Env, true> {
 describe('IntentClassifierService', () => {
   it('intencao clara com confianca alta: ok:true e usa o modelo primario', async () => {
     const client = new StubClient([toolUse({ intent: 'criar', confidence: 0.95 })]);
-    const svc = new IntentClassifierService(client as never, env());
+    const svc = new IntentClassifierService(client as never, env(), new LlmCallContextService());
 
     const result = await svc.classify('quero marcar uma consulta terça às 14h');
 
@@ -53,7 +54,7 @@ describe('IntentClassifierService', () => {
 
   it('contexto do fluxo vai no conteudo do usuario (prompt, nunca no banco)', async () => {
     const client = new StubClient([toolUse({ intent: 'remarcar', confidence: 0.9 })]);
-    const svc = new IntentClassifierService(client as never, env());
+    const svc = new IntentClassifierService(client as never, env(), new LlmCallContextService());
 
     const result = await svc.classify('e as 16h?', {
       inFlow: true,
@@ -69,7 +70,7 @@ describe('IntentClassifierService', () => {
 
   it('confianca baixa: ok:false low_confidence SEM escalar de modelo (spec #13)', async () => {
     const client = new StubClient([toolUse({ intent: 'cancelar', confidence: 0.4 })]);
-    const svc = new IntentClassifierService(client as never, env());
+    const svc = new IntentClassifierService(client as never, env(), new LlmCallContextService());
 
     expect(await svc.classify('deixa pra lá')).toEqual({ ok: false, reason: 'low_confidence' });
     expect(client.calls).toHaveLength(1);
@@ -79,7 +80,7 @@ describe('IntentClassifierService', () => {
     const client = new StubClient([
       { content: [{ type: 'text', text: 'não usei a tool' }], stop_reason: 'end_turn' },
     ]);
-    const svc = new IntentClassifierService(client as never, env());
+    const svc = new IntentClassifierService(client as never, env(), new LlmCallContextService());
 
     expect(await svc.classify('oi')).toEqual({ ok: false, reason: 'no_tool_use' });
     expect(client.calls).toHaveLength(2); // primario + escalada
@@ -91,7 +92,7 @@ describe('IntentClassifierService', () => {
       toolUse({ intent: 'telepatia', confidence: 0.9 }), // intent fora do enum -> parse falha
       toolUse({ intent: 'criar', confidence: 0.8 }),
     ]);
-    const svc = new IntentClassifierService(client as never, env());
+    const svc = new IntentClassifierService(client as never, env(), new LlmCallContextService());
 
     expect(await svc.classify('marca aí')).toEqual({ ok: true, intent: 'criar', confidence: 0.8 });
     expect(client.calls.map((c) => c.model)).toEqual([
@@ -104,7 +105,7 @@ describe('IntentClassifierService', () => {
     const client = new StubClient([
       toolUse({ intent: 'continuar_fluxo', confidence: 0.9, motivo: 'respondeu a pergunta' }),
     ]);
-    const svc = new IntentClassifierService(client as never, env());
+    const svc = new IntentClassifierService(client as never, env(), new LlmCallContextService());
 
     expect(await svc.classify('Consulta dentista')).toEqual({
       ok: true,
@@ -118,7 +119,7 @@ describe('IntentClassifierService', () => {
       new Error('timeout'),
       toolUse({ intent: 'criar', confidence: 0.99 }),
     ]);
-    const svc = new IntentClassifierService(client as never, env());
+    const svc = new IntentClassifierService(client as never, env(), new LlmCallContextService());
 
     expect(await svc.classify('novo compromisso')).toEqual({
       ok: true,
@@ -132,7 +133,7 @@ describe('IntentClassifierService', () => {
       toolUse({ confidence: 0.9 }), // falta intent
       toolUse({ intent: 'criar' }), // falta confidence
     ]);
-    const svc = new IntentClassifierService(client as never, env());
+    const svc = new IntentClassifierService(client as never, env(), new LlmCallContextService());
 
     expect(await svc.classify('?')).toEqual({ ok: false, reason: 'parse' });
     expect(client.calls).toHaveLength(2);

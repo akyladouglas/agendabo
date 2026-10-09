@@ -56,7 +56,10 @@ export class BotEventsService {
 
   /** Hash deterministico do telegramId com salt (mesmo id => mesmo hash). */
   hashTelegramId(telegramId: string): string {
-    return createHmac('sha256', this.hashSecret).update(telegramId).digest('hex').slice(0, HASH_PREFIX);
+    return createHmac('sha256', this.hashSecret)
+      .update(telegramId)
+      .digest('hex')
+      .slice(0, HASH_PREFIX);
   }
 
   /**
@@ -89,7 +92,9 @@ export class BotEventsService {
       });
     } catch (err) {
       // invariante 3: a fala do turno e mais importante que a auditoria dela.
-      this.logger.error(`bot_events: falha ao registrar ${type}/${outcome} p/ ${user.id}: ${String(err)}`);
+      this.logger.error(
+        `bot_events: falha ao registrar ${type}/${outcome} p/ ${user.id}: ${String(err)}`,
+      );
     }
   }
 
@@ -97,7 +102,9 @@ export class BotEventsService {
     if (stage === undefined) return null;
     const parsed = botEventStageSchema.safeParse(stage);
     if (parsed.success) return parsed.data;
-    this.logger.warn(`bot_events: stage fora do formato (descartado): ${JSON.stringify(stage).slice(0, 80)}`);
+    this.logger.warn(
+      `bot_events: stage fora do formato (descartado): ${JSON.stringify(stage).slice(0, 80)}`,
+    );
     return null;
   }
 

@@ -6,6 +6,7 @@ import type {
   MessagesCreateResult,
 } from './anthropic-messages-client';
 import { ReminderInterpreterService } from './reminder-interpreter.service';
+import { LlmCallContextService } from './llm-call-context';
 import type { Env } from '../../config/env.validation';
 
 /**
@@ -45,7 +46,10 @@ function env(overrides: Partial<Env> = {}): ConfigService<Env, true> {
 
 function service(script: Array<MessagesCreateResult | Error>) {
   const client = new StubClient(script);
-  return { svc: new ReminderInterpreterService(client as never, env()), client };
+  return {
+    svc: new ReminderInterpreterService(client as never, env(), new LlmCallContextService()),
+    client,
+  };
 }
 
 describe('ReminderInterpreterService', () => {

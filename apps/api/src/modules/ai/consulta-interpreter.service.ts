@@ -7,6 +7,7 @@ import {
   type InterpretarConsultaOutput,
 } from '@agendabo/contracts';
 import type { Env } from '../../config/env.validation';
+import { LlmCallContextService } from './llm-call-context';
 import type {
   MessageCreateTool,
   MessagesCreateParams,
@@ -64,12 +65,15 @@ export class ConsultaInterpreterService {
   constructor(
     private readonly client: AnthropicClientProvider,
     private readonly config: ConfigService<Env, true>,
+    private readonly llmCtx: LlmCallContextService,
   ) {}
 
   async interpret(
     text: string,
     context: { todayLocal: string; inFlowStep?: string },
+    observability?: { userId?: string },
   ): Promise<ConsultaPeriodo> {
+    const userId = observability?.userId;
     const minConfidence = this.config.get('MIN_CONFIDENCE_TO_ACCEPT', { infer: true });
     const models = [
       this.config.get('LLM_MODEL_PRIMARY', { infer: true }),
@@ -81,7 +85,10 @@ export class ConsultaInterpreterService {
       const escalation = index > 0;
       let response: MessagesCreateResult;
       try {
-        response = await this.client.create(this.buildParams(model, text, context));
+        // llm_calls (Fase 9/D-P2): escopo lexico — run() abarge a chamada.
+        response = await this.llmCtx.run({ userId, purpose: 'query_interpretation' }, () =>
+          this.client.create(this.buildParams(model, text, context)),
+        );
       } catch (err) {
         // timeout/erro de rede: unica tentativa extra e no modelo de escalada (llm.md #7).
         this.logger.warn(

@@ -16,6 +16,9 @@ export interface MessagesCreateResult {
     | { type: string; [k: string]: unknown }
   >;
   stop_reason: string | null;
+  /** Fase 9 (observabilidade): modelo que respondeu; `usage` ausente => undefined (jamais chute). */
+  model?: string;
+  usage?: { input_tokens: number; output_tokens: number };
 }
 
 /**

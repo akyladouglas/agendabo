@@ -19,7 +19,7 @@ function make(prismaOverrides?: Record<string, unknown>) {
   const config = {
     get: (key: keyof Env) =>
       (
-        { EVENTS_HASH_SECRET: 'dev_salt_de_teste_1234567890' } as Partial<
+        ({ EVENTS_HASH_SECRET: 'dev_salt_de_teste_1234567890' }) as Partial<
           Record<keyof Env, unknown>
         >
       )[key],
@@ -67,7 +67,10 @@ describe('BotEventsService.registrar (ADR-0017)', () => {
   it('metadata invalida (campo proibido com a fala) e RECUSADA: grava sem metadata, nunca estoura', async () => {
     const { svc, botEvent } = make();
     await svc.registrar(USER, 'flow_completed', 'ok', {
-      metadata: { appointmentId: '3f0f1e2c-1111-4aaa-8bbb-ccccdddd0001', rawText: 'fala do usuario' },
+      metadata: {
+        appointmentId: '3f0f1e2c-1111-4aaa-8bbb-ccccdddd0001',
+        rawText: 'fala do usuario',
+      },
     });
     expect(botEvent.create).toHaveBeenCalledTimes(1);
     const data = botEvent.create.mock.calls[0]![0]!.data;
@@ -87,9 +90,7 @@ describe('BotEventsService.registrar (ADR-0017)', () => {
     const { svc } = make({
       botEvent: { create: jest.fn().mockRejectedValue(new Error('banco caiu')) },
     });
-    await expect(
-      svc.registrar(USER, 'flow_started', 'ok', {}),
-    ).resolves.toBeUndefined();
+    await expect(svc.registrar(USER, 'flow_started', 'ok', {})).resolves.toBeUndefined();
   });
 
   it('stage fora do formato identificador degrada para sem stage (a fala nunca vai como stage)', async () => {

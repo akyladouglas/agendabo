@@ -57,13 +57,15 @@ const envSchema = z.object({
   EVENTS_HASH_SECRET: z.string().min(16, REQUIRED),
 
   /**
-   * Precos da estimativa de custo do LLM em USD por milhao de tokens (D-P8).
-   * Obrigatorios de proposito: o sistema se recusa a estimar custo sem preco
-   * declarado (nada de numero chutado no codigo). Estimativa declarada — nao e
-   * billing da Anthropic (ADR-0017).
+   * Preco da estimativa de custo do LLM em MICRO-USD por milhao de tokens
+   * (D-P8; ADR-0017). Obrigatorios de proposito: o sistema se recusa a estimar
+   * custo sem preco declarado (nada de numero chutado no codigo). A unidade e
+   * micro-USD de seta (1 USD = 1e6 micro): a Anthropic cobra centavos por mil
+   * tokens, e o Int do zod nao deixa fracao — $1/Mtok vira 1_000_000.
+   * Estimativa declarada — nao e billing da Anthropic (ADR-0017).
    */
-  LLM_PRICE_INPUT_USD_PER_MTOK: z.coerce.number().nonnegative(),
-  LLM_PRICE_OUTPUT_USD_PER_MTOK: z.coerce.number().nonnegative(),
+  LLM_PRICE_INPUT_USD_PER_MTOK: z.coerce.number().int().positive(),
+  LLM_PRICE_OUTPUT_USD_PER_MTOK: z.coerce.number().int().positive(),
 });
 
 export type Env = z.infer<typeof envSchema>;

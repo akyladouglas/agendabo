@@ -211,7 +211,12 @@ export class SchedulingFlowService {
   private extractionOutcome(
     kind: ExtractedClassified['kind'] | 'falhou' | 'unparseable',
   ): 'ok' | 'parse_fail' | 'low_confidence' {
-    if (kind === 'falhou' || kind === 'unparseable' || kind === 'sem_quando' || kind === 'consumida')
+    if (
+      kind === 'falhou' ||
+      kind === 'unparseable' ||
+      kind === 'sem_quando' ||
+      kind === 'consumida'
+    )
       return 'parse_fail';
     if (kind === 'fraco' || kind === 'suspeito') return 'low_confidence';
     return 'ok';
@@ -301,7 +306,7 @@ export class SchedulingFlowService {
     // por ele; desistência "deixa pra lá" continua determinística na máquina).
     const reminder =
       !deterministic && session.step === 'lembrete'
-        ? await this.interpretReminder(partial.text ?? '')
+        ? await this.interpretReminder(partial.text ?? '', user.id)
         : undefined;
     if (reminder) {
       // evento do interpretador do passo lembrete (atalho determinístico = ok sem LLM)
@@ -368,7 +373,7 @@ export class SchedulingFlowService {
     const classified =
       reminder || deterministic || extracted || editVerdict || justOpenedEdit
         ? undefined
-        : await this.classifier.classify(partial.text ?? '', context);
+        : await this.classifier.classify(partial.text ?? '', context, { userId: user.id });
     if (classified) this.eventoIntent(user, classified, `flow.${session.step}`);
 
     // Consulta de agenda com o fluxo de criar ABERTO (Fase 2, decisão #5): responde
@@ -479,10 +484,10 @@ export class SchedulingFlowService {
    * LLM (D3 do plano — "não"/"24h antes"/"3-2-1" não gastam LLM); fala livre vai ao
    * interpretador. A máquina só consome o veredito (padrão do `classified`).
    */
-  private async interpretReminder(text: string): Promise<ReminderClassified> {
+  private async interpretReminder(text: string, userId: string): Promise<ReminderClassified> {
     const shortcut = resolveReminderShortcut(text);
     if (shortcut) return { ok: true, regras: shortcut };
-    const result = await this.reminderInterpreter.interpretar(text);
+    const result = await this.reminderInterpreter.interpretar(text, { userId });
     if (result.ok) return { ok: true, regras: result.regras };
     return { ok: false, reason: result.reason };
   }
@@ -510,9 +515,11 @@ export class SchedulingFlowService {
     offsetMinutes: number,
     now: Date,
   ): Promise<ExtractedClassified> {
-    const result = await this.schedulingInterpreter.interpretar(text, {
-      todayLocal: this.todayLocal(user, now),
-    });
+    const result = await this.schedulingInterpreter.interpretar(
+      text,
+      { todayLocal: this.todayLocal(user, now) },
+      { userId: user.id },
+    );
     if (!result.ok) {
       return { kind: 'falhou', reason: result.reason, titleHint: text.trim().slice(0, 200) };
     }
@@ -621,9 +628,11 @@ export class SchedulingFlowService {
     picked?: EditCandidateLike;
     change?: NonNullable<HandleTurnInput['editChange']>;
   }> {
-    const result = await this.editInterpreter.interpretar(text, {
-      todayLocal: this.todayLocal(user, now),
-    });
+    const result = await this.editInterpreter.interpretar(
+      text,
+      { todayLocal: this.todayLocal(user, now) },
+      { userId: user.id },
+    );
     const edit = session.candidate.edit;
     if (!result.ok) {
       // editar NUNCA vira needs_review (spec regra 20): re-pergunta.
@@ -886,7 +895,7 @@ export class SchedulingFlowService {
       return;
     }
 
-    const classified = await this.classifier.classify(text, { inFlow: false });
+    const classified = await this.classifier.classify(text, { inFlow: false }, { userId: user.id });
     this.eventoIntent(user, classified, 'off_flow');
     if (!classified.ok || classified.confidence < this.minConfidence) {
       await this.telegram.sendMessage(telegramId, BOT_MESSAGES.pediuEsclarecimento);

@@ -6,6 +6,7 @@ import type {
   MessagesCreateResult,
 } from './anthropic-messages-client';
 import { ConsultaInterpreterService } from './consulta-interpreter.service';
+import { LlmCallContextService } from './llm-call-context';
 import type { Env } from '../../config/env.validation';
 
 /** Stub plano do AnthropicMessagesClient (nunca o SDK real — ver testing.md). */
@@ -44,7 +45,7 @@ const TODAY = 'quarta, 07 de outubro de 2026';
 describe('ConsultaInterpreterService', () => {
   it('simbolo claro ("hoje"): ok:true com o simbolo e SEM intervalo (spec #6)', async () => {
     const client = new StubClient([toolUse({ tipo: 'listar', simbolo: 'hoje', confidence: 0.95 })]);
-    const svc = new ConsultaInterpreterService(client as never, env());
+    const svc = new ConsultaInterpreterService(client as never, env(), new LlmCallContextService());
 
     const result = await svc.interpret('o que tenho hoje?', { todayLocal: TODAY });
 
@@ -57,7 +58,7 @@ describe('ConsultaInterpreterService', () => {
     const client = new StubClient([
       toolUse({ tipo: 'listar', from: '2026-10-10', to: '2026-10-13', confidence: 0.9 }),
     ]);
-    const svc = new ConsultaInterpreterService(client as never, env());
+    const svc = new ConsultaInterpreterService(client as never, env(), new LlmCallContextService());
 
     const result = await svc.interpret('o que tenho de 10 a 12?', { todayLocal: TODAY });
 
@@ -78,7 +79,7 @@ describe('ConsultaInterpreterService', () => {
         confidence: 0.9,
       }),
     ]);
-    const svc = new ConsultaInterpreterService(client as never, env());
+    const svc = new ConsultaInterpreterService(client as never, env(), new LlmCallContextService());
 
     const result = await svc.interpret('amanhã?', { todayLocal: TODAY });
 
@@ -87,7 +88,7 @@ describe('ConsultaInterpreterService', () => {
 
   it('confianca baixa: ok:false low_confidence SEM escalar (spec #5, ADR-003)', async () => {
     const client = new StubClient([toolUse({ tipo: 'listar', simbolo: 'hoje', confidence: 0.4 })]);
-    const svc = new ConsultaInterpreterService(client as never, env());
+    const svc = new ConsultaInterpreterService(client as never, env(), new LlmCallContextService());
 
     expect(await svc.interpret('meus compromissos?', { todayLocal: TODAY })).toEqual({
       ok: false,
@@ -101,7 +102,7 @@ describe('ConsultaInterpreterService', () => {
       toolUse({ tipo: 'listar', simbolo: 'da_qui_pras_frente', confidence: 0.9 }), // fora do enum
       toolUse({ confidence: 0.9 }), // falta tipo
     ]);
-    const svc = new ConsultaInterpreterService(client as never, env());
+    const svc = new ConsultaInterpreterService(client as never, env(), new LlmCallContextService());
 
     expect(await svc.interpret('semana que vem?', { todayLocal: TODAY })).toEqual({
       ok: false,
@@ -117,7 +118,7 @@ describe('ConsultaInterpreterService', () => {
     const client = new StubClient([
       { content: [{ type: 'text', text: 'não usei a tool' }], stop_reason: 'end_turn' },
     ]);
-    const svc = new ConsultaInterpreterService(client as never, env());
+    const svc = new ConsultaInterpreterService(client as never, env(), new LlmCallContextService());
 
     expect(await svc.interpret('blz?', { todayLocal: TODAY })).toEqual({
       ok: false,
@@ -128,7 +129,7 @@ describe('ConsultaInterpreterService', () => {
 
   it('fora_do_escopo: ok:false fora_do_escopo (a intent ja deveria ter roteado)', async () => {
     const client = new StubClient([toolUse({ tipo: 'fora_do_escopo', confidence: 0.95 })]);
-    const svc = new ConsultaInterpreterService(client as never, env());
+    const svc = new ConsultaInterpreterService(client as never, env(), new LlmCallContextService());
 
     expect(await svc.interpret('me conta uma piada', { todayLocal: TODAY })).toEqual({
       ok: false,
@@ -138,7 +139,7 @@ describe('ConsultaInterpreterService', () => {
 
   it('listar sem simbolo e sem intervalo: ok:false parse (bot pergunta o periodo)', async () => {
     const client = new StubClient([toolUse({ tipo: 'listar', confidence: 0.9 })]);
-    const svc = new ConsultaInterpreterService(client as never, env());
+    const svc = new ConsultaInterpreterService(client as never, env(), new LlmCallContextService());
 
     expect(await svc.interpret('meus compromissos', { todayLocal: TODAY })).toEqual({
       ok: false,
@@ -150,7 +151,7 @@ describe('ConsultaInterpreterService', () => {
     const client = new StubClient([
       toolUse({ tipo: 'listar', simbolo: 'hoje', confidence: 0.9, motivo: 'pergunta direta' }),
     ]);
-    const svc = new ConsultaInterpreterService(client as never, env());
+    const svc = new ConsultaInterpreterService(client as never, env(), new LlmCallContextService());
 
     expect(await svc.interpret('o que tenho hoje?', { todayLocal: TODAY })).toEqual({
       ok: true,
@@ -161,7 +162,7 @@ describe('ConsultaInterpreterService', () => {
 
   it('data de hoje no timezone do usuario vai no bloco volatile (prompt, llm.md #4)', async () => {
     const client = new StubClient([toolUse({ tipo: 'listar', simbolo: 'hoje', confidence: 0.9 })]);
-    const svc = new ConsultaInterpreterService(client as never, env());
+    const svc = new ConsultaInterpreterService(client as never, env(), new LlmCallContextService());
 
     await svc.interpret('o que tenho hoje?', {
       todayLocal: TODAY,
