@@ -283,7 +283,7 @@ Review `fd72027..HEAD` (6 especialistas + consolidador). Decisões do humano:
 corrida do reschedule FECHADA com SELECT ... FOR UPDATE; pacote TODO agora.
 
 - [x] R1 (bloqueador): bot pré-check alinha a confirmed+needs_review (scheduling-flow) + teste
-- [x] R2 (corrida): FOR UPDATE nas linhas em conflito dentro da tx do reschedule (ADR-0015 nota D9)
+- [x] R2 (corrida): FOR UPDATE nas linhas em conflito dentro da tx do reschedule (ADR-0015 nota D9). Smoke REAL no Postgres (duas transações concorrentes): a segunda bloqueia na trava (~2,8 s), acorda vendo o write da primeira e recusa o conflito — zero sobreposição final. Bug pego pelo smoke: `$queryRaw` com uuid precisa de `::uuid` explícito (gotcha 21)
 - [x] R3 (teste): reschedule move SEM otherId — semântica real confirmada com o humano: 1 conflito = o MOVIDO vai ao destino (move-self recomputado, D4); 2+ = 409. Ambos os ramos testados; comentário do service corrigido
 - [x] R4 (perf): índice Prisma notification_rules.appointmentId + notification_outbox.appointmentId (migração `20261009150000_review_r4_fk_indexes` aplicada)
 - [x] R5 (seg): window.__agenda atrás de import.meta.env.DEV
