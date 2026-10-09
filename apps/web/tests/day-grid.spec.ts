@@ -82,6 +82,7 @@ function mountAgenda(opts: { items?: AppointmentDto[] | null } = {}) {
     timezone: TZ,
     resumoDiarioHora: '08:00',
     resumoDiarioAtivo: true,
+        isAdmin: false,
     name: 'Ana',
   });
   const router = createRouter({

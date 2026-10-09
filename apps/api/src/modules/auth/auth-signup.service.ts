@@ -253,6 +253,10 @@ export class AuthSignupService {
         timezone: user.timezone,
         resumoDiarioHora: user.resumoDiarioHora,
         resumoDiarioAtivo: user.resumoDiarioAtivo,
+        // Fase 9 (observabilidade): a web marca os eventos do tracker com o uuid
+        // interno (unico identificador permitido — ADR-0016) e o isAdmin so
+        // controla visibilidade de rota; os dados continuam guardados no server.
+        isAdmin: user.isAdmin,
       },
     };
   }
@@ -297,6 +301,7 @@ export class AuthSignupService {
         timezone: stored.user.timezone,
         resumoDiarioHora: stored.user.resumoDiarioHora,
         resumoDiarioAtivo: stored.user.resumoDiarioAtivo,
+        isAdmin: stored.user.isAdmin,
       },
     };
   }

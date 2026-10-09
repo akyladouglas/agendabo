@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia';
 import { computed, ref } from 'vue';
 import type { LoginResult } from '@agendabo/contracts';
+import { setTrackerUser } from '../config/errorTracker';
 import { authApi, setAccessToken } from '../services/api';
 
 export interface SessionUser {
@@ -12,6 +13,8 @@ export interface SessionUser {
   resumoDiarioHora: string;
   /** Resumo diário ligado/desligado (flag `resumoDiarioAtivo`). */
   resumoDiarioAtivo: boolean;
+  /** Fase 9: visibilidade de rota admin na web (a guarda real é do server). */
+  isAdmin: boolean;
 }
 
 export const useAuthStore = defineStore('auth', () => {
@@ -32,6 +35,8 @@ export const useAuthStore = defineStore('auth', () => {
 
   function setUser(u: SessionUser | null): void {
     user.value = u;
+    // tracker: só o uuid interno (ADR-0016); logout/null = evento sem user
+    setTrackerUser(u?.id ?? null);
   }
 
   return { user, isLoggedIn, login, logout, setUser };

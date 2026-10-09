@@ -70,6 +70,11 @@ const envSchema = z.object({
 
 export type Env = z.infer<typeof envSchema>;
 
+/** Env validado a partir do process.env (o mesmo contrato do ConfigModule). */
+export function readValidatedEnv(): Env {
+  return validateEnv(process.env);
+}
+
 export function validateEnv(raw: Record<string, unknown>): Env {
   const parsed = envSchema.safeParse(raw);
   if (!parsed.success) {

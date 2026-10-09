@@ -11,6 +11,9 @@ const SESSION_USER_SELECT = {
   timezone: true,
   resumoDiarioHora: true,
   resumoDiarioAtivo: true,
+  // Fase 9: o store da web guarda isAdmin p/ visibilidade de rota (guarda real
+  // e do server — ADR-0017). O PATCH /me nunca escreve este campo.
+  isAdmin: true,
 } as const;
 
 /**

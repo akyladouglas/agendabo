@@ -20,9 +20,14 @@ import { DispatchService } from '../modules/notifications/dispatch.service';
 import { NOTIFICATIONS_QUEUE } from '../modules/notifications/notifications.queue';
 import type { DispatchJobData } from '../modules/notifications/outbox.service';
 import type { Env } from '../config/env.validation';
+import { loadRootEnv } from '../config/load-root-env';
+import { readValidatedEnv } from '../config/env.validation';
+import { initErrorTracker } from '../shared/observability/error-tracker';
 
 async function bootstrap(): Promise<void> {
   const logger = new Logger('NotificationsWorker');
+  loadRootEnv();
+  initErrorTracker(readValidatedEnv(), 'worker');
   // NestFactory.create (não listen()): sem HTTP neste processo. O AppModule traz o
   // gateway do bot, mas nada chama startLongPolling aqui — e os @Cron ficam sem
   // SchedulerRegistry ( só registrado no AppModule.bootstrap, o entrypoint da

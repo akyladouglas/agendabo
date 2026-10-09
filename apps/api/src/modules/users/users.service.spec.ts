@@ -26,6 +26,7 @@ const ROW = {
   timezone: 'America/Sao_Paulo',
   resumoDiarioHora: '07:00',
   resumoDiarioAtivo: true,
+  isAdmin: false,
 };
 
 describe('UsersService.updateMe (PATCH /me)', () => {
@@ -41,6 +42,7 @@ describe('UsersService.updateMe (PATCH /me)', () => {
       timezone: 'America/Sao_Paulo',
       resumoDiarioHora: '08:15',
       resumoDiarioAtivo: true,
+      isAdmin: false,
     });
   });
 

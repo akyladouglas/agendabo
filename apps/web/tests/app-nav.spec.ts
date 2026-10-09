@@ -31,6 +31,7 @@ function mountLayout(user: LayoutUser) {
     timezone: 'America/Sao_Paulo',
     resumoDiarioHora: '08:00',
     resumoDiarioAtivo: true,
+        isAdmin: false,
     name: user.name,
   });
   const router = createRouter({

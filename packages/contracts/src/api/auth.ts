@@ -92,6 +92,9 @@ export const loginResultSchema = z.object({
     resumoDiarioHora: hourOfDaySchema,
     /** Flag do resumo diário (Aberto #2 → (a)). */
     resumoDiarioAtivo: z.boolean(),
+    /** Fase 9 (observabilidade/ADR-0017): só controle de visibilidade de rota
+     *  na web; a guarda de verdade das rotas admin é sempre o server. */
+    isAdmin: z.boolean(),
   }),
 });
 export type LoginResult = z.infer<typeof loginResultSchema>;

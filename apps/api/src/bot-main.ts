@@ -7,9 +7,14 @@ import 'reflect-metadata';
 import { NestFactory } from '@nestjs/core';
 import { Logger } from '@nestjs/common';
 import { AppModule } from './app.module';
+import { loadRootEnv } from './config/load-root-env';
+import { readValidatedEnv } from './config/env.validation';
+import { initErrorTracker } from './shared/observability/error-tracker';
 
 async function bootstrap(): Promise<void> {
   const logger = new Logger('BotProcess');
+  loadRootEnv();
+  initErrorTracker(readValidatedEnv(), 'bot');
   const app = await NestFactory.create(AppModule);
   // O gateway (BotGatewayService) inicia o long-polling em onApplicationBootstrap;
   // sem HTTP neste processo, basta manter o app vivo.

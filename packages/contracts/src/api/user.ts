@@ -28,5 +28,7 @@ export const updateProfileResultSchema = z.object({
   timezone: timezoneSchema,
   resumoDiarioHora: hourOfDaySchema,
   resumoDiarioAtivo: z.boolean(),
+  /** Fase 9: visibilidade de rota na web; nunca escrevivel por aqui. */
+  isAdmin: z.boolean(),
 });
 export type UpdateProfileResult = z.infer<typeof updateProfileResultSchema>;

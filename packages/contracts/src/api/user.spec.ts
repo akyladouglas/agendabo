@@ -54,6 +54,7 @@ describe('updateProfileResultSchema', () => {
       timezone: 'America/Sao_Paulo',
       resumoDiarioHora: '08:15',
       resumoDiarioAtivo: false,
+      isAdmin: false,
     });
     expect(parsed.name).toBe('Ana');
   });
@@ -67,6 +68,7 @@ describe('updateProfileResultSchema', () => {
         timezone: 'Etc/UTC',
         resumoDiarioHora: '07:00',
         resumoDiarioAtivo: true,
+        isAdmin: false,
       }),
     ).not.toThrow();
   });

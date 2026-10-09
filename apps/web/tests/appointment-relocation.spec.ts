@@ -99,6 +99,7 @@ function mountForm(opts: {
     timezone: TZ,
     resumoDiarioHora: '08:00',
     resumoDiarioAtivo: true,
+        isAdmin: false,
     name: 'Ana',
   });
   const qc = new QueryClient({

@@ -6,8 +6,14 @@ import cookieParser from 'cookie-parser';
 import helmet from 'helmet';
 import { AppModule } from './app.module';
 import type { Env } from './config/env.validation';
+import { loadRootEnv } from './config/load-root-env';
+import { readValidatedEnv } from './config/env.validation';
+import { initErrorTracker } from './shared/observability/error-tracker';
 
 async function bootstrap(): Promise<void> {
+  // tracker ANTES do AppModule: erros do proprio boot sobem (Fase 9/ADR-0016).
+  loadRootEnv();
+  initErrorTracker(readValidatedEnv(), 'api');
   const app: INestApplication = await NestFactory.create(AppModule);
   const config = app.get(ConfigService<Env, true>);
 
