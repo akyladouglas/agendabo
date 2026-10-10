@@ -33,6 +33,15 @@ export class BotGatewayService implements OnApplicationBootstrap, OnModuleDestro
       this.logger.log('BOT_GATEWAY_ENABLED=false — gateway do bot desligado neste processo');
       return;
     }
+    // Ordem obrigatoria: deleteWebhook resolve ANTES do start — polling com
+    // webhook pendurado da 409 (getUpdates fica barrado, update preso, sem erro no log).
+    try {
+      await this.telegram.getClient().telegram.deleteWebhook({ drop_pending_updates: false });
+      this.logger.log('deleteWebhook no boot: aplicado');
+    } catch (err) {
+      // sem webhook configurado o Telegram responde 404; nada a fazer (gotcha 5).
+      this.logger.log(`deleteWebhook no boot: ${String(err)}`);
+    }
     let bot: Telegraf;
     try {
       bot = this.telegram.getClient();
@@ -41,11 +50,6 @@ export class BotGatewayService implements OnApplicationBootstrap, OnModuleDestro
       return;
     }
     this.bot = bot;
-
-    bot.telegram.deleteWebhook({ drop_pending_updates: false }).catch((err: unknown) => {
-      // sem webhook configurado o Telegram responde 404; nada a fazer (gotcha 5).
-      this.logger.log(`deleteWebhook no boot: ${String(err)}`);
-    });
 
     bot.on('text', async (ctx) => {
       const id = ctx.from?.id;
