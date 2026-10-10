@@ -85,6 +85,17 @@ export class BotGatewayService implements OnApplicationBootstrap, OnModuleDestro
     await (bot.start as unknown as () => Promise<void>)();
     this.startHealthLoop(bot);
     this.logger.log('gateway do bot: long-polling iniciado (processo único)');
+    // prova do polling: 5s depois do start, a fila ja deveria ter sido drenada
+    setTimeout(() => {
+      void bot.telegram
+        .getWebhookInfo()
+        .then((wi) =>
+          this.logger.log(
+            `pos-boot (+5s): pendencias=${wi.pending_update_count} url='${wi.url || 'nenhuma'}' ultimo_erro=${wi.last_error_message ?? 'nenhum'}`,
+          ),
+        )
+        .catch((err: unknown) => this.logger.warn(`pos-boot: getWebhookInfo falhou: ${String(err)}`));
+    }, 5_000).unref?.();
   }
 
   onApplicationShutdown(): void {
@@ -102,20 +113,26 @@ export class BotGatewayService implements OnApplicationBootstrap, OnModuleDestro
     }
   }
 
-  /** Log periodico de saude do polling (diagnostico de fila presa/409). */
+  /**
+   * Prova do polling (diagnostico): a cada 60s manda getMe com um timeout CURTO.
+   * getMe e uma rota que NAO conflita com getUpdates de outro consumidor — 409
+   * aqui = o token esta sendo usado em outro lugar; sucesso = rede/telegram ok.
+   * Se aparecer isto no log do container, e o processo do bot MESMO dizendo que
+   * consegue falar com o telegram a cada minuto (e a fila presa e culpa dele).
+   */
   private startHealthLoop(bot: Telegraf): void {
     const timer = setInterval(async () => {
+      const t0 = Date.now();
       try {
-        const wi = await bot.telegram.getWebhookInfo();
-        if (wi.pending_update_count > 0) {
-          this.logger.warn(
-            `polling: fila presa — pendencias=${wi.pending_update_count} url='${wi.url || 'nenhuma'}' ultimo_erro=${wi.last_error_message ?? 'nenhum'}`,
-          );
-        }
+        await Promise.race([
+          bot.telegram.getMe(),
+          new Promise((_, rej) => setTimeout(() => rej(new Error('timeout 10s')), 10_000)),
+        ]);
+        this.logger.log(`polling alive: getMe ok em ${Date.now() - t0}ms`);
       } catch (err) {
-        this.logger.warn(`polling health-check falhou: ${String(err)}`);
+        this.logger.error(`polling alive: getMe FALHOU em ${Date.now() - t0}ms: ${String(err)}`);
       }
-    }, 5 * 60_000);
+    }, 60_000);
     timer.unref?.();
   }
 
