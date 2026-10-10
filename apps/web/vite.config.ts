@@ -33,10 +33,14 @@ export default defineConfig({
   },
   server: {
     port: 5174,
+    host: true, // expoe na LAN (teste de touch em celular — docs/mobile-touch-test.md)
     proxy: {
       // proxy de dev: API não usa prefixo /api; reescreve antes de ir ao proxy
       '/api': {
-        target: 'http://localhost:3001',
+        // 127.0.0.1 (e nao 'localhost'): com `host: true` acessado de outro
+        // dispositivo, 'localhost' no Windows resolve p/ ::1 e o proxy pode
+        // nao achar a API em IPv6 — mobile touch test (docs/mobile-touch-test.md)
+        target: 'http://127.0.0.1:3001',
         changeOrigin: true,
         rewrite: (path: string) => path.replace(/^\/api/, ''),
       },

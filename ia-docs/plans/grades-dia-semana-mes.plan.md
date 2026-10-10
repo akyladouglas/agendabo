@@ -260,6 +260,10 @@ Implementar com **Pointer Events** (unifica mouse+toque), hook próprio:
 - [ ] Toque real em celular — sem device aqui; o caminho é o mesmo de Pointer
       Events (`pointerdown/move/up` + `touch-action: none` só no bloco), testado
       por eventos Pointer no happy-dom. Pendente do humano num aparelho.
+      **Preparado 2026-10-09**: `vite host:true` + proxy `/api` apontando p/
+      127.0.0.1 (validado: web 200 e proxy 401 pelo IP de LAN) e roteiro com
+      regra de firewall em `docs/mobile-touch-test.md`. Executar no aparelho e
+      marcar aqui com data/device/browser.
 
 ## Arquivos
 
