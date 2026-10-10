@@ -60,6 +60,18 @@ export class BotGatewayService implements OnApplicationBootstrap, OnModuleDestro
     }
     this.bot = bot;
 
+    // Visibilidade total: toda falha de long-polling (409, timeout de rede, etc.)
+    // sai no log em vez de engolida pelo retry interno do Telegraf.
+    bot.catch((err: unknown) => {
+      const payload =
+        typeof err === 'object' && err !== null && 'payload' in err
+          ? (err as { payload?: { error_code?: number } }).payload
+          : undefined;
+      this.logger.error(
+        `erro no update: code=${payload?.error_code ?? '-'} ${String(err)}`,
+      );
+    });
+
     bot.on('text', async (ctx) => {
       const id = ctx.from?.id;
       const text = 'text' in ctx.message ? ctx.message.text : undefined;
