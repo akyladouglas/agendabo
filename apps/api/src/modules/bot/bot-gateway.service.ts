@@ -26,10 +26,19 @@ export class BotGatewayService implements OnApplicationBootstrap, OnModuleDestro
     private readonly config: ConfigService<Env, true>,
   ) {}
 
+  /**
+   * Dono do polling: o binario do bot (bot-main.js) marca BOT_GATEWAY_EXPLICIT_OWNER
+   * no process.env e SEMPRE liga o gateway, mesmo com BOT_GATEWAY_ENABLED=false
+   * herdado de env compartilhada do cluster (gotcha 5).
+   */
+  ownsPolling(): boolean {
+    return process.env.BOT_GATEWAY_EXPLICIT_OWNER === 'true';
+  }
+
   async onApplicationBootstrap(): Promise<void> {
     // O polling vive num unico processo (gotcha 5): o servico api desliga o
     // gateway com BOT_GATEWAY_ENABLED=false e so o servico bot faz getUpdates.
-    if (!this.config.get('BOT_GATEWAY_ENABLED', { infer: true })) {
+    if (!this.ownsPolling() && !this.config.get('BOT_GATEWAY_ENABLED', { infer: true })) {
       this.logger.log('BOT_GATEWAY_ENABLED=false — gateway do bot desligado neste processo');
       return;
     }

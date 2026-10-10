@@ -14,9 +14,10 @@ import { initErrorTracker, flushErrorTracker } from './shared/observability/erro
 async function bootstrap(): Promise<void> {
   const logger = new Logger('BotProcess');
   loadRootEnv();
-  // Este binario e o DONO do polling (gotcha 5): liga o gateway mesmo com o
-  // default off do env (a API HTTP so liga com BOT_GATEWAY_ENABLED=true).
-  process.env.BOT_GATEWAY_ENABLED ??= 'true';
+  // Este binario e o DONO do polling (gotcha 5): liga o gateway SEMPRE, mesmo que
+  // BOT_GATEWAY_ENABLED=false exista como env compartilhada do cluster (a API HTTP
+  // so liga com BOT_GATEWAY_ENABLED=true).
+  process.env.BOT_GATEWAY_EXPLICIT_OWNER = 'true';
   initErrorTracker(readValidatedEnv(), 'bot');
   const app = await NestFactory.create(AppModule);
   // O gateway (BotGatewayService) inicia o long-polling em onApplicationBootstrap;

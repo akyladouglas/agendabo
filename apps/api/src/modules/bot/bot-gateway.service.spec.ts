@@ -41,4 +41,25 @@ describe('BotGatewayService — gate BOT_GATEWAY_ENABLED', () => {
     await svc.onApplicationBootstrap();
     await svc.onModuleDestroy();
   });
+
+  it('dono explicito (bot-main): gateway liga MESMO com BOT_GATEWAY_ENABLED=false', async () => {
+    process.env.BOT_GATEWAY_EXPLICIT_OWNER = 'true';
+    try {
+      const telegram = {
+        getClient: () => {
+          throw new Error('TELEGRAM_BOT_TOKEN ausente');
+        },
+      } as unknown as TelegramClientService;
+      const svc = new BotGatewayService(
+        telegram,
+        { handleText: jest.fn() } as unknown as SchedulingFlowService,
+        { get: () => false } as unknown as ConfigService<Env, true>,
+      );
+      // passa pelo gate (nao loga "desligado") e morre no getToken — sem excecao fora
+      await svc.onApplicationBootstrap();
+      await svc.onModuleDestroy();
+    } finally {
+      delete process.env.BOT_GATEWAY_EXPLICIT_OWNER;
+    }
+  });
 });
