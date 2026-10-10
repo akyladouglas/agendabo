@@ -35,4 +35,6 @@ ENV NODE_ENV=production
 COPY --from=build /app /app
 RUN pnpm prune --prod
 EXPOSE 3001
-CMD ["node", "apps/api/dist/main.js"]
+# O Coolify 4.4.1 nao permite override de comando por servico — o processo e
+# escolhido pela env PROCESS_TYPE (api = default | bot | worker).
+CMD ["sh", "-c", "case \"${PROCESS_TYPE:-api}\" in bot) exec node apps/api/dist/bot-main.js ;; worker) exec node apps/api/dist/workers/notifications-worker.js ;; *) exec node apps/api/dist/main.js ;; esac"]
