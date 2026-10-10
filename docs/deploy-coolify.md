@@ -20,9 +20,10 @@ pnpm install --frozen-lockfile
 pnpm -r build            # contracts -> schedule-core -> api (nest) -> web (vite)
 ```
 
-**Migrations no deploy:** `scripts/deploy-migrate.sh` (hook de deploy — ver
-abaixo). Ele roda `prisma generate` + `prisma migrate deploy` e é idempotente
-(nunca recria tabela).
+**Migrations no deploy:** embutidas no Start Command do api (`prisma
+migrate deploy` antes do `node dist/main.js`) — ver checklist item 6. São
+idempotentes (nunca recriam tabela); `scripts/deploy-migrate.sh` fica como
+referência do que rodar à mão se necessário.
 
 ## Variáveis de produção (uma "environment" no Coolify para todos os serviços)
 
@@ -81,7 +82,7 @@ proxy de dev — em produção o proxy fica no Coolify, ver domínio).
    - Install command: `pnpm install --frozen-lockfile`
    - Build command: `pnpm -r build`
    - Start command:
-     - api → `node apps/api/dist/main.js`
+     - api → `sh -c "cd /app/apps/api && npx prisma migrate deploy && node dist/main.js"` (ver item 6)
      - worker → `node apps/api/dist/workers/notifications-worker.js`
      - bot → `node apps/api/dist/bot-main.js`
 3. **Env**: cole o bloco acima em **Environment Variables** — melhor na raiz do
@@ -102,15 +103,26 @@ proxy de dev — em produção o proxy fica no Coolify, ver domínio).
    ```
    O `WEB_ORIGIN` da API deve ser `https://SEU-DOMINIO-DA-WEB` (com CORS e
    cookies same-site o refresh funciona sem cookies cross-site).
-6. **Hook de deploy** (migrations): nos 3 serviços api/worker/bot, **Features →
-   Deploy Hook → Run script before the deployment**:
+6. **Migrations no deploy** — a 4.4.6 **não tem** hook de script (a seção
+   Advanced → Deployment só tem Auto deploy; Deploy Hook não existe mais). O
+   caminho é embutir a migration no **Start Command do api** — ela roda sozinha
+   em todo boot (idempotente; ~2s quando não há migration nova):
+   ```sh
+   sh -c "cd /app/apps/api && npx prisma migrate deploy && node dist/main.js"
    ```
-   sh /app/scripts/deploy-migrate.sh
+   Worker/bot mantêm o start puro (o api garante o schema antes de abrir a
+   porta). **Pegadinha do Nixpacks**: o engine do Prisma é baixado no install
+   (`prisma generate`) e pode não sobreviver à imagem final. Teste: após o
+   primeiro deploy, _restart_ o api e procure no log `migrations are already
+in sync`. Se der `Cannot find query engine`, plano B: serviço auxiliar com
+   `node:22-alpine` (+ `apk add --no-cache openssl`) que roda
+   `prisma migrate deploy` e sai; o api fica esperando o banco (ver
+   `scripts/deploy-migrate.sh` como referência do que ele executaria).
+   Primeira vez (antes de qualquer deploy): o banco está vazio e o boot do api
+   pode morrer — rode 1× via **Terminal do serviço**:
+   ```sh
+   cd /app/apps/api && npx prisma generate && npx prisma migrate deploy
    ```
-   O script acha o node sozinho (PATH → scan do `/nix/store` da imagem → último
-   recurso `/proc`). Se um dia ele não achar, o log diz o comando para rodar à
-   mão. Rode no **api** primeiro (é o que precisa das tabelas novas; nos outros
-   é idempotente).
 7. **Persistência dos bots/worker**: nada precisa de volume além do Postgres/
    Redis do próprio Coolify (a fila é Redis; sessões do bot são memória por
    design da fase).
@@ -118,8 +130,9 @@ proxy de dev — em produção o proxy fica no Coolify, ver domínio).
 ## Primeiro boot (na ordem)
 
 1. Subir Postgres + Redis (o Coolify cria).
-2. Deploy api → hook roda `prisma migrate deploy` (cria `users` etc.) →
-   `node dist/main.js` sobe.
+2. Deploy api → **Terminal do serviço** roda 1× `cd /app/apps/api && npx
+prisma generate && npx prisma migrate deploy` (cria `users` etc.) →
+   Restart → o start command (item 6) mantém o schema em sincronia sozinho.
 3. Deploy web → acesse `https://SEU-DOMINIO/cadastro` e **crie sua conta**:
    o **primeiro usuário do sistema nasce admin automaticamente** (regra D-P7 /
    ADR-0017) — e é pelo painel admin (`PATCH /admin/users/:id/observabilidade`)
