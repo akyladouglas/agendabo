@@ -4,6 +4,7 @@ import { AppointmentsModule } from '../appointments/appointments.module';
 import { AgendaQueryService } from './agenda-query.service';
 import { BotAccessService } from './bot-access.service';
 import { BotGatewayService } from './bot-gateway.service';
+import { BOT_WEBHOOK_HANDLER } from '../../shared/telegram/bot-webhook.token';
 import { ObservabilidadeModule } from '../observabilidade/observabilidade.module';
 import { SchedulingFlowService } from './scheduling-flow.service';
 
@@ -16,7 +17,19 @@ import { SchedulingFlowService } from './scheduling-flow.service';
  */
 @Module({
   imports: [AiModule, AppointmentsModule, ObservabilidadeModule],
-  providers: [BotAccessService, SchedulingFlowService, AgendaQueryService, BotGatewayService],
-  exports: [BotAccessService, SchedulingFlowService, AgendaQueryService],
+  providers: [
+    BotAccessService,
+    SchedulingFlowService,
+    AgendaQueryService,
+    BotGatewayService,
+    // main.ts monta POST /telegram/webhook resolvido por este token (sem importar
+    // a classe do service — o entrypoint nao conhece modulos).
+    {
+      provide: BOT_WEBHOOK_HANDLER,
+      inject: [BotGatewayService],
+      useFactory: (gateway: BotGatewayService) => gateway.webhookHandler,
+    },
+  ],
+  exports: [BotAccessService, SchedulingFlowService, AgendaQueryService, BOT_WEBHOOK_HANDLER],
 })
 export class BotModule {}

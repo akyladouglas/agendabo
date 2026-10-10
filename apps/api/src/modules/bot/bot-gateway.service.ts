@@ -1,4 +1,11 @@
-import { Injectable, Logger, OnApplicationBootstrap, OnModuleDestroy } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  OnApplicationBootstrap,
+  OnApplicationShutdown,
+  OnModuleDestroy,
+} from '@nestjs/common';
+import type { IncomingMessage, ServerResponse } from 'node:http';
 import { ConfigService } from '@nestjs/config';
 import { Telegraf } from 'telegraf';
 import type { Env } from '../../config/env.validation';
@@ -6,16 +13,23 @@ import { SchedulingFlowService } from './scheduling-flow.service';
 import { TelegramClientService } from '../../shared/telegram/telegram-client.service';
 
 /**
- * Bootstrap do bot (Fase 1): DONO do long-polling — um unico processo consome o
- * getUpdates do token (gotcha 5: duas instancias = 409 Conflict). `deleteWebhook`
- * no boot garante que nao ha webhook pendurado brigando com o polling.
+ * Bootstrap do bot: DONO do gateway do Telegram, em um de dois modos (env):
+ * - TELEGRAM_WEBHOOK_URL presente -> WEBHOOK: o Telegram POSTa updates na rota
+ *   /telegram/webhook da API (HTTPS de entrada; sem conexao longa de saida, que
+ *   e engolida silenciosamente em alguns datacenters). O processo que roda o
+ *   HTTP (api) atende o webhook; o binario do bot vira espectador.
+ * - ausente -> LONG-POLLING: um unico processo consome getUpdates (gotcha 5:
+ *   duas instancias = 409). `deleteWebhook` no boot garante que nao ha webhook
+ *   brigando com o polling.
  *
  * Os handlers sao FINOS (regra default-architecture #4): extrai telegramId + texto/
  * callback e delega ao SchedulingFlowService; gate de conta fica no service.
  * S6 sobe com TELEGRAM_BOT_TOKEN (a API pode viver sem bot em dev/test).
  */
 @Injectable()
-export class BotGatewayService implements OnApplicationBootstrap, OnModuleDestroy {
+export class BotGatewayService
+  implements OnApplicationBootstrap, OnApplicationShutdown, OnModuleDestroy
+{
   private readonly logger = new Logger(BotGatewayService.name);
   private bot: Telegraf | null = null;
   private shuttingDown = false;
@@ -26,18 +40,84 @@ export class BotGatewayService implements OnApplicationBootstrap, OnModuleDestro
     private readonly config: ConfigService<Env, true>,
   ) {}
 
-  /**
-   * Dono do polling: o binario do bot (bot-main.js) marca BOT_GATEWAY_EXPLICIT_OWNER
-   * no process.env e SEMPRE liga o gateway, mesmo com BOT_GATEWAY_ENABLED=false
-   * herdado de env compartilhada do cluster (gotcha 5).
-   */
+  /** Dono do long-polling: so o binario do bot (bot-main.js marca o owner). */
   ownsPolling(): boolean {
     return process.env.BOT_GATEWAY_EXPLICIT_OWNER === 'true';
   }
 
+  /** Dono do webhook: o processo que sobe HTTP (API) com a env configurada. */
+  ownsWebhook(): boolean {
+    // o dono do webhook e o processo que sobe HTTP = a API
+    return Boolean(this.config.get('TELEGRAM_WEBHOOK_URL', { infer: true })) && !this.ownsPolling();
+  }
+
+  /**
+   * Rota do webhook (mountada no app da API em HTTPS). NAO e controller: o
+   * corpo e o Update bruto do Telegram — 200 rapido e processamento fino.
+   * Segura o segredo na URL (telegramWebhookSecret), como o Telegram manda
+   * no header X-Telegram-Bot-Api-Secret-Token.
+   */
+  webhookHandler: (req: IncomingMessage, res: ServerResponse) => Promise<void> = async (
+    req,
+    res,
+  ) => {
+    const url = this.config.get('TELEGRAM_WEBHOOK_URL', { infer: true });
+    const secret = this.config.get('TELEGRAM_WEBHOOK_SECRET', { infer: true });
+    const header = req.headers['x-telegram-bot-api-secret-token'];
+    if (!url || !req.url?.startsWith('/telegram/webhook') || (secret && header !== secret)) {
+      res.writeHead(404).end();
+      return;
+    }
+    res.writeHead(200).end(); // ack primeiro: o Telegram faz retry se demorar
+    try {
+      const chunks: Buffer[] = [];
+      for await (const c of req) chunks.push(c as Buffer);
+      const update = JSON.parse(Buffer.concat(chunks).toString('utf8')) as unknown;
+      await this.handleUpdate(update);
+    } catch (err) {
+      this.logger.error(`webhook: erro processando update: ${String(err)}`);
+    }
+  };
+
+  /** Handler fino compartilhado webhook/polling: text + callback_query. */
+  async handleUpdate(update: unknown): Promise<void> {
+    const u = update as {
+      message?: { text?: string; chat?: { id?: number } };
+      callback_query?: { data?: string | unknown; from?: { id?: number } };
+    };
+    if (u.message?.text && u.message.chat?.id != null) {
+      await this.flow.handleText(String(u.message.chat.id), u.message.text);
+      return;
+    }
+    if (u.callback_query?.from?.id != null && typeof u.callback_query.data === 'string') {
+      await this.flow.handleCallback(String(u.callback_query.from.id), u.callback_query.data);
+    }
+  }
+
   async onApplicationBootstrap(): Promise<void> {
-    // O polling vive num unico processo (gotcha 5): o servico api desliga o
-    // gateway com BOT_GATEWAY_ENABLED=false e so o servico bot faz getUpdates.
+    const webhookUrl = this.config.get('TELEGRAM_WEBHOOK_URL', { infer: true });
+    if (webhookUrl) {
+      if (this.ownsPolling()) {
+        // binario do bot: quem faz setWebhook e o HTTP da API — espectador
+        this.logger.log('webhook mode — este processo nao e o dono do HTTP (espectador)');
+        return;
+      }
+      try {
+        const bot = this.telegram.getClient();
+        const secret = this.config.get('TELEGRAM_WEBHOOK_SECRET', { infer: true });
+        await bot.telegram.setWebhook(webhookUrl, {
+          secret_token: secret,
+          drop_pending_updates: true, // fila presa de polling nao inunda o webhook
+          allowed_updates: ['message', 'callback_query'],
+        });
+        const wi = await bot.telegram.getWebhookInfo();
+        this.logger.log(`webhook ativo: url='${wi.url}' pendencias=${wi.pending_update_count}`);
+      } catch (err) {
+        this.logger.error(`falha ao configurar webhook (bot sem receber updates): ${String(err)}`);
+      }
+      return;
+    }
+    // --- modo long-polling (dev/local; em prod com webhook a env manda aqui) ---
     if (!this.ownsPolling() && !this.config.get('BOT_GATEWAY_ENABLED', { infer: true })) {
       this.logger.log('BOT_GATEWAY_ENABLED=false — gateway do bot desligado neste processo');
       return;
@@ -67,9 +147,7 @@ export class BotGatewayService implements OnApplicationBootstrap, OnModuleDestro
         typeof err === 'object' && err !== null && 'payload' in err
           ? (err as { payload?: { error_code?: number } }).payload
           : undefined;
-      this.logger.error(
-        `erro no update: code=${payload?.error_code ?? '-'} ${String(err)}`,
-      );
+      this.logger.error(`erro no update: code=${payload?.error_code ?? '-'} ${String(err)}`);
     });
 
     bot.on('text', async (ctx) => {
@@ -97,17 +175,6 @@ export class BotGatewayService implements OnApplicationBootstrap, OnModuleDestro
     await (bot.start as unknown as () => Promise<void>)();
     this.startHealthLoop(bot);
     this.logger.log('gateway do bot: long-polling iniciado (processo único)');
-    // prova do polling: 5s depois do start, a fila ja deveria ter sido drenada
-    setTimeout(() => {
-      void bot.telegram
-        .getWebhookInfo()
-        .then((wi) =>
-          this.logger.log(
-            `pos-boot (+5s): pendencias=${wi.pending_update_count} url='${wi.url || 'nenhuma'}' ultimo_erro=${wi.last_error_message ?? 'nenhum'}`,
-          ),
-        )
-        .catch((err: unknown) => this.logger.warn(`pos-boot: getWebhookInfo falhou: ${String(err)}`));
-    }, 5_000).unref?.();
   }
 
   onApplicationShutdown(): void {

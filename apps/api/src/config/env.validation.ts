@@ -25,6 +25,13 @@ const envSchema = z.object({
 
   TELEGRAM_BOT_TOKEN: z.string().min(1).optional(),
   /**
+   * Modo webhook (prod): presenca liga o webhook na API e desliga o polling.
+   * Ex.: https://api-agendabo.<dominio>/telegram/webhook — so HTTPs valido.
+   */
+  TELEGRAM_WEBHOOK_URL: z.string().url().optional(),
+  /** Segredo que o Telegram devolve no header X-Telegram-Bot-Api-Secret-Token. */
+  TELEGRAM_WEBHOOK_SECRET: z.string().min(16).optional(),
+  /**
    * Gotcha 5 em producao: api e bot sao servicos separados no Coolify com o MESMO
    * token. O polling e OFF por default — so o servico bot liga com
    * BOT_GATEWAY_ENABLED=true (dev: `dev:bot` roda bot-main.js com a propria env).

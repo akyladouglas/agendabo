@@ -18,7 +18,7 @@ const CROSS_MODULE_EDGES = {
   // e o composition root (app.module) liga tudo.
   'modules/auth': ['modules', 'health', 'shared', 'app.module.ts'],
   'modules/appointments': ['modules'],
-  'modules/bot': ['modules'],
+  'modules/bot': ['modules', 'workers'],
   // Fase 1: o fluxo do bot consome a classificacao de intencao (modules/ai) e o
   // mesmo AppointmentsService da web para conflito/criacao (plano D7). Servicos
   // exportados; nada de importar SDK/Prisma de lá.
