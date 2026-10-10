@@ -134,5 +134,11 @@ Sempre que você mudar o `prisma/schema.prisma` (coluna/tabela/índice novo):
   llm_calls_cache_tokens). Start final: `node apps/api/dist/main.js`.
 - `DATABASE_URL` aponta para `10.0.1.11` (IP da bridge do Postgres) — ver
   Armadilha 3 para o upgrade para hostname estável.
+- Web: `apps/web/Dockerfile` (Caddy serve a SPA + faz proxy `/api` → API;
+  smoke local validado 2026-10-10: SPA 200, fallback 200, proxy 200).
+  **Config no Coolify:** Dockerfile (Build Context `./`, Dockerfile Location
+  `apps/web/Dockerfile`), porta `80`, env `API_UPSTREAM=<host-interno-da-api>:3001`
+  (ou `IP-da-bridge:3001` — mesma lição do Postgres: na bridge só IP resolve).
+  `VITE_SENTRY_DSN` como build arg é opcional.
 - GlitchTip SaaS: projeto `agendabo`, 1 client key (sem segunda key — usar a
   mesma na web, `VITE_SENTRY_DSN`).
