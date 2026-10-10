@@ -1,0 +1,16 @@
+# Caddy da web do Agendabô: SPA estática + proxy /api -> serviço api.
+# {env.API_UPSTREAM} resolvido no boot (env do contêiner).
+:80 {
+	encode zstd gzip
+
+	handle /api/* {
+		uri strip_prefix /api
+		reverse_proxy {env.API_UPSTREAM}
+	}
+
+	handle {
+		root * /srv
+		try_files {path} /index.html
+		file_server
+	}
+}
