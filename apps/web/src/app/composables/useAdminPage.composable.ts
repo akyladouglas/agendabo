@@ -67,7 +67,9 @@ export function useAdminPage(initialTab: AdminTab = 'eventos') {
   const selfView = computed(() => !!me.value && !me.value.isAdmin);
   // custo é admin-only (spec C4): rollout nunca vê a aba — nem por ?aba=custo
   const effectiveTab = computed<AdminTab>(() =>
-    tab.value === 'custo' && me.value && !isAdmin.value ? 'eventos' : tab.value,
+    me.value && !isAdmin.value && (tab.value === 'custo' || tab.value === 'usuarios')
+      ? 'eventos'
+      : tab.value,
   );
   /** papel PERMITIDO: sucesso do /me OU sessão admin com o /me fora do ar. */
   const showEvents = computed(() => (meQuery.isSuccess.value || sessionAdmin.value) && !denied.value);

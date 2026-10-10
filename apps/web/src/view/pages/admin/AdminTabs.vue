@@ -325,7 +325,7 @@
   </template>
 
   <!-- =============================== USUÁRIOS ============================== -->
-  <template v-else>
+  <template v-else-if="vm.isAdmin.value">
     <p class="text-sm text-muted-foreground">
       O rollout libera ao usuário comum ver os próprios eventos do bot
       nesta página. O custo de LLM nunca é liberado (decisão do produto).
@@ -388,6 +388,22 @@
       </li>
     </ul>
   </template>
+
+  <!-- estado-caixão: aba de admin aberta por não-admin (impossível pela UI —
+       as abas são filtradas por papel; existe p/ navegação direto ?aba=usuarios).
+       Guarda de verdade é do server: /admin/users e o PATCH são AdminGuard. -->
+  <div
+    v-else
+    class="flex flex-col items-center gap-2 rounded-lg border border-dashed border-border py-14 text-center"
+    data-testid="admin-tab-denied"
+  >
+    <p class="text-sm font-medium text-foreground">
+      Seção restrita a administradores
+    </p>
+    <p class="text-xs text-muted-foreground">
+      Volte para “Meus eventos” para acompanhar as suas interações com o bot.
+    </p>
+  </div>
 </template>
 
 <script setup lang="ts">

@@ -139,12 +139,50 @@ describe('AdminPage (observabilidade)', () => {
     await settle(w);
     expect(w.find('[data-testid="admin-denied"]').exists()).toBe(false);
     expect(w.text()).toContain('flow_completed');
-    // rollout: nem o select de usuário, nem /admin/users, nem /llm-usage
+    // rollout: nem o select de usuário, nem /admin/users, nem /llm-usage — e a
+    // aba Usuários jamais renderiza para ele (tentar ?aba=usuarios cai em eventos)
     expect(w.find('#admin-user-filter').exists()).toBe(false);
+    expect(w.find('[data-testid="admin-role"]').text()).toBe('meus eventos');
     const urls = dataUrls(spy);
     expect(urls).toContain('/bot-events');
     expect(urls).not.toContain('/admin/users');
     expect(urls).not.toContain('/llm-usage');
+    vi.restoreAllMocks();
+  });
+
+  it('rollout com ?aba=usuarios (digitação na URL): cai em eventos — a aba dele NUNCA abre', async () => {
+    const spy = vi
+      .spyOn(api.http, 'get')
+      .mockImplementation((url: string) => routeMock(url, 'rollout') as never);
+    const router = { push: vi.fn(), currentRoute: { value: { fullPath: '/admin', query: {} } } };
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    useAuthStore().setUser({
+      id: 'u1',
+      email: 'ana@email.com',
+      name: 'Ana',
+      timezone: 'UTC',
+      resumoDiarioHora: '08:00',
+      resumoDiarioAtivo: true,
+      isAdmin: false,
+    });
+    const w = mount(AdminPage, {
+      attachTo: document.body,
+      global: {
+        plugins: [pinia, VueQueryPlugin],
+        stubs: { RouterLink: StubRouterLink },
+        provide: {
+          [routerKey as unknown as symbol]: router,
+          // o composable lê `aba` da route — é aqui que o guard de aba atua
+          [routeLocationKey as unknown as symbol]: { path: '/admin', query: { aba: 'usuarios' } },
+        },
+      },
+    });
+    await settle(w);
+    expect(w.text()).toContain('flow_completed');
+    expect(w.text()).not.toContain('Seção restrita a administradores');
+    const urls = dataUrls(spy);
+    expect(urls).not.toContain('/admin/users');
     vi.restoreAllMocks();
   });
 
