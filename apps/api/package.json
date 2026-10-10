@@ -4,6 +4,7 @@
   "private": true,
   "scripts": {
     "build": "nest build",
+    "postinstall": "prisma generate",
     "dev": "nest start --watch",
     "dev:bot": "nest build && node dist/bot-main.js",
     "dev:worker": "nest build && node dist/workers/notifications-worker.js",
