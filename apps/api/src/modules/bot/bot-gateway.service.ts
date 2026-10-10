@@ -65,9 +65,16 @@ export class BotGatewayService implements OnApplicationBootstrap, OnModuleDestro
       await this.safe(`callback ${id}`, () => this.flow.handleCallback(String(id), cq.data), ctx);
     });
 
+    // Diagnostico: o que o telegram diz sobre a fila no boot (pendencias =
+    // alguem esta segurando os updates, ou o polling nao e efetivo).
+    const wi = await bot.telegram.getWebhookInfo();
+    this.logger.log(
+      `boot polling: url='${wi.url || 'nenhuma'}' pendencias=${wi.pending_update_count} ultimo_erro=${wi.last_error_message ?? 'nenhum'}`,
+    );
     await bot.telegram.getMe(); // falha cedo se o token for invalido
     // tipagem do Telegraf exige middleware na sobrecarga de start; chamamos via Composer
     await (bot.start as unknown as () => Promise<void>)();
+    this.startHealthLoop(bot);
     this.logger.log('gateway do bot: long-polling iniciado (processo único)');
   }
 
@@ -84,6 +91,23 @@ export class BotGatewayService implements OnApplicationBootstrap, OnModuleDestro
     } catch (err) {
       this.logger.warn(`erro ao parar o long-polling: ${String(err)}`);
     }
+  }
+
+  /** Log periodico de saude do polling (diagnostico de fila presa/409). */
+  private startHealthLoop(bot: Telegraf): void {
+    const timer = setInterval(async () => {
+      try {
+        const wi = await bot.telegram.getWebhookInfo();
+        if (wi.pending_update_count > 0) {
+          this.logger.warn(
+            `polling: fila presa — pendencias=${wi.pending_update_count} url='${wi.url || 'nenhuma'}' ultimo_erro=${wi.last_error_message ?? 'nenhum'}`,
+          );
+        }
+      } catch (err) {
+        this.logger.warn(`polling health-check falhou: ${String(err)}`);
+      }
+    }, 5 * 60_000);
+    timer.unref?.();
   }
 
   /** Handler fino NUNCA derruba o polling: erro e logado e o usuário fica sabendo. */
