@@ -24,6 +24,15 @@ const envSchema = z.object({
   REFRESH_TOKEN_TTL_DAYS: z.coerce.number().int().positive().default(30),
 
   TELEGRAM_BOT_TOKEN: z.string().min(1).optional(),
+  /**
+   * Gotcha 5 em producao: api e bot sao servicos separados no Coolify com o MESMO
+   * token. O polling so pode viver num processo — a API HTTP desliga o gateway com
+   * BOT_GATEWAY_ENABLED=false; o servico bot roda sem a flag (default true).
+   */
+  BOT_GATEWAY_ENABLED: z
+    .string()
+    .default('true')
+    .transform((v) => v !== 'false'),
 
   RESEND_API_KEY: z.string().min(1).optional(),
   RESEND_FROM: z.string().min(1).optional(),

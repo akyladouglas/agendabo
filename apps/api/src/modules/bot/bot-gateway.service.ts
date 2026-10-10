@@ -1,5 +1,7 @@
 import { Injectable, Logger, OnApplicationBootstrap, OnModuleDestroy } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { Telegraf } from 'telegraf';
+import type { Env } from '../../config/env.validation';
 import { SchedulingFlowService } from './scheduling-flow.service';
 import { TelegramClientService } from '../../shared/telegram/telegram-client.service';
 
@@ -21,9 +23,16 @@ export class BotGatewayService implements OnApplicationBootstrap, OnModuleDestro
   constructor(
     private readonly telegram: TelegramClientService,
     private readonly flow: SchedulingFlowService,
+    private readonly config: ConfigService<Env, true>,
   ) {}
 
   async onApplicationBootstrap(): Promise<void> {
+    // O polling vive num unico processo (gotcha 5): o servico api desliga o
+    // gateway com BOT_GATEWAY_ENABLED=false e so o servico bot faz getUpdates.
+    if (!this.config.get('BOT_GATEWAY_ENABLED', { infer: true })) {
+      this.logger.log('BOT_GATEWAY_ENABLED=false — gateway do bot desligado neste processo');
+      return;
+    }
     let bot: Telegraf;
     try {
       bot = this.telegram.getClient();
