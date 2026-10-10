@@ -206,3 +206,23 @@ export const updateObservabilityRolloutInputSchema = z
 export type UpdateObservabilityRolloutInput = z.infer<
   typeof updateObservabilityRolloutInputSchema
 >;
+
+/**
+ * GET /admin/users — lista mínima p/ a página Admin da web filtrar eventos por
+ * usuário (a UI nunca manda uuid digitado na mão). Somente identificadores de
+ * conta e flags; nenhum dado pessoal além de e-mail/nome.
+ */
+export const adminUserDtoSchema = z.object({
+  id: z.string().uuid(),
+  email: z.string(),
+  name: z.string().nullable(),
+  isAdmin: z.boolean(),
+  observabilidadeEventosAtivo: z.boolean(),
+  createdAt: z.coerce.date(),
+});
+export type AdminUserDto = z.infer<typeof adminUserDtoSchema>;
+
+export const adminUsersResultSchema = z.object({
+  items: z.array(adminUserDtoSchema),
+});
+export type AdminUsersResult = z.infer<typeof adminUsersResultSchema>;

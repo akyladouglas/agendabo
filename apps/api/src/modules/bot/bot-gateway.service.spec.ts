@@ -28,7 +28,6 @@ describe('BotGatewayService — gate BOT_GATEWAY_ENABLED', () => {
   });
 
   it('BOT_GATEWAY_ENABLED=true sem token: desliga sem explodir (API vive sem bot)', async () => {
-    const { service } = build(true);
     const telegram = {
       getClient: () => {
         throw new Error('TELEGRAM_BOT_TOKEN ausente');

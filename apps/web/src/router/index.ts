@@ -91,6 +91,14 @@ const router = createRouter({
       component: () => import('../view/pages/profile/ProfilePage.vue'),
       meta: { middleware: ['requireAuth'] },
     },
+    // observabilidade (Fase 9): admin vê tudo; rollout vê os próprios eventos;
+    // o resto vê "Acesso restrito" (a guarda de verdade é a API).
+    {
+      path: '/admin',
+      name: 'admin',
+      component: () => import('../view/pages/admin/AdminPage.vue'),
+      meta: { middleware: ['requireAuth'] },
+    },
   ],
 });
 

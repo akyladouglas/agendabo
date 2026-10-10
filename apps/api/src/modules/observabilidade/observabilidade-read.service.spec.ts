@@ -34,6 +34,7 @@ function make(opts?: {
     findUnique: jest
       .fn()
       .mockResolvedValue(opts?.me === undefined ? { observabilidadeEventosAtivo: true } : opts.me),
+    findMany: jest.fn().mockResolvedValue([]),
     updateMany: jest.fn().mockResolvedValue({ count: 1 }),
   };
   const llmCall = {
@@ -235,5 +236,47 @@ describe('ObservabilidadeReadService.setRollout (B6)', () => {
     await expect(
       svc.setRollout('nao-existe', { observabilidadeEventosAtivo: false }),
     ).rejects.toBeInstanceOf(NotFoundException);
+  });
+});
+
+describe('ObservabilidadeReadService.meFlags / listUsers (pagina Admin da web)', () => {
+  it('meFlags: flags lidos da FONTE (web decide a rota com isto)', async () => {
+    const { svc, user } = make();
+    user.findUnique.mockResolvedValueOnce({ isAdmin: true, observabilidadeEventosAtivo: false });
+    const res = await svc.meFlags('u1');
+    expect(user.findUnique.mock.calls[0]![0]!.select).toEqual({
+      isAdmin: true,
+      observabilidadeEventosAtivo: true,
+    });
+    expect(res).toEqual({ isAdmin: true, observabilidadeEventosAtivo: false });
+  });
+
+  it('meFlags: usuario inexistente no banco NAO explode — flags false', async () => {
+    const { svc } = make({ me: null });
+    await expect(svc.meFlags('fantasma')).resolves.toEqual({
+      isAdmin: false,
+      observabilidadeEventosAtivo: false,
+    });
+  });
+
+  it('listUsers: select minimo (nunca passwordHash), ordem estavel, shape do contracts', async () => {
+    const { svc, user } = make();
+    user.findMany.mockResolvedValueOnce([
+      {
+        id: '3f0f1e2c-1111-4aaa-8bbb-ccccdddd0001',
+        email: 'admin@example.com',
+        name: 'Admin',
+        isAdmin: true,
+        observabilidadeEventosAtivo: true,
+        createdAt: new Date('2026-10-01T00:00:00Z'),
+      },
+    ]);
+    const res = await svc.listUsers();
+    const arg = user.findMany.mock.calls[0]![0]!;
+    expect(arg.orderBy).toEqual({ createdAt: 'asc' });
+    expect(Object.keys(arg.select).sort()).toEqual(
+      ['createdAt', 'email', 'id', 'isAdmin', 'name', 'observabilidadeEventosAtivo'].sort(),
+    );
+    expect(res.items[0]).toMatchObject({ email: 'admin@example.com', isAdmin: true });
   });
 });

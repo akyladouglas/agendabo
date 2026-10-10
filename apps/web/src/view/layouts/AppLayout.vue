@@ -44,6 +44,15 @@
           >
             Perfil
           </RouterLink>
+          <!-- observabilidade aparece para admin ou rollout (a API confirma na hora) -->
+          <RouterLink
+            v-if="showAdminLink"
+            to="/admin"
+            class="od-move min-h-11 inline-flex items-center rounded-md px-3 text-sm font-medium"
+            :class="route.path === '/admin' ? 'text-foreground' : 'text-muted-foreground hover:text-foreground'"
+          >
+            Admin
+          </RouterLink>
         </div>
 
         <div class="ml-auto flex items-center gap-1">
@@ -138,6 +147,14 @@
           >
             <UserRound class="h-4 w-4" /> Perfil
           </button>
+          <button
+            v-if="showAdminLink"
+            class="od-move flex min-h-11 items-center gap-2 rounded-md px-3 text-left text-sm font-medium hover:bg-muted"
+            data-testid="drawer-admin"
+            @click="go('/admin')"
+          >
+            <Activity class="h-4 w-4" /> Admin
+          </button>
           <div class="mt-auto border-t border-border pt-2">
             <button
               class="od-move flex min-h-11 w-full items-center gap-2 rounded-md px-3 text-left text-sm font-medium text-danger hover:bg-muted"
@@ -162,10 +179,11 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
 import { RouterLink, useRoute, useRouter } from 'vue-router';
-import { CalendarDays, LogOut, Menu, Moon, Sun, UserRound } from 'lucide-vue-next';
+import { Activity, CalendarDays, LogOut, Menu, Moon, Sun, UserRound } from 'lucide-vue-next';
 import { useAuthStore } from '@/app/store/authStore';
 import { useThemeStore } from '@/app/store/themeStore';
 import { useReviewQuery } from '@/app/composables/queries/useReview.query';
+import { useObsMeQuery } from '@/app/composables/queries/useObservability.query';
 import Button from '../components/ui/button/Button.vue';
 import {
   DialogContent,
@@ -187,6 +205,16 @@ const menuOpen = ref(false);
 
 const reviewQuery = useReviewQuery();
 const reviewCount = computed(() => reviewQuery.data.value?.items.length ?? 0);
+
+/**
+ * Link "Admin" no header: aparece para admin OU rollout. Fonte = isAdmin do
+ * login + `/observabilidade/me` (barata, retry:false, staleTime 5min). Sem
+ * acesso a rota mostra "Acesso restrito" — o link é conveniência, não guarda.
+ */
+const obsMeQuery = useObsMeQuery();
+const showAdminLink = computed(
+  () => auth.user?.isAdmin === true || obsMeQuery.data.value !== undefined,
+);
 
 const displayName = computed(() => {
   const name = auth.user?.name?.trim();

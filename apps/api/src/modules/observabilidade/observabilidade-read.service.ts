@@ -1,5 +1,6 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import {
+  adminUsersResultSchema,
   botEventsQuerySchema,
   botEventsResultSchema,
   llmUsageQuerySchema,
@@ -34,6 +35,40 @@ export class ObservabilidadeReadService {
       select: { isAdmin: true },
     });
     return { id: callerId, isAdmin: me?.isAdmin ?? false };
+  }
+
+  /**
+   * GET /observabilidade/me — a web decide mostrar a rota de eventos com ESTA
+   * leitura (a mesma flag checada em listBotEvents; nunca o token).
+   */
+  async meFlags(callerId: string) {
+    const me = await this.prisma.user.findUnique({
+      where: { id: callerId },
+      select: { isAdmin: true, observabilidadeEventosAtivo: true },
+    });
+    return {
+      isAdmin: me?.isAdmin ?? false,
+      observabilidadeEventosAtivo: me?.observabilidadeEventosAtivo ?? false,
+    };
+  }
+
+  /**
+   * GET /admin/users (admin-only, página Admin da web): lista mínima p/ o filtro
+   * de eventos por usuário — ordem estável por conta mais antiga primeiro.
+   */
+  async listUsers() {
+    const rows = await this.prisma.user.findMany({
+      orderBy: { createdAt: 'asc' },
+      select: {
+        id: true,
+        email: true,
+        name: true,
+        isAdmin: true,
+        observabilidadeEventosAtivo: true,
+        createdAt: true,
+      },
+    });
+    return adminUsersResultSchema.parse({ items: rows });
   }
 
   /** GET /bot-events — o papel do chamador define o alcance da consulta. */

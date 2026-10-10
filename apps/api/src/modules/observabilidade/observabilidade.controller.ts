@@ -32,6 +32,12 @@ function zodMessage(err: unknown): string {
 export class ObservabilidadeController {
   constructor(private readonly service: ObservabilidadeReadService) {}
 
+  /** GET /observabilidade/me — flags de papel da sessão (web mostra a rota com isto). */
+  @Get('observabilidade/me')
+  async me(@CurrentUser() user: { id: string }) {
+    return this.service.meFlags(user.id);
+  }
+
   /** GET /bot-events — admin ve tudo; rollout ve os proprios; demais 404. */
   @Get('bot-events')
   async listEvents(
@@ -57,6 +63,13 @@ export class ObservabilidadeController {
       if (err instanceof ZodError) throw new BadRequestException(zodMessage(err));
       throw err;
     }
+  }
+
+  /** GET /admin/users — lista mínima p/ a página Admin (admin-only; filtro de eventos). */
+  @Get('admin/users')
+  @UseGuards(AdminGuard)
+  async listUsers() {
+    return this.service.listUsers();
   }
 
   /** PATCH /admin/users/:id/observabilidade — rollout on/off (admin-only, so a flag). */
