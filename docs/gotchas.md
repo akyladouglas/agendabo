@@ -38,8 +38,9 @@ parse e mandar para `needs_review` sem necessidade.
 
 **Problema:** duas instancias consumindo long-polling do mesmo bot causem `409 Conflict`.
 **Fix aplicado:** o bot roda num unico processo (dev: script `dev:bot`); antes de subir,
-`deleteWebhook` e chamado no boot. Em prod (Coolify): a env `BOT_GATEWAY_ENABLED=false`
-no servico api desliga o polling la; so o servico bot (`bot-main.js`) faz getUpdates.
+`deleteWebhook` e chamado no boot. Em prod (Coolify): o polling e OFF por default
+(`BOT_GATEWAY_ENABLED=false`); so o binario `bot-main.js` (servico bot) liga o gateway.
+A API HTTP nunca faz getUpdates, entao nunca ha dois consumidores.
 **Se acontecer de novo:** confira se nao ha outro processo/instancia com o mesmo token.
 
 ## 6. Telegram: `text` HTML com < & > derruba o sendMessage (bot fica mudo)
