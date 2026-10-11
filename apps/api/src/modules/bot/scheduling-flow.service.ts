@@ -1,35 +1,48 @@
-import { ForbiddenException, Injectable, Logger } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
+import { ForbiddenException, Injectable, Logger } from "@nestjs/common";
+import { ConfigService } from "@nestjs/config";
 import {
   applyShift,
   findMatchingAppointments,
   isValidDate,
   zonedTimeToUtc,
   type AppointmentLike,
-} from '@agendabo/schedule-core';
-import { z } from 'zod';
+} from "@agendabo/schedule-core";
+import { z } from "zod";
 import {
   AppointmentConflictError,
   AppointmentsService,
-} from '../appointments/appointments.service';
-import { PrismaService } from '../../shared/prisma/prisma.service';
-import { TelegramClientService } from '../../shared/telegram/telegram-client.service';
-import type { Env } from '../../config/env.validation';
-import { BotAccessService, type BotUser } from './bot-access.service';
-import { BOT_MESSAGES, escapeHtml, givesUpQuery, parseYesNo } from './messages';
-import { IntentClassifierService, type IntentFlowContext } from '../ai/intent-classifier.service';
+} from "../appointments/appointments.service";
+import { PrismaService } from "../../shared/prisma/prisma.service";
+import { TelegramClientService } from "../../shared/telegram/telegram-client.service";
+import type { Env } from "../../config/env.validation";
+import { BotAccessService, type BotUser } from "./bot-access.service";
+import {
+  BOT_MESSAGES,
+  escapeHtml,
+  givesUpQuery,
+  parseYesNo,
+  usableTitle,
+} from "./messages";
+import {
+  IntentClassifierService,
+  type IntentFlowContext,
+} from "../ai/intent-classifier.service";
 import {
   ReminderInterpreterService,
   resolveReminderShortcut,
-} from '../ai/reminder-interpreter.service';
-import { SchedulingInterpreterService } from '../ai/scheduling-interpreter.service';
-import { AppointmentEditInterpreterService } from '../ai/appointment-edit-interpreter.service';
+} from "../ai/reminder-interpreter.service";
+import { SchedulingInterpreterService } from "../ai/scheduling-interpreter.service";
+import { AppointmentEditInterpreterService } from "../ai/appointment-edit-interpreter.service";
 import {
   AgendaQueryService,
   AGENDA_QUERY_MAX_PERIOD_PROMPTS,
   type AgendaQueryResult,
-} from './agenda-query.service';
-import { resolveIntervaloRange, resolveSimboloRange, type SimboloConsulta } from './agenda-query';
+} from "./agenda-query.service";
+import {
+  resolveIntervaloRange,
+  resolveSimboloRange,
+  type SimboloConsulta,
+} from "./agenda-query";
 import {
   SchedulingFlowMachine,
   type BotReply,
@@ -38,15 +51,15 @@ import {
   type FlowSession,
   type HandleTurnInput,
   type ReminderClassified,
-} from './scheduling-flow.machine';
+} from "./scheduling-flow.machine";
 import {
   classificarEdicao,
   classificarExtracao,
   dayFromResolvedUtc,
   type EdicaoPayloadBruto,
   type ExtracaoPayloadBruto,
-} from './extraction-ruler';
-import { BotEventsService } from '../observabilidade/bot-events.service';
+} from "./extraction-ruler";
+import { BotEventsService } from "../observabilidade/bot-events.service";
 
 /** Borda zod dos callbacks de teclado (callback_data nao e confiavel por natureza). */
 const dayChoiceSchema = z.object({
@@ -56,26 +69,66 @@ const dayChoiceSchema = z.object({
 });
 const hourPickSchema = z.string().regex(/^([01]\d|2[0-3]):00$/);
 
+/**
+ * D1 da spec fluxo-criacao-robusto — zod-lite do sufixo da callback `flow:lembrete:*`
+ * (callback_data não é confiável): um dos 5 choices da máquina; desconhecido ⇒ null
+ * (o evento é ignorado com log — nunca vira fala).
+ */
+const REMINDER_CHOICES = ["24h", "3d", "countdown", "none", "custom"] as const;
+function parseReminderChoice(
+  sufixo: string,
+): (typeof REMINDER_CHOICES)[number] | null {
+  return (REMINDER_CHOICES as readonly string[]).includes(sufixo)
+    ? (sufixo as (typeof REMINDER_CHOICES)[number])
+    : null;
+}
+
+/**
+ * B1 da spec fluxo-criacao-robusto — falas de abertura do criar com MAIS que este número
+ * de palavras são falas de DADOS (ex.: timeout do extrator numa fala de 15 palavras), não
+ * de intenção ("marca uma consulta" = 3). Passou da régua e a extração FALHOU ⇒ o guiado
+ * abre PERGUNTANDO o título; a frase jamais vira título.
+ */
+const OPEN_FLOW_MAX_TITLE_WORDS = 6;
+
+/**
+ * D4 da spec fluxo-criacao-robusto — whitelist do fallback de `handleCallback`: labels
+ * já hoje roteáveis por fala e de custo ZERO (sim/não de proteção, remarcar/abortar do
+ * conflito, confirmar/alterar do resumo). Qualquer outro label de teclado com
+ * significado estruturado tem handler próprio (ou é ignorado) — clique nunca vira fala
+ * pro LLM nem re-dispara o portão da extração.
+ */
+const CALLBACK_TEXT_WHITELIST = new Set([
+  "sim",
+  "não",
+  "nao",
+  "confirmar",
+  "alterar",
+  "remarcar",
+  "abortar",
+]);
+
 /** Offset fixo do tz do usuario (minutos leste de UTC) — tz na borda (ADR-002). */
 export function tzOffsetMinutes(timeZone: string, at: Date): number {
-  const parts = new Intl.DateTimeFormat('en-US', {
+  const parts = new Intl.DateTimeFormat("en-US", {
     timeZone,
-    hourCycle: 'h23',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
+    hourCycle: "h23",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
   }).formatToParts(at);
-  const get = (t: string) => Number(parts.find((p) => p.type === t)?.value ?? 0);
+  const get = (t: string) =>
+    Number(parts.find((p) => p.type === t)?.value ?? 0);
   const asUtc = Date.UTC(
-    get('year'),
-    get('month') - 1,
-    get('day'),
-    get('hour'),
-    get('minute'),
-    get('second'),
+    get("year"),
+    get("month") - 1,
+    get("day"),
+    get("hour"),
+    get("minute"),
+    get("second"),
   );
   return Math.round((asUtc - Math.floor(at.getTime() / 1000) * 1000) / 60_000);
 }
@@ -124,8 +177,11 @@ export class SchedulingFlowService {
      */
     private readonly botEvents: BotEventsService,
   ) {
-    this.ttlMs = this.config.get('BOT_SESSION_TTL_MINUTES', { infer: true }) * 60_000; // decisao D2 do plano (30 min)
-    this.minConfidence = this.config.get('MIN_CONFIDENCE_TO_ACCEPT', { infer: true });
+    this.ttlMs =
+      this.config.get("BOT_SESSION_TTL_MINUTES", { infer: true }) * 60_000; // decisao D2 do plano (30 min)
+    this.minConfidence = this.config.get("MIN_CONFIDENCE_TO_ACCEPT", {
+      infer: true,
+    });
     this.machine = new SchedulingFlowMachine(this.ttlMs, this.minConfidence);
   }
 
@@ -139,7 +195,10 @@ export class SchedulingFlowService {
         this.logger.log(
           `bot: telegramId ${telegramId} sem cadastro — orientacao de cadastro enviada`,
         );
-        await this.telegram.sendMessage(telegramId, BOT_MESSAGES.cadastroNecessario);
+        await this.telegram.sendMessage(
+          telegramId,
+          BOT_MESSAGES.cadastroNecessario,
+        );
         return;
       }
       throw err;
@@ -155,12 +214,15 @@ export class SchedulingFlowService {
       user = await this.access.requireConfirmedUser(telegramId);
     } catch (err) {
       if (err instanceof ForbiddenException) {
-        await this.telegram.sendMessage(telegramId, BOT_MESSAGES.cadastroNecessario);
+        await this.telegram.sendMessage(
+          telegramId,
+          BOT_MESSAGES.cadastroNecessario,
+        );
         return;
       }
       throw err;
     }
-    await this.turn(user, { dayChoice: day, text: '' });
+    await this.turn(user, { dayChoice: day, text: "" });
   }
 
   /** Teclado de horas cheias (passo deterministico, sem LLM). */
@@ -171,7 +233,10 @@ export class SchedulingFlowService {
       user = await this.access.requireConfirmedUser(telegramId);
     } catch (err) {
       if (err instanceof ForbiddenException) {
-        await this.telegram.sendMessage(telegramId, BOT_MESSAGES.cadastroNecessario);
+        await this.telegram.sendMessage(
+          telegramId,
+          BOT_MESSAGES.cadastroNecessario,
+        );
         return;
       }
       throw err;
@@ -179,12 +244,44 @@ export class SchedulingFlowService {
     await this.turn(user, { timeChoice: time, text: time });
   }
 
-  /** Abre o fluxo de agendamento no guiado clássico (pergunta o título primeiro). */
-  private openFlow(user: BotUser, now: Date): void {
+  /**
+   * Abre o fluxo de agendamento no guiado clássico (pergunta o título primeiro).
+   * `titleSpeech` é a fala de INTENÇÃO do turno de abertura (spec mãe: "marca uma
+   * consulta" ⇒ título) — só o caminho `!openable` do off-flow injeta; o extrator ter
+   * FALHADO numa fala longa de dados nunca chega aqui com fala (B1).
+   */
+  private openFlow(
+    user: BotUser,
+    now: Date,
+    titleSpeech?: string,
+  ): Promise<void> {
     const fresh = this.machine.newSession(now);
     this.sessions.set(user.telegramId, fresh);
-    this.evento(user, 'flow_started', 'ok', { stage: 'flow.titulo' });
-    void this.send(user.telegramId, this.machine.startReplies(user.name));
+    this.evento(user, "flow_started", "ok", { stage: "flow.titulo" });
+    if (titleSpeech === undefined) {
+      return this.send(user.telegramId, this.machine.startReplies(user.name));
+    }
+    // a fala de intenção vira o passo título (UX "marca uma consulta" ⇒ título), sem
+    // re-classificar (a classificação de intenção do turno de abertura já foi gasta).
+    return (async () => {
+      const opened = this.sessions.get(user.telegramId)!;
+      const offsetMinutes = tzOffsetMinutes(user.timezone, now);
+      const existing = await this.existingConfirmedFuture(user.id, now);
+      const outcome = await this.machine.handleTurn({
+        session: opened,
+        user,
+        text: titleSpeech,
+        existing,
+        offsetMinutes,
+        now,
+      });
+      if (outcome.done) this.sessions.delete(user.telegramId);
+      await this.send(user.telegramId, outcome.replies);
+    })().catch((err: unknown) => {
+      this.logger.error(
+        `bot: fala de abertura do fluxo falhou p/ ${user.id}: ${String(err)}`,
+      );
+    });
   }
 
   /** Relógio da borda (testes substituem este método p/ determinismo). */
@@ -200,26 +297,28 @@ export class SchedulingFlowService {
    */
   private evento(
     user: BotUser,
-    type: Parameters<BotEventsService['registrar']>[1],
-    outcome: Parameters<BotEventsService['registrar']>[2],
-    input?: Parameters<BotEventsService['registrar']>[3],
+    type: Parameters<BotEventsService["registrar"]>[1],
+    outcome: Parameters<BotEventsService["registrar"]>[2],
+    input?: Parameters<BotEventsService["registrar"]>[3],
   ): void {
-    void this.botEvents.registrar(user, type, outcome, input).catch(() => undefined);
+    void this.botEvents
+      .registrar(user, type, outcome, input)
+      .catch(() => undefined);
   }
 
   /** Outcome do evento `llm_extraction` a partir do veredito da régua/espaço do interpretador. */
   private extractionOutcome(
-    kind: ExtractedClassified['kind'] | 'falhou' | 'unparseable',
-  ): 'ok' | 'parse_fail' | 'low_confidence' {
+    kind: ExtractedClassified["kind"] | "falhou" | "unparseable",
+  ): "ok" | "parse_fail" | "low_confidence" {
     if (
-      kind === 'falhou' ||
-      kind === 'unparseable' ||
-      kind === 'sem_quando' ||
-      kind === 'consumida'
+      kind === "falhou" ||
+      kind === "unparseable" ||
+      kind === "sem_quando" ||
+      kind === "consumida"
     )
-      return 'parse_fail';
-    if (kind === 'fraco' || kind === 'suspeito') return 'low_confidence';
-    return 'ok';
+      return "parse_fail";
+    if (kind === "fraco" || kind === "suspeito") return "low_confidence";
+    return "ok";
   }
 
   /**
@@ -229,25 +328,33 @@ export class SchedulingFlowService {
    * quando houver, senão o nil-uuid (a linha marca o evento, o conteúdo fica fora).
    */
   private conflictDialogId(session: FlowSession): string {
-    return session.candidate.edit?.appointmentId ?? '00000000-0000-0000-0000-000000000000';
+    return (
+      session.candidate.edit?.appointmentId ??
+      "00000000-0000-0000-0000-000000000000"
+    );
   }
 
   /** Registro da classificação do turno (ok OU falha — parse_fail é o caso que a fila existe p/ ver). */
   private eventoIntent(
     user: BotUser,
-    classified: { ok: true; intent: string; confidence: number } | { ok: false; reason: string },
+    classified:
+      | { ok: true; intent: string; confidence: number }
+      | { ok: false; reason: string },
     stage: string,
   ): void {
     if (classified.ok) {
-      this.evento(user, 'intent_classified', 'ok', {
+      this.evento(user, "intent_classified", "ok", {
         stage,
-        metadata: { intent: classified.intent, confidence: classified.confidence },
+        metadata: {
+          intent: classified.intent,
+          confidence: classified.confidence,
+        },
       });
       return;
     }
-    this.evento(user, 'llm_extraction', 'parse_fail', {
+    this.evento(user, "llm_extraction", "parse_fail", {
       stage,
-      metadata: { purpose: 'intent_classification', outcome: 'parse_fail' },
+      metadata: { purpose: "intent_classification", outcome: "parse_fail" },
     });
   }
 
@@ -255,19 +362,40 @@ export class SchedulingFlowService {
   private editVerdictOutcome(verdict: {
     location?: { kind: string };
     change?: { kind: string } | null;
-  }): 'ok' | 'parse_fail' | 'low_confidence' {
-    if (verdict.location?.kind === 'ask_descricao') return 'parse_fail';
-    if (verdict.change && verdict.change.kind !== 'ok') {
+  }): "ok" | "parse_fail" | "low_confidence" {
+    if (verdict.location?.kind === "ask_descricao") return "parse_fail";
+    if (verdict.change && verdict.change.kind !== "ok") {
       // reperguntar por confiança baixa da régua vs. fala sem quando: conservador = parse_fail
-      return 'parse_fail';
+      return "parse_fail";
     }
-    return 'ok';
+    return "ok";
   }
 
   /** Um turno: estado -> bordas (LLM/banco) -> maquina -> respostas/persistencia. */
   async turn(
     user: BotUser,
-    partial: { text?: string; dayChoice?: HandleTurnInput['dayChoice']; timeChoice?: string },
+    partial: {
+      text?: string;
+      dayChoice?: HandleTurnInput["dayChoice"];
+      timeChoice?: string;
+      /**
+       * D1 da spec fluxo-criacao-robusto — clique no teclado de lembrete decodificado
+       * na borda (`flow:lembrete:*`). Evento determinístico: zero fala, zero LLM.
+       */
+      reminderChoice?: HandleTurnInput["reminderChoice"];
+      /**
+       * Origem do turno (D4): `'callback'` = clique em botão ⇒ o portão da extração
+       * livre NUNCA roda. Default `'text'` = fala real do usuário.
+       */
+      origin?: "text" | "callback";
+      /**
+       * D4: o texto é label de botão WHITELISTADO (sim/não/confirmar/remarcar... ou
+       * escolha numérica) ⇒ a máquina consume como DADO do passo. A classificação de
+       * intenção (que perguntaria "isso é criar? editar?...") NUNCA roda p/ clique —
+       * um botão já diz o que é. Zero LLM por clique, whitelisted ou não.
+       */
+      rawLabel?: boolean;
+    },
   ): Promise<void> {
     const now = this.now();
     const offsetMinutes = tzOffsetMinutes(user.timezone, now);
@@ -279,80 +407,115 @@ export class SchedulingFlowService {
         `bot: sessao de ${user.telegramId} expirou (TTL ${this.ttlMs}ms) — descartada`,
       );
       this.sessions.delete(user.telegramId);
-      this.evento(user, 'flow_aborted', 'aborted', {
-        stage: 'session_expired',
-        metadata: { reason: 'ttl' },
+      this.evento(user, "flow_aborted", "aborted", {
+        stage: "session_expired",
+        metadata: { reason: "ttl" },
       });
       session = undefined;
     }
 
     // Fora do fluxo: LLM classifica a intencao do turno (ADR-008) e o roteia.
     if (!session) {
-      if (partial.dayChoice || partial.timeChoice) {
+      if (partial.dayChoice || partial.timeChoice || partial.reminderChoice) {
+        // clique sem sessão viva (teclado velho/TTL): nunca vira fala (D4).
         await this.telegram.sendMessage(user.telegramId, BOT_MESSAGES.fallback);
         return;
       }
-      await this.offFlowTurn(user, partial.text ?? '', now);
+      // D4: CLIQUE sem sessão (label residual de teclado) NUNCA vira fala de intenção —
+      // nenhum LLM roda; só a orientação padrão.
+      if (partial.origin === "callback") {
+        await this.telegram.sendMessage(user.telegramId, BOT_MESSAGES.fallback);
+        return;
+      }
+      await this.offFlowTurn(user, partial.text ?? "", now);
       return;
     }
 
-    const conflictPending = session.step === 'conflito';
+    const conflictPending = session.step === "conflito";
     const wasInConflict = conflictPending;
-    const context: IntentFlowContext = { inFlow: true, step: session.step, conflictPending };
-    // Passo deterministico (teclado) nao precisa do LLM; o que o usuario FALA sim.
-    const deterministic = Boolean(partial.dayChoice || partial.timeChoice);
+    const context: IntentFlowContext = {
+      inFlow: true,
+      step: session.step,
+      conflictPending,
+    };
+    // Passo determinístico (teclado) nao precisa do LLM; o que o usuario FALA sim.
+    // D1: o clique no atalho de lembrete é determinístico igual ao teclado de dia/hora.
+    const deterministic = Boolean(
+      partial.dayChoice || partial.timeChoice || partial.reminderChoice,
+    );
     // Passo `lembrete` (Fase 3): a fala é DADO do passo — o interpretador de lembrete
     // é a ÚNICA chamada de LLM deste turno (a classificação de intenção é substituída
     // por ele; desistência "deixa pra lá" continua determinística na máquina).
+    // D1: com `reminderChoice` (clique) o interpretador NUNCA roda — zero LLM.
+    // D4: label de botão (whitelist) no passo lembrete NÃO é fala do passo — o
+    // interpretador jamais roda p/ clique.
     const reminder =
-      !deterministic && session.step === 'lembrete'
-        ? await this.interpretReminder(partial.text ?? '', user.id)
+      !deterministic && !partial.rawLabel && session.step === "lembrete"
+        ? await this.interpretReminder(partial.text ?? "", user.id)
         : undefined;
     if (reminder) {
       // evento do interpretador do passo lembrete (atalho determinístico = ok sem LLM)
-      this.evento(user, 'llm_extraction', reminder.ok ? 'ok' : 'parse_fail', {
+      this.evento(user, "llm_extraction", reminder.ok ? "ok" : "parse_fail", {
         stage: `flow.${session.step}`,
-        metadata: { purpose: 'reminder_extraction', outcome: reminder.ok ? 'ok' : 'parse_fail' },
+        metadata: {
+          purpose: "reminder_extraction",
+          outcome: reminder.ok ? "ok" : "parse_fail",
+        },
       });
     }
     // Portão do atalho (Fase 4): a 1ª fala solta do criar é extração livre + régua
     // (spec regra 8). O portão é a máquina: `criar_aberto` OU `titulo` intocado (só
     // quando a fala chegou vazia de processamento — teclado/nada vira texto do passo).
+    // D4 da spec fluxo-criacao-robusto: um CLIQUE (origin 'callback') NUNCA re-dispara
+    // o portão — zero LLM por clique.
     const openCreate =
       !deterministic &&
+      partial.origin !== "callback" &&
       Boolean(partial.text && partial.text.trim()) &&
-      (session.step === 'criar_aberto' || (session.step === 'titulo' && !session.candidate.title));
+      (session.step === "criar_aberto" ||
+        // `titulo` intocado (sem candidato em curso): a fala solta ainda é hipótese do
+        // extrator. Com `startFromShortcut` o candidato JÁ veio do atalho — o título é
+        // DADO do passo (o portão já rodou; 1 LLM/turno — regra 22).
+        (session.step === "titulo" &&
+          !session.candidate.title &&
+          !session.candidate.startFromShortcut));
     // Fala livre em criar_aberto/titulo (Fase 4): extração livre + régua (regra 8).
     const extracted = openCreate
-      ? await this.runExtraction(partial.text ?? '', user, offsetMinutes, now)
+      ? await this.runExtraction(partial.text ?? "", user, offsetMinutes, now)
       : undefined;
     if (extracted) {
       const outcome = this.extractionOutcome(extracted.kind);
-      this.evento(user, 'llm_extraction', outcome, {
+      this.evento(user, "llm_extraction", outcome, {
         stage: `flow.${session.step}`,
-        metadata: { purpose: 'scheduling_extraction', outcome },
+        metadata: { purpose: "scheduling_extraction", outcome },
       });
     }
     // Fala livre nos passos de edição QUANDO o passo espera re-interpretação:
     // localização pendente (sem alvo) ou mudança de horário em `edit_propor`
     // (1 chamada LLM/turno). `edit_descricao` COM alvo é a confirmação de cancelar
-    // (DADO); `escolher_candidata` é escolha numérica (DADO).
-    const editStep = session.step === 'edit_descricao' || session.step === 'edit_propor';
+    // (DADO); `escolher_candidata` é escolha numérica (DADO). CLIQUE (callback) nunca
+    // é hipótese de re-interpretação (D4 — callback ≠ fala).
+    const editStep =
+      session.step === "edit_descricao" || session.step === "edit_propor";
     const hasTarget = Boolean(session.candidate.edit?.appointmentId);
     const editFree =
       !deterministic &&
+      partial.origin !== "callback" &&
       editStep &&
-      (session.step === 'edit_propor' ||
+      (session.step === "edit_propor" ||
         // alvo achado em edit_descricao: a fala é a MUDANÇA (modo change), não re-localização
-        (session.step === 'edit_descricao' && hasTarget && session.editMode !== 'cancel') ||
-        (!hasTarget && (session.candidate.edit?.candidates?.length ?? 0) === 0)) &&
+        (session.step === "edit_descricao" &&
+          hasTarget &&
+          session.editMode !== "cancel") ||
+        (!hasTarget &&
+          (session.candidate.edit?.candidates?.length ?? 0) === 0)) &&
       Boolean(partial.text && partial.text.trim()) &&
       !reminder &&
       !extracted;
-    const editMode: 'target' | 'change' = hasTarget ? 'change' : 'target';
+    const editMode: "target" | "change" = hasTarget ? "change" : "target";
     const editVerdict = editFree
       ? await this.runEditInterpret(
-          partial.text ?? '',
+          partial.text ?? "",
           session,
           existing,
           user,
@@ -363,41 +526,51 @@ export class SchedulingFlowService {
       : undefined;
     if (editVerdict) {
       const outcome = this.editVerdictOutcome(editVerdict);
-      this.evento(user, 'llm_extraction', outcome, {
+      this.evento(user, "llm_extraction", outcome, {
         stage: `flow.${session.step}`,
-        metadata: { purpose: 'edit_interpretation', outcome },
+        metadata: { purpose: "edit_interpretation", outcome },
       });
     }
     const justOpenedEdit = this.consumedTurns.get(user.telegramId) === true;
     this.consumedTurns.delete(user.telegramId);
+    // D4: CLIQUE nunca vira hipótese de intenção — `rawLabel` (whitelist/número) pula a
+    // classificação; um callback com QUALQUER outro texto nem chega aqui (handleCallback
+    // roteia cada família de label ou responde sem LLM).
     const classified =
-      reminder || deterministic || extracted || editVerdict || justOpenedEdit
+      reminder ||
+      deterministic ||
+      extracted ||
+      editVerdict ||
+      justOpenedEdit ||
+      partial.rawLabel
         ? undefined
-        : await this.classifier.classify(partial.text ?? '', context, { userId: user.id });
+        : await this.classifier.classify(partial.text ?? "", context, {
+            userId: user.id,
+          });
     if (classified) this.eventoIntent(user, classified, `flow.${session.step}`);
 
     // Consulta de agenda com o fluxo de criar ABERTO (Fase 2, decisão #5): responde
     // a consulta e volta ao mesmo passo — o estado do candidato fica intacto e o
     // passo é re-perguntado ao final. Desistência/cancelar continuam com prioridade.
-    if (!deterministic && classified?.ok && classified.intent === 'consultar') {
+    if (!deterministic && classified?.ok && classified.intent === "consultar") {
       const result = await this.runAgendaQuery(
         user,
-        partial.text ?? '',
+        partial.text ?? "",
         offsetMinutes,
         now,
         session.step,
       );
-      this.evento(user, 'query_answered', 'ok', {
+      this.evento(user, "query_answered", "ok", {
         stage: `flow.${session.step}`,
         metadata: { count: result.count ?? undefined },
       });
-      await this.telegram.sendMessage(user.telegramId, result.replies[0] ?? '');
+      await this.telegram.sendMessage(user.telegramId, result.replies[0] ?? "");
       // volta à pergunta do passo atual, sem reclassificar (1 chamada LLM/turno).
-      if (session.step === 'criar_aberto') {
+      if (session.step === "criar_aberto") {
         await this.replayCreateGate(
           user,
           session,
-          partial.text ?? '',
+          partial.text ?? "",
           existing,
           offsetMinutes,
           now,
@@ -411,7 +584,7 @@ export class SchedulingFlowService {
     const outcome = await this.machine.handleTurn({
       session,
       user,
-      text: partial.text ?? '',
+      text: partial.text ?? "",
       classified,
       reminder,
       extracted,
@@ -423,6 +596,7 @@ export class SchedulingFlowService {
       now,
       dayChoice: partial.dayChoice,
       timeChoice: partial.timeChoice,
+      reminderChoice: partial.reminderChoice,
     });
 
     if (outcome.done) this.sessions.delete(user.telegramId);
@@ -431,36 +605,41 @@ export class SchedulingFlowService {
     // --- registro pós-resposta (Fase 9 / spec B2): a fala do usuário JÁ saiu;
     // os eventos descrevem o que a máquina decidiu neste turno (ADR-0017).
     // Sessão QUE terminou sem escrita = desistência/aborto da máquina.
-    if (outcome.done && !outcome.create && !outcome.needsReview && !outcome.update) {
-      this.evento(user, 'flow_aborted', 'aborted', {
+    if (
+      outcome.done &&
+      !outcome.create &&
+      !outcome.needsReview &&
+      !outcome.update
+    ) {
+      this.evento(user, "flow_aborted", "aborted", {
         stage: `flow.${session.step}`,
-        metadata: { reason: 'user_exit' },
+        metadata: { reason: "user_exit" },
       });
     }
     // sessão que continua no passo `conflito` ACHADO AGORA (findConflict da máquina
     // acabou de apresentar o conflitante ao usuário = diálogo de conflito no chat).
     // O `resolved` nasce quando o usuário responde ao passo (abaixo, no passo saindo
     // de `conflito`) — um par dialog/resolved por rodada.
-    if (!outcome.done && session.step === 'conflito' && !wasInConflict) {
-      this.evento(user, 'conflict_dialog', 'conflict', {
-        stage: 'flow.conflito',
+    if (!outcome.done && session.step === "conflito" && !wasInConflict) {
+      this.evento(user, "conflict_dialog", "conflict", {
+        stage: "flow.conflito",
         metadata: { appointmentId: this.conflictDialogId(session) },
       });
     }
-    if (wasInConflict && session.step !== 'conflito') {
+    if (wasInConflict && session.step !== "conflito") {
       // o metadata `conflict_resolved` só tem `strategy` (a variante zod com
       // `count` não existe na prática: o dialog guarda 1 linha e o resolved
       // corresponde a ela). Estratégia pela máquina: ramo de conflito do criar
       // (sessão ainda viva = usuário foi para o dia/hora = move-self; sessão
       // encerrada tratada abaixo).
-      this.evento(user, 'conflict_resolved', 'ok', {
-        stage: outcome.done ? 'flow.done' : `flow.${session.step}`,
-        metadata: { strategy: outcome.done ? 'move_other' : 'move_self' },
+      this.evento(user, "conflict_resolved", "ok", {
+        stage: outcome.done ? "flow.done" : `flow.${session.step}`,
+        metadata: { strategy: outcome.done ? "move_other" : "move_self" },
       });
     }
     if (outcome.update) {
-      this.evento(user, 'edit_applied', 'ok', {
-        stage: 'flow.edit',
+      this.evento(user, "edit_applied", "ok", {
+        stage: "flow.edit",
         metadata: {
           appointmentId: outcome.update.appointmentId,
           fields: Object.keys(outcome.update.patch),
@@ -472,10 +651,14 @@ export class SchedulingFlowService {
       await this.persist(user, outcome.create);
     }
     // ações de escrita pedidas pela máquina (Fase 4: needs_review / editar / cancelar)
-    if (outcome.needsReview) await this.persistNeedsReview(user, session, outcome.needsReview);
+    if (outcome.needsReview)
+      await this.persistNeedsReview(user, session, outcome.needsReview);
     if (outcome.update) await this.applyUpdate(user, outcome.update);
     if (outcome.cancelAppointment) {
-      await this.applyCancelAppointment(user, outcome.cancelAppointment.appointmentId);
+      await this.applyCancelAppointment(
+        user,
+        outcome.cancelAppointment.appointmentId,
+      );
     }
   }
 
@@ -484,7 +667,10 @@ export class SchedulingFlowService {
    * LLM (D3 do plano — "não"/"24h antes"/"3-2-1" não gastam LLM); fala livre vai ao
    * interpretador. A máquina só consome o veredito (padrão do `classified`).
    */
-  private async interpretReminder(text: string, userId: string): Promise<ReminderClassified> {
+  private async interpretReminder(
+    text: string,
+    userId: string,
+  ): Promise<ReminderClassified> {
     const shortcut = resolveReminderShortcut(text);
     if (shortcut) return { ok: true, regras: shortcut };
     const result = await this.reminderInterpreter.interpretar(text, { userId });
@@ -494,12 +680,12 @@ export class SchedulingFlowService {
 
   /** Data de hoje no tz do usuário — bloco volátil do prompt (llm.md #4). */
   private todayLocal(user: BotUser, now: Date): string {
-    return new Intl.DateTimeFormat('pt-BR', {
+    return new Intl.DateTimeFormat("pt-BR", {
       timeZone: user.timezone,
-      weekday: 'long',
-      day: 'numeric',
-      month: 'long',
-      year: 'numeric',
+      weekday: "long",
+      day: "numeric",
+      month: "long",
+      year: "numeric",
     }).format(now);
   }
 
@@ -521,20 +707,32 @@ export class SchedulingFlowService {
       { userId: user.id },
     );
     if (!result.ok) {
-      return { kind: 'falhou', reason: result.reason, titleHint: text.trim().slice(0, 200) };
+      // B1 da spec fluxo-criacao-robusto: NENHUM titleHint — a fala inteira jamais vira
+      // título; a máquina cai no guiado PERGUNTANDO o título (passo `titulo`).
+      return { kind: "falhou", reason: result.reason };
     }
     const data = result.data;
-    const dayOnly = /^\d{4}-\d{2}-\d{2}T09:00(?::00(?:\.000)?)?(Z|[+-]\d{2}:\d{2})$/.test(
-      data.startsAt,
-    );
+    // B2 da heurística da borda: título que é a fala quase inteira (ou verbo de intenção)
+    // é TÍTULO AUSENTE (B3 pergunta). A régua valida o QUANDO com o title bruto (a
+    // tipologia não muda); só as SAÍDAS para a máquina é que descartam o título:
+    // `aceito` ⇒ `sem_titulo` (início reaproveitado, título perguntado); `quando_parcial`
+    // ⇒ sem título; needs_review ⇒ título é hipótese como qualquer campo (vive em
+    // rawText — nada confirmado no chat).
+    const titleUsavel =
+      usableTitle(data.title, text) && data.title.trim() !== "";
+    const dayOnly =
+      /^\d{4}-\d{2}-\d{2}T09:00(?::00(?:\.000)?)?(Z|[+-]\d{2}:\d{2})$/.test(
+        data.startsAt,
+      );
     if (dayOnly) {
       // hora 09:00 é o marcador do prompt ("não disse a hora"); o CALENDÁRIO do ISO é o
       // dia local do usuário (ADR-002) — materializamos no offset real da conta e a
       // régua deriva o dia de volta. Offset do ISO ≠ tz da conta ⇒ sem confiança no
       // calendário: cai na régua cheia e vira needs_review "parse_falho".
-      const m = /^(\d{4})-(\d{2})-(\d{2})T09:00(?::00(?:\.000)?)?(Z|[+-]\d{2}:\d{2})$/.exec(
-        data.startsAt,
-      );
+      const m =
+        /^(\d{4})-(\d{2})-(\d{2})T09:00(?::00(?:\.000)?)?(Z|[+-]\d{2}:\d{2})$/.exec(
+          data.startsAt,
+        );
       const embedded = m ? this.offsetOfIso(m[7]!) : null;
       if (m && embedded === offsetMinutes) {
         const inst = zonedTimeToUtc(
@@ -543,15 +741,26 @@ export class SchedulingFlowService {
         );
         const day = dayFromResolvedUtc(inst, offsetMinutes);
         if (day) {
-          this.logger.log(`bot: extracao quando_parcial (dia ${day.day}) p/ ${user.id}`);
-          return { kind: 'quando_parcial', data: { title: data.title, day } };
+          this.logger.log(
+            `bot: extracao quando_parcial (dia ${day.day}) p/ ${user.id}`,
+          );
+          return {
+            kind: "quando_parcial",
+            data: {
+              ...(titleUsavel ? { title: data.title } : {}),
+              day,
+            },
+          };
         }
       }
     }
     const payload: ExtracaoPayloadBruto = {
       title: data.title,
       startsAt: data.startsAt,
-      ...(data.durationMinutes !== undefined ? { durationMinutes: data.durationMinutes } : {}),
+      ...(data.endsAt !== undefined ? { endsAt: data.endsAt } : {}),
+      ...(data.durationMinutes !== undefined
+        ? { durationMinutes: data.durationMinutes }
+        : {}),
       confidence: data.confidence,
       ...(data.dateEvidence ? { dateEvidence: data.dateEvidence } : {}),
     };
@@ -563,48 +772,92 @@ export class SchedulingFlowService {
     this.logger.log(
       `bot: extracao ${v.verdict} p/ ${user.id} (conf ${data.confidence}, modelo ok)`,
     );
+    if (data.endsAt !== undefined && data.durationMinutes !== undefined) {
+      // A3: endsAt manda; durationMinutes inconsistente é IGNORADA pela régua — só log.
+      const endMs = new Date(data.endsAt).getTime();
+      if (
+        Number.isFinite(endMs) &&
+        endMs !==
+          new Date(data.startsAt).getTime() + data.durationMinutes * 60_000
+      ) {
+        // L6 do review: promovido a log (frequência baixa, valor de diagnóstico do drift).
+        this.logger.log(
+          `bot: extracao com endsAt E durationMinutes inconsistentes p/ ${user.id} — ` +
+            `duração ignorada em favor do fim dito (A3)`,
+        );
+      }
+    }
     switch (v.verdict) {
-      case 'aceito':
+      case "aceito":
+        if (!titleUsavel) {
+          // B2/B3: início materializado + título inutilizável ⇒ candidato SEM título;
+          // a máquina pergunta o título reaproveitando o quando (nunca hipótese muda).
+          return {
+            kind: "sem_titulo",
+            data: {
+              startUtc: v.candidate.startUtc,
+              endUtc: v.candidate.endUtc,
+              endExtracted: data.endsAt !== undefined,
+              ...(v.candidate.dateEvidence
+                ? { dateEvidence: v.candidate.dateEvidence }
+                : {}),
+            },
+          };
+        }
         return {
-          kind: 'aceito',
+          kind: "aceito",
           data: {
             title: v.candidate.title,
             startUtc: v.candidate.startUtc,
             endUtc: v.candidate.endUtc,
-            ...(v.candidate.dateEvidence ? { dateEvidence: v.candidate.dateEvidence } : {}),
+            // Decisão 5: a RÉGUA viu fim EXPLÍCITO na fala? O payload é a fonte (não o
+            // veredito): sem endsAt, a máquina PERGUNTA o passo `fim` (nunca 1h mudo).
+            endExtracted: data.endsAt !== undefined,
+            ...(v.candidate.dateEvidence
+              ? { dateEvidence: v.candidate.dateEvidence }
+              : {}),
           },
         };
-      case 'fraco':
-      case 'suspeito':
+      case "fraco":
+      case "suspeito":
         return {
           kind: v.verdict,
           data: {
             title: v.candidate.title,
             startUtc: v.candidate.startUtc,
             endUtc: v.candidate.endUtc,
-            ...(v.candidate.dateEvidence ? { dateEvidence: v.candidate.dateEvidence } : {}),
+            ...(v.candidate.dateEvidence
+              ? { dateEvidence: v.candidate.dateEvidence }
+              : {}),
           },
           reviewReason: v.reviewReason,
           rawText: result.rawText,
         };
-      case 'sem_quando':
-      case 'invalido':
-        return { kind: 'sem_quando' };
-      case 'quando_parcial': {
+      case "sem_quando":
+      case "invalido":
+        return { kind: "sem_quando" };
+      case "fim_invalido":
+        // A2/ADR-010: início bom + fim dito ilegível/≤ início — NUNCA needs_review;
+        // a máquina reaproveita o início e pergunta só o fim.
+        return { kind: "fim_invalido", data: v.candidate };
+      case "quando_parcial": {
         // o modelo marcou 09:00 mas o offset era da conta e o materializou a cima;
         // este ramo só pega ISO dia-cheio que a régua derivou (impossível hoje — mantém
         // a tipologia total): converte o dia direto.
-        return { kind: 'quando_parcial', data: { title: v.title, day: v.day } };
+        return {
+          kind: "quando_parcial",
+          data: { ...(titleUsavel ? { title: v.title } : {}), day: v.day },
+        };
       }
     }
   }
 
   /** Offset (minutos) embutido num sufixo ISO ("Z" | "+HH:MM" | "-HH:MM"); null = ilegível. */
   private offsetOfIso(tz: string): number | null {
-    if (tz === 'Z') return 0;
+    if (tz === "Z") return 0;
     const m = /^([+-])(\d{2}):(\d{2})$/.exec(tz);
     if (!m) return null;
-    const sign = m[1] === '-' ? -1 : 1;
+    const sign = m[1] === "-" ? -1 : 1;
     return sign * (Number(m[2]) * 60 + Number(m[3]));
   }
 
@@ -622,11 +875,11 @@ export class SchedulingFlowService {
     user: BotUser,
     offsetMinutes: number,
     now: Date,
-    mode: 'target' | 'change',
+    mode: "target" | "change",
   ): Promise<{
-    location?: NonNullable<HandleTurnInput['editLocation']>;
+    location?: NonNullable<HandleTurnInput["editLocation"]>;
     picked?: EditCandidateLike;
-    change?: NonNullable<HandleTurnInput['editChange']>;
+    change?: NonNullable<HandleTurnInput["editChange"]>;
   }> {
     const result = await this.editInterpreter.interpretar(
       text,
@@ -636,21 +889,32 @@ export class SchedulingFlowService {
     const edit = session.candidate.edit;
     if (!result.ok) {
       // editar NUNCA vira needs_review (spec regra 20): re-pergunta.
-      this.logger.log(`bot: interpretacao de edicao falhou (${result.reason}) p/ ${user.id}`);
-      return mode === 'change'
-        ? { change: { kind: 'reperguntar', reason: result.reason } }
-        : { location: { kind: 'ask_descricao' } };
+      this.logger.log(
+        `bot: interpretacao de edicao falhou (${result.reason}) p/ ${user.id}`,
+      );
+      return mode === "change"
+        ? { change: { kind: "reperguntar", reason: result.reason } }
+        : { location: { kind: "ask_descricao" } };
     }
     const data = result.data;
 
     // ---- mudança de horário na candidata já achada (esperada: mode change) ----
-    if (mode === 'change' && edit?.appointmentId && edit.fromStartUtc && edit.fromEndUtc) {
+    if (
+      mode === "change" &&
+      edit?.appointmentId &&
+      edit.fromStartUtc &&
+      edit.fromEndUtc
+    ) {
       const payload: EdicaoPayloadBruto = {
         acao: data.acao,
         confidence: data.confidence,
         ...(data.novoInicio ? { novoInicio: data.novoInicio } : {}),
-        ...(data.novaDuracaoMin !== undefined ? { novaDuracaoMin: data.novaDuracaoMin } : {}),
-        ...(data.deslocamentoMin !== undefined ? { deslocamentoMin: data.deslocamentoMin } : {}),
+        ...(data.novaDuracaoMin !== undefined
+          ? { novaDuracaoMin: data.novaDuracaoMin }
+          : {}),
+        ...(data.deslocamentoMin !== undefined
+          ? { deslocamentoMin: data.deslocamentoMin }
+          : {}),
         ...(data.evidence ? { evidence: data.evidence } : {}),
       };
       const v = classificarEdicao(payload, {
@@ -658,8 +922,8 @@ export class SchedulingFlowService {
         now,
         offsetMinutes,
       });
-      if (v.verdict === 'reperguntar') {
-        return { change: { kind: 'reperguntar', reason: v.reason } };
+      if (v.verdict === "reperguntar") {
+        return { change: { kind: "reperguntar", reason: v.reason } };
       }
       let toStart = edit.fromStartUtc;
       let toEnd = edit.fromEndUtc;
@@ -680,7 +944,7 @@ export class SchedulingFlowService {
       }
       return {
         change: {
-          kind: 'ok',
+          kind: "ok",
           toStartUtc: toStart,
           toEndUtc: toEnd,
           ...(data.descricao?.trim() ? { toTitle: data.descricao.trim() } : {}),
@@ -691,12 +955,15 @@ export class SchedulingFlowService {
     // ---- localização do alvo (100% determinística — spec regra 11) ----
     const rawRange = this.resolveAlvoRange(data.alvoData, offsetMinutes, now);
     const unresolvedAlvo = Boolean(data.alvoData) && rawRange === undefined;
-    const descricao = (data.descricao?.trim() || edit?.descricao || '').trim() || undefined;
+    const descricao =
+      (data.descricao?.trim() || edit?.descricao || "").trim() || undefined;
     const horizon = new Date(now.getTime() + 90 * 24 * 60 * 60_000);
-    const rows = await this.appointments.listOverlapping(user.id, now, horizon, [
-      'confirmed',
-      'needs_review',
-    ]);
+    const rows = await this.appointments.listOverlapping(
+      user.id,
+      now,
+      horizon,
+      ["confirmed", "needs_review"],
+    );
     // Filtro determinístico: o texto só casa com o TÍTULO (findMatchingAppointments);
     // a data só estreita quando o modelo deu um período RESOLVÍVEL. "consulta de
     // quinta" com `from` horário não resolvesível ⇒ busca pelo título e apresenta.
@@ -708,13 +975,13 @@ export class SchedulingFlowService {
     const resolvedRange = descricao ? undefined : rawRange;
     this.logger.log(
       `bot: localizacao p/ ${user.id}: ${candidates.length} candidata(s) ` +
-        `(descricao="${descricao ?? ''}", alvoData=${data.alvoData ? 'sim' : 'nao'})`,
+        `(descricao="${descricao ?? ""}", alvoData=${data.alvoData ? "sim" : "nao"})`,
     );
     if (candidates.length === 0) {
       if (!descricao && (!resolvedRange || unresolvedAlvo)) {
-        return { location: { kind: 'ask_descricao' } };
+        return { location: { kind: "ask_descricao" } };
       }
-      return { location: { kind: 'none' } };
+      return { location: { kind: "none" } };
     }
     if (candidates.length === 1) {
       const only = candidates[0]!;
@@ -723,7 +990,9 @@ export class SchedulingFlowService {
         // (candidate só no turno que ABRIU a edição — nunca para re-apresentar.)
         return { picked: this.toEditCandidate(only) };
       }
-      return { location: { kind: 'candidate', data: this.toEditCandidate(only) } };
+      return {
+        location: { kind: "candidate", data: this.toEditCandidate(only) },
+      };
     }
     if (edit?.appointmentId) {
       // candidata já apresentada (sessão em confirmação/escolha): não re-localizar —
@@ -732,8 +1001,10 @@ export class SchedulingFlowService {
     }
     return {
       location: {
-        kind: 'candidates',
-        data: candidates.slice(0, BOT_MESSAGES.maxCandidatas).map((a) => this.toEditCandidate(a)),
+        kind: "candidates",
+        data: candidates
+          .slice(0, BOT_MESSAGES.maxCandidatas)
+          .map((a) => this.toEditCandidate(a)),
       },
     };
   }
@@ -763,15 +1034,26 @@ export class SchedulingFlowService {
   ): { start: Date; end: Date } | undefined {
     if (!alvoData) return undefined;
     if (alvoData.simbolo) {
-      return resolveSimboloRange(alvoData.simbolo as SimboloConsulta, now, offsetMinutes);
+      return resolveSimboloRange(
+        alvoData.simbolo as SimboloConsulta,
+        now,
+        offsetMinutes,
+      );
     }
     if (alvoData.from && alvoData.to) {
-      const r = resolveIntervaloRange({ from: alvoData.from, to: alvoData.to }, offsetMinutes);
+      const r = resolveIntervaloRange(
+        { from: alvoData.from, to: alvoData.to },
+        offsetMinutes,
+      );
       if (r) return r;
       // ISO com hora em vez de dia-cheio: usa os instantes crus (meio-aberto preservado).
       const start = new Date(alvoData.from);
       const end = new Date(alvoData.to);
-      if (isValidDate(start) && isValidDate(end) && end.getTime() > start.getTime()) {
+      if (
+        isValidDate(start) &&
+        isValidDate(end) &&
+        end.getTime() > start.getTime()
+      ) {
         return { start, end };
       }
     }
@@ -787,22 +1069,23 @@ export class SchedulingFlowService {
   private async offFlowLocate(
     user: BotUser,
     text: string,
-    action: 'edit' | 'cancel',
+    action: "edit" | "cancel",
     now: Date,
   ): Promise<void> {
     const offsetMinutes = tzOffsetMinutes(user.timezone, now);
     const session = this.machine.newSession(now);
-    session.step = 'edit_descricao';
+    session.step = "edit_descricao";
     session.editMode = action;
     session.editRedefine = true;
     session.candidate.edit = {
-      action: action === 'cancel' ? 'cancelar' : 'editar',
+      action: action === "cancel" ? "cancelar" : "editar",
       descricao: text.trim() || undefined,
       tries: 0,
     };
     this.sessions.set(user.telegramId, session);
-    this.evento(user, 'flow_started', 'ok', {
-      stage: action === 'cancel' ? 'flow.cancelar_descricao' : 'flow.edit_descricao',
+    this.evento(user, "flow_started", "ok", {
+      stage:
+        action === "cancel" ? "flow.cancelar_descricao" : "flow.edit_descricao",
     });
     // O turno que ABRIU a edição já gastou a classificação de intenção do usuário;
     // a sessão abre com [editResumed=true] para o próximo turno (escolha "1", "sim")
@@ -817,7 +1100,7 @@ export class SchedulingFlowService {
       user,
       offsetMinutes,
       now,
-      'target',
+      "target",
     );
     const outcome = await this.machine.handleTurn({
       session,
@@ -834,7 +1117,10 @@ export class SchedulingFlowService {
     await this.send(user.telegramId, outcome.replies);
     if (outcome.update) await this.applyUpdate(user, outcome.update);
     if (outcome.cancelAppointment) {
-      await this.applyCancelAppointment(user, outcome.cancelAppointment.appointmentId);
+      await this.applyCancelAppointment(
+        user,
+        outcome.cancelAppointment.appointmentId,
+      );
     }
   }
 
@@ -848,15 +1134,18 @@ export class SchedulingFlowService {
    * botões de remarcar/abortar e sessão encerrada. Pré-check alinhado = o
    * conflito é descoberto na hora certa, com o fluxo de resposta certo.
    */
-  private async existingConfirmedFuture(userId: string, now: Date): Promise<AppointmentLike[]> {
+  private async existingConfirmedFuture(
+    userId: string,
+    now: Date,
+  ): Promise<AppointmentLike[]> {
     const horizon = new Date(now.getTime() + 90 * 24 * 60 * 60_000);
     const rows = await this.prisma.appointment.findMany({
       where: {
         userId,
-        status: { in: ['confirmed', 'needs_review'] },
+        status: { in: ["confirmed", "needs_review"] },
         endsAt: { gt: now, lte: horizon },
       },
-      orderBy: { startsAt: 'asc' },
+      orderBy: { startsAt: "asc" },
       select: { id: true, title: true, startsAt: true, endsAt: true },
     });
     return rows;
@@ -874,7 +1163,11 @@ export class SchedulingFlowService {
    * - `continuar_fluxo`/`remarcar`/`fora_do_escopo` => resposta padrao.
    * - `cancelar` => nada em andamento, so responde.
    */
-  private async offFlowTurn(user: BotUser, text: string, now: Date): Promise<void> {
+  private async offFlowTurn(
+    user: BotUser,
+    text: string,
+    now: Date,
+  ): Promise<void> {
     const telegramId = user.telegramId;
     const offsetMinutes = tzOffsetMinutes(user.timezone, now);
     const pending = this.takePendingQuery(telegramId, now);
@@ -888,64 +1181,96 @@ export class SchedulingFlowService {
       }
       if (pending.count >= AGENDA_QUERY_MAX_PERIOD_PROMPTS) {
         // 2× pedido de período sem sucesso: encerra educadamente (spec Fase 2 #14).
-        await this.telegram.sendMessage(telegramId, this.agendaQuery.closePolitely());
+        await this.telegram.sendMessage(
+          telegramId,
+          this.agendaQuery.closePolitely(),
+        );
         return;
       }
-      await this.answerAgendaQuery(user, text, offsetMinutes, now, undefined, pending.count);
+      await this.answerAgendaQuery(
+        user,
+        text,
+        offsetMinutes,
+        now,
+        undefined,
+        pending.count,
+      );
       return;
     }
 
-    const classified = await this.classifier.classify(text, { inFlow: false }, { userId: user.id });
-    this.eventoIntent(user, classified, 'off_flow');
+    const classified = await this.classifier.classify(
+      text,
+      { inFlow: false },
+      { userId: user.id },
+    );
+    this.eventoIntent(user, classified, "off_flow");
     if (!classified.ok || classified.confidence < this.minConfidence) {
-      await this.telegram.sendMessage(telegramId, BOT_MESSAGES.pediuEsclarecimento);
+      await this.telegram.sendMessage(
+        telegramId,
+        BOT_MESSAGES.pediuEsclarecimento,
+      );
       return;
     }
     switch (classified.intent) {
-      case 'consultar': {
-        await this.answerAgendaQuery(user, text, offsetMinutes, now, undefined, 0);
+      case "consultar": {
+        await this.answerAgendaQuery(
+          user,
+          text,
+          offsetMinutes,
+          now,
+          undefined,
+          0,
+        );
         return;
       }
-      case 'criar':
-      case 'substituir_atual': {
+      case "criar":
+      case "substituir_atual": {
         // Fase 4 (spec regra 8): o criar abre no portão do atalho SOMENTE se a fala solta
         // trouxer um candidato (extração livre + régua). Sem candidato, o criar abre no
         // guiado clássico perguntando o título (spec A5/Fase 1: a fala de intenção que
         // abriu o fluxo ainda pode ser o título — nada se perde).
         const existing = await this.existingConfirmedFuture(user.id, now);
-        const extracted = await this.runExtraction(text, user, offsetMinutes, now);
+        const extracted = await this.runExtraction(
+          text,
+          user,
+          offsetMinutes,
+          now,
+        );
         {
           const outcome = this.extractionOutcome(extracted.kind);
-          this.evento(user, 'llm_extraction', outcome, {
-            stage: 'off_flow.criar_gate',
-            metadata: { purpose: 'scheduling_extraction', outcome },
+          this.evento(user, "llm_extraction", outcome, {
+            stage: "off_flow.criar_gate",
+            metadata: { purpose: "scheduling_extraction", outcome },
           });
         }
         const openable =
-          extracted.kind === 'aceito' ||
-          extracted.kind === 'quando_parcial' ||
-          extracted.kind === 'fraco' ||
-          extracted.kind === 'suspeito';
-        const fresh = this.machine.newSession(now);
+          extracted.kind === "aceito" ||
+          extracted.kind === "sem_titulo" || // início utilizável: abre no portão, a máquina pergunta o título
+          extracted.kind === "fim_invalido" || // o início é utilizável ⇒ abre no portão e a máquina pergunta o fim
+          extracted.kind === "quando_parcial" ||
+          extracted.kind === "fraco" ||
+          extracted.kind === "suspeito";
         if (!openable) {
-          this.openFlow(user, now);
-          // a fala vira o passo título (UX "marca uma consulta" ⇒ título), sem re-classificar
-          const opened = this.sessions.get(user.telegramId)!;
-          const outcome = await this.machine.handleTurn({
-            session: opened,
-            user,
-            text,
-            existing,
-            offsetMinutes,
-            now,
-          });
-          if (outcome.done) this.sessions.delete(user.telegramId);
-          await this.send(user.telegramId, outcome.replies);
+          // B1 da spec fluxo-criacao-robusto: a fala de INTENÇÃO curta ("marca uma
+          // consulta") ainda pode ser o título (spec mãe), mas uma fala LONGA de dados
+          // em que a extração FALHOU (timeout/parse de 15 palavras) jamais vira título —
+          // o guiado abre do zero PERGUNTANDO o título.
+          const words = text.trim().split(/\s+/).filter(Boolean).length;
+          if (words > OPEN_FLOW_MAX_TITLE_WORDS) {
+            this.logger.log(
+              `bot: extracao falhou em fala de abertura longa (${words} palavras) p/ ` +
+                `${user.id} — titulo NAO preenchido (B1)`,
+            );
+            await this.openFlow(user, now);
+            return;
+          }
+          await this.openFlow(user, now, text);
           return;
         }
-        fresh.step = 'criar_aberto';
+        const fresh = this.machine.newSession(now);
+        fresh.step = "criar_aberto";
         this.sessions.set(user.telegramId, fresh);
-        this.evento(user, 'flow_started', 'ok', { stage: 'flow.criar_aberto' });
+        this.evento(user, "flow_started", "ok", { stage: "flow.criar_aberto" });
         const outcome = await this.machine.handleTurn({
           session: fresh,
           user,
@@ -962,11 +1287,11 @@ export class SchedulingFlowService {
         }
         return;
       }
-      case 'editar_compromisso':
-        return this.offFlowLocate(user, text, 'edit', now);
-      case 'cancelar_compromisso':
-        return this.offFlowLocate(user, text, 'cancel', now);
-      case 'cancelar': {
+      case "editar_compromisso":
+        return this.offFlowLocate(user, text, "edit", now);
+      case "cancelar_compromisso":
+        return this.offFlowLocate(user, text, "cancel", now);
+      case "cancelar": {
         await this.telegram.sendMessage(telegramId, BOT_MESSAGES.cancelado);
         return;
       }
@@ -985,9 +1310,15 @@ export class SchedulingFlowService {
     inFlowStep: string | undefined,
     priorPrompts: number,
   ): Promise<void> {
-    const result = await this.runAgendaQuery(user, text, offsetMinutes, now, inFlowStep);
-    this.evento(user, 'query_answered', 'ok', {
-      stage: 'off_flow',
+    const result = await this.runAgendaQuery(
+      user,
+      text,
+      offsetMinutes,
+      now,
+      inFlowStep,
+    );
+    this.evento(user, "query_answered", "ok", {
+      stage: "off_flow",
       metadata: { count: result.count },
     });
     for (const reply of result.replies) {
@@ -1027,13 +1358,20 @@ export class SchedulingFlowService {
     inFlowStep: string | undefined,
   ): Promise<AgendaQueryResult> {
     try {
-      return await this.agendaQuery.run(user, { text, offsetMinutes, now, inFlowStep });
+      return await this.agendaQuery.run(user, {
+        text,
+        offsetMinutes,
+        now,
+        inFlowStep,
+      });
     } catch (err) {
-      this.logger.error(`bot: falha na consulta de agenda p/ ${user.id}: ${String(err)}`);
-      this.evento(user, 'query_answered', 'error', { stage: 'off_flow' });
+      this.logger.error(
+        `bot: falha na consulta de agenda p/ ${user.id}: ${String(err)}`,
+      );
+      this.evento(user, "query_answered", "error", { stage: "off_flow" });
       return {
         replies: [
-          'Deu um probleminha aqui do meu lado e eu não consegui consultar 😞 Tenta de novo?',
+          "Deu um probleminha aqui do meu lado e eu não consegui consultar 😞 Tenta de novo?",
         ],
         awaitingPeriod: false,
       };
@@ -1054,7 +1392,7 @@ export class SchedulingFlowService {
     const outcome = await this.machine.handleTurn({
       session,
       user,
-      text: '',
+      text: "",
       classified: undefined,
       existing: [],
       offsetMinutes,
@@ -1102,7 +1440,7 @@ export class SchedulingFlowService {
       endsAt: Date;
       notes: string | null;
       notificationRules: {
-        type: 'none' | 'before_hours' | 'before_days' | 'countdown_3_2_1';
+        type: "none" | "before_hours" | "before_days" | "countdown_3_2_1";
         value?: number;
       }[];
       timezone: string;
@@ -1118,12 +1456,12 @@ export class SchedulingFlowService {
           notes: create.notes ?? undefined,
           notificationRules: create.notificationRules,
         },
-        { origin: 'bot' },
+        { origin: "bot" },
       );
       // pós-commit (D-P6): a linha existe, o id existe — auditoria com o id,
       // nunca com o título (proibido pelo zod do metadata).
-      this.evento(user, 'flow_completed', 'ok', {
-        stage: 'flow.criado',
+      this.evento(user, "flow_completed", "ok", {
+        stage: "flow.criado",
         metadata: { appointmentId: created.id },
       });
     } catch (err) {
@@ -1134,11 +1472,13 @@ export class SchedulingFlowService {
           err.conflictWith.endsAt,
           user.timezone,
         );
-        this.logger.warn(`bot: conflito de corrida ao criar p/ ${user.id} — nada foi salvo`);
-        this.evento(user, 'conflict_dialog', 'conflict', {
-          stage: 'flow.criado',
+        this.logger.warn(
+          `bot: conflito de corrida ao criar p/ ${user.id} — nada foi salvo`,
+        );
+        this.evento(user, "conflict_dialog", "conflict", {
+          stage: "flow.criado",
           // sem id: nada foi gravado; nil-uuid marca o evento sem conteúdo (ADR-0017)
-          metadata: { appointmentId: '00000000-0000-0000-0000-000000000000' },
+          metadata: { appointmentId: "00000000-0000-0000-0000-000000000000" },
         });
         await this.telegram.sendMessage(
           user.telegramId,
@@ -1146,10 +1486,12 @@ export class SchedulingFlowService {
         );
         return;
       }
-      this.logger.error(`bot: falha ao criar compromisso p/ ${user.id}: ${String(err)}`);
+      this.logger.error(
+        `bot: falha ao criar compromisso p/ ${user.id}: ${String(err)}`,
+      );
       await this.telegram.sendMessage(
         user.telegramId,
-        'Deu um probleminha aqui do meu lado e eu não consegui salvar 😞 Tenta de novo em instantes?',
+        "Deu um probleminha aqui do meu lado e eu não consegui salvar 😞 Tenta de novo em instantes?",
       );
     }
   }
@@ -1163,7 +1505,7 @@ export class SchedulingFlowService {
     user: BotUser,
     _session: FlowSession | undefined,
     needsReview: NonNullable<
-      Awaited<ReturnType<SchedulingFlowMachine['handleTurn']>>['needsReview']
+      Awaited<ReturnType<SchedulingFlowMachine["handleTurn"]>>["needsReview"]
     >,
   ): Promise<void> {
     try {
@@ -1173,8 +1515,8 @@ export class SchedulingFlowService {
           title: needsReview.title,
           startsAt: needsReview.startsAt,
           endsAt: needsReview.endsAt,
-          status: 'needs_review',
-          origin: 'bot',
+          status: "needs_review",
+          origin: "bot",
           rawText: needsReview.rawText,
           reviewReason: needsReview.reviewReason,
         },
@@ -1186,19 +1528,21 @@ export class SchedulingFlowService {
       // por substring (o reviewReason da régua é texto humano); o pior caso e
       // 'parse_fail', que descreve honestamente "a régua nao confiou".
       const reason = /confian/i.test(needsReview.reviewReason)
-        ? 'low_confidence'
+        ? "low_confidence"
         : /conflito/i.test(needsReview.reviewReason)
-          ? 'conflict_aborted'
-          : 'parse_fail';
-      this.evento(user, 'needs_review', 'needs_review', {
-        stage: 'flow.régua',
+          ? "conflict_aborted"
+          : "parse_fail";
+      this.evento(user, "needs_review", "needs_review", {
+        stage: "flow.régua",
         metadata: { reason },
       });
     } catch (err) {
-      this.logger.error(`bot: falha ao salvar needs_review p/ ${user.id}: ${String(err)}`);
+      this.logger.error(
+        `bot: falha ao salvar needs_review p/ ${user.id}: ${String(err)}`,
+      );
       await this.telegram.sendMessage(
         user.telegramId,
-        'Deu um probleminha aqui do meu lado e eu não consegui anotar pra revisão 😞 Tenta de novo?',
+        "Deu um probleminha aqui do meu lado e eu não consegui anotar pra revisão 😞 Tenta de novo?",
       );
     }
   }
@@ -1216,26 +1560,34 @@ export class SchedulingFlowService {
     },
   ): Promise<void> {
     try {
-      await this.appointments.update(user.id, update.appointmentId, update.patch);
+      await this.appointments.update(
+        user.id,
+        update.appointmentId,
+        update.patch,
+      );
     } catch (err) {
       if (err instanceof AppointmentConflictError) {
         // A sessão já encerrou com o "Feito!" (a máquina emitiu done). Reabre a sessão
         // no passo de re-pergunta do quando (spec C13) para o usuário tentar outro horário.
-        this.logger.log(`bot: conflito ao editar ${update.appointmentId} — re-pergunta o quando`);
-        this.evento(user, 'conflict_dialog', 'conflict', {
-          stage: 'flow.edit_propor',
+        this.logger.log(
+          `bot: conflito ao editar ${update.appointmentId} — re-pergunta o quando`,
+        );
+        this.evento(user, "conflict_dialog", "conflict", {
+          stage: "flow.edit_propor",
           metadata: { appointmentId: update.appointmentId },
         });
         // Estado completo da re-pergunta (spec C13): a máquina monta a mensagem de
         // conflito a partir de `edit` + `editConflict` no próximo turno (re-posta a
         // cada fala sem quando; limite de 3 tentativas incluiu esta).
         const session = this.machine.newSession(new Date());
-        session.editMode = 'edit';
+        session.editMode = "edit";
         session.candidate.edit = {
-          action: 'editar',
+          action: "editar",
           appointmentId: update.appointmentId,
           fromTitle: update.title,
-          ...(update.patch.startsAt ? { toStartUtc: update.patch.startsAt } : {}),
+          ...(update.patch.startsAt
+            ? { toStartUtc: update.patch.startsAt }
+            : {}),
           ...(update.patch.endsAt ? { toEndUtc: update.patch.endsAt } : {}),
           tries: 2,
           lastConflict: {
@@ -1244,13 +1596,13 @@ export class SchedulingFlowService {
             endsAt: err.conflictWith.endsAt,
           },
         };
-        session.step = 'edit_propor';
+        session.step = "edit_propor";
         this.sessions.set(user.telegramId, session);
         const now2 = new Date();
         const outcome = await this.machine.handleTurn({
           session,
           user,
-          text: '',
+          text: "",
           existing: [],
           offsetMinutes: tzOffsetMinutes(user.timezone, now2),
           now: now2,
@@ -1263,10 +1615,12 @@ export class SchedulingFlowService {
         await this.send(user.telegramId, outcome.replies);
         return;
       }
-      this.logger.error(`bot: falha ao editar compromisso p/ ${user.id}: ${String(err)}`);
+      this.logger.error(
+        `bot: falha ao editar compromisso p/ ${user.id}: ${String(err)}`,
+      );
       await this.telegram.sendMessage(
         user.telegramId,
-        'Deu um probleminha aqui do meu lado e eu não consegui mudar 😞 Tenta de novo?',
+        "Deu um probleminha aqui do meu lado e eu não consegui mudar 😞 Tenta de novo?",
       );
     }
   }
@@ -1275,36 +1629,45 @@ export class SchedulingFlowService {
    * "sim" do cancelar (spec D14, decisão #2 do plano: APAGAR): `remove` do service —
    * o cascade do Prisma derruba as linhas de outbox e jobs viram no-op (regra 12).
    */
-  private async applyCancelAppointment(user: BotUser, appointmentId: string): Promise<void> {
+  private async applyCancelAppointment(
+    user: BotUser,
+    appointmentId: string,
+  ): Promise<void> {
     try {
       await this.appointments.remove(user.id, appointmentId);
-      this.evento(user, 'cancelled', 'ok', {
-        stage: 'flow.cancelar',
-        metadata: { appointmentId, via: 'bot' },
+      this.evento(user, "cancelled", "ok", {
+        stage: "flow.cancelar",
+        metadata: { appointmentId, via: "bot" },
       });
     } catch (err) {
-      this.logger.error(`bot: falha ao cancelar compromisso p/ ${user.id}: ${String(err)}`);
-      this.evento(user, 'cancelled', 'error', {
-        stage: 'flow.cancelar',
-        metadata: { appointmentId, via: 'bot' },
+      this.logger.error(
+        `bot: falha ao cancelar compromisso p/ ${user.id}: ${String(err)}`,
+      );
+      this.evento(user, "cancelled", "error", {
+        stage: "flow.cancelar",
+        metadata: { appointmentId, via: "bot" },
       });
       await this.telegram.sendMessage(
         user.telegramId,
-        'Deu um probleminha aqui do meu lado e eu não consegui cancelar 😞 Tenta de novo?',
+        "Deu um probleminha aqui do meu lado e eu não consegui cancelar 😞 Tenta de novo?",
       );
     }
   }
 
-  private formatUtcRange(startsAt: Date, endsAt: Date, timeZone: string): string {
+  private formatUtcRange(
+    startsAt: Date,
+    endsAt: Date,
+    timeZone: string,
+  ): string {
     const fmt = (d: Date) =>
-      new Intl.DateTimeFormat('pt-BR', {
+      new Intl.DateTimeFormat("pt-BR", {
         timeZone,
-        weekday: 'short',
-        day: '2-digit',
-        month: '2-digit',
-        hour: '2-digit',
-        minute: '2-digit',
-        hourCycle: 'h23',
+        weekday: "short",
+        day: "2-digit",
+        month: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        hourCycle: "h23",
       }).format(d);
     return `${fmt(startsAt)}–${fmt(endsAt)}`;
   }
@@ -1314,19 +1677,27 @@ export class SchedulingFlowService {
     for (const reply of replies) {
       // parse_mode HTML => todo texto dinâmico (que ecoa fala do usuário) precisa de escape.
       const text = escapeHtml(reply.text);
-      if (reply.kind === 'buttons') {
+      if (reply.kind === "buttons") {
         await this.telegram
           .getClient()
           .telegram.sendMessage(telegramId, text, {
-            parse_mode: 'HTML',
+            parse_mode: "HTML",
             reply_markup: {
               inline_keyboard: [
-                reply.buttons.map((label) => ({ text: label, callback_data: `flow:${label}` })),
+                reply.buttons.map((label) => ({
+                  text: label,
+                  // D1/D5 da spec fluxo-criacao-robusto: teclado de lembrete usa a
+                  // callback ESTRUTURADA (`flow:lembrete:*`) — clique nunca vira fala.
+                  callback_data:
+                    reply.buttonPayloads?.[label] ?? `flow:${label}`,
+                })),
               ],
             },
           })
           .catch((err: unknown) => {
-            this.logger.error(`bot: falha ao enviar c/ teclado p/ ${telegramId}: ${String(err)}`);
+            this.logger.error(
+              `bot: falha ao enviar c/ teclado p/ ${telegramId}: ${String(err)}`,
+            );
           });
         continue;
       }
@@ -1334,11 +1705,28 @@ export class SchedulingFlowService {
     }
   }
 
-  /** Handler fino encaminha callback_data dos teclados p/ ca. */
+  /**
+   * Handler fino encaminha callback_data dos teclados p/ cada caminho. D4 da spec
+   * fluxo-criacao-robusto: clique NUNCA é fala genérica — cada família de label tem
+   * roteamento próprio e o fallback é restrito à whitelist de labels de custo zero.
+   */
   async handleCallback(telegramId: string, data: string): Promise<void> {
-    if (!data.startsWith('flow:')) return;
-    const label = data.slice('flow:'.length);
-    if (label === 'hoje' || label === 'amanhã' || label === 'amanha') {
+    if (!data.startsWith("flow:")) return;
+    const label = data.slice("flow:".length);
+    // D1 da spec fluxo-criacao-robusto: atalho do teclado de lembrete ⇒ evento
+    // determinístico (`reminderChoice`) direto p/ a máquina. ZERO handleText, ZERO LLM.
+    if (label.startsWith("lembrete:")) {
+      const choice = parseReminderChoice(label.slice("lembrete:".length));
+      if (!choice) {
+        this.logger.warn(
+          `bot: callback de lembrete desconhecida ignorada: "${data}"`,
+        );
+        return;
+      }
+      await this.turnForCallback(telegramId, { reminderChoice: choice });
+      return;
+    }
+    if (label === "hoje" || label === "amanhã" || label === "amanha") {
       await this.pickShortcutDay(telegramId, label);
       return;
     }
@@ -1346,32 +1734,99 @@ export class SchedulingFlowService {
     if (day) {
       const now = this.now();
       const year = day[3] ? Number(day[3]) : now.getUTCFullYear();
-      await this.handleDayPick(telegramId, { year, month: Number(day[2]), day: Number(day[1]) });
+      await this.handleDayPick(telegramId, {
+        year,
+        month: Number(day[2]),
+        day: Number(day[1]),
+      });
       return;
     }
     if (/^([01]\d|2[0-3]):00$/.test(label)) {
       await this.handleTimePick(telegramId, label);
       return;
     }
-    // sim/não, remarcar, abortar, confirmar, alterar, hoje...: seguem como fala normal.
-    await this.handleText(telegramId, label);
+    // D4: escolha numérica de candidata ("1".."31" — o teclado/lista usa 1..N) segue
+    // como DADO do passo determinístico (a máquina decide com a lista da sessão).
+    if (/^\d{1,2}$/.test(label)) {
+      await this.turnForCallback(telegramId, { text: label, rawLabel: true });
+      return;
+    }
+    // Whitelist: sim/não/confirmar/alterar/remarcar/abortar — labels já roteáveis por
+    // fala e de custo zero. QUALQUER outro label (teclado velho, futuro) NÃO vira fala:
+    // log + pediuEsclarecimento (o clique não parece morto, mas nenhum LLM roda).
+    if (CALLBACK_TEXT_WHITELIST.has(label.toLowerCase())) {
+      await this.turnForCallback(telegramId, { text: label, rawLabel: true });
+      return;
+    }
+    this.logger.warn(
+      `bot: label de callback fora da whitelist ignorada: "${data}"`,
+    );
+    try {
+      const user = await this.access.requireConfirmedUser(telegramId);
+      await this.telegram.sendMessage(
+        user.telegramId,
+        BOT_MESSAGES.pediuEsclarecimento,
+      );
+    } catch {
+      await this.telegram.sendMessage(
+        telegramId,
+        BOT_MESSAGES.cadastroNecessario,
+      );
+    }
   }
 
-  private async pickShortcutDay(telegramId: string, label: string): Promise<void> {
+  /**
+   * Turno ORIGINADO DE CLIQUE (D4/D6): nunca re-dispara o portão da extração livre
+   * (`origin: 'callback'`) e o texto residual só existe para os passos determinísticos
+   * whitelistados acima (escolha numérica / sim-não).
+   */
+  private async turnForCallback(
+    telegramId: string,
+    partial: {
+      text?: string;
+      reminderChoice?: HandleTurnInput["reminderChoice"];
+      rawLabel?: boolean;
+    },
+  ): Promise<void> {
+    let user: BotUser;
+    try {
+      user = await this.access.requireConfirmedUser(telegramId);
+    } catch (err) {
+      if (err instanceof ForbiddenException) {
+        await this.telegram.sendMessage(
+          telegramId,
+          BOT_MESSAGES.cadastroNecessario,
+        );
+        return;
+      }
+      throw err;
+    }
+    await this.turn(user, { text: "", origin: "callback", ...partial });
+  }
+
+  private async pickShortcutDay(
+    telegramId: string,
+    label: string,
+  ): Promise<void> {
     // resolve hoje/amanha no tz do usuario (deterministico, spec decisao #7).
     try {
       const user = await this.access.requireConfirmedUser(telegramId);
       const now = this.now();
       const offset = tzOffsetMinutes(user.timezone, now);
-      const shift = label === 'hoje' ? 0 : 1;
-      const probe = new Date(now.getTime() + shift * 24 * 60 * 60_000 + offset * 60_000);
+      const shift = label === "hoje" ? 0 : 1;
+      const probe = new Date(
+        now.getTime() + shift * 24 * 60 * 60_000 + offset * 60_000,
+      );
       await this.handleDayPick(telegramId, {
         year: probe.getUTCFullYear(),
         month: probe.getUTCMonth() + 1,
         day: probe.getUTCDate(),
       });
     } catch {
-      await this.telegram.sendMessage(telegramId, BOT_MESSAGES.cadastroNecessario);
+      await this.telegram.sendMessage(
+        telegramId,
+        BOT_MESSAGES.cadastroNecessario,
+      );
     }
   }
 

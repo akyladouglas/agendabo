@@ -1,18 +1,18 @@
-import { Injectable, Logger } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
+import { Injectable, Logger } from "@nestjs/common";
+import { ConfigService } from "@nestjs/config";
 import {
   extrairAgendamentoSchema,
   extrairAgendamentoTool,
   type ExtrairAgendamentoOutput,
-} from '@agendabo/contracts';
-import type { Env } from '../../config/env.validation';
-import { LlmCallContextService } from './llm-call-context';
+} from "@agendabo/contracts";
+import type { Env } from "../../config/env.validation";
+import { LlmCallContextService } from "./llm-call-context";
 import type {
   MessageCreateTool,
   MessagesCreateParams,
   MessagesCreateResult,
-} from './anthropic-messages-client';
-import { AnthropicClientProvider } from './anthropic-client.provider';
+} from "./anthropic-messages-client";
+import { AnthropicClientProvider } from "./anthropic-client.provider";
 
 /**
  * Resultado discriminado do EXTRATOR do criar (Fase 4, spec llm-avancado regra 5):
@@ -23,26 +23,36 @@ import { AnthropicClientProvider } from './anthropic-client.provider';
  */
 export type SchedulingExtraction =
   | { ok: true; data: ExtrairAgendamentoOutput; rawText: string }
-  | { ok: false; reason: 'parse' | 'low_confidence' | 'no_tool_use' };
+  | { ok: false; reason: "parse" | "low_confidence" | "no_tool_use" };
 
 const MAX_TOKENS = 256;
 
 /** System prompt estável (cache_control) — "hoje" vive no bloco volátil (llm.md #4). */
 const SYSTEM_PROMPT = [
-  'Voce extrai UM compromisso novo da fala do usuario para a ferramenta extrair_agendamento.',
-  'Responda SEMPRE usando a ferramenta; nunca invente outros campos.',
-  '',
-  'Regras:',
-  '- Use a data de hoje informada no prompt (no timezone do usuario) para resolver datas',
+  "Voce extrai UM compromisso novo da fala do usuario para a ferramenta extrair_agendamento.",
+  "Responda SEMPRE usando a ferramenta; nunca invente outros campos.",
+  "",
+  "Regras:",
+  "- Use a data de hoje informada no prompt (no timezone do usuario) para resolver datas",
   '  relativas ("quinta", "semana que vem", "depois de amanha").',
-  '- startsAt: ISO-8601 COM offset explicito do timezone do usuario (ex.: 2026-10-08T14:00:00-03:00).',
-  '  NUNCA mande hora sem offset nem em UTC se o usuario falou no horario dele.',
-  '- Se o usuario nao disse a HORA, use 09:00 no dia entendido e BAIXE a confidence (<= 0.5).',
-  '- Se nao ha dia/hora na fala, use a data de hoje as 09:00 (com offset) e confidence <= 0.3.',
-  '- durationMinutes apenas quando o usuario estimou duracao; senao omita.',
-  '- dateEvidence: o trecho EXATO da fala que fundamentou a data (p/ auditoria).',
-  '- Voce NUNCA decide se o compromisso e valido: so traduz. Na duvida, confidence baixa.',
-].join('\n');
+  "- startsAt: ISO-8601 COM offset explicito do timezone do usuario (ex.: 2026-10-08T14:00:00-03:00).",
+  "  NUNCA mande hora sem offset nem em UTC se o usuario falou no horario dele.",
+  "- Se o usuario nao disse a HORA, use 09:00 no dia entendido e BAIXE a confidence (<= 0.5).",
+  "- Se nao ha dia/hora na fala, use a data de hoje as 09:00 (com offset) e confidence <= 0.3.",
+  "- durationMinutes apenas quando o usuario estimou duracao; senao omita.",
+  '- Quando o usuario der INICIO E FIM ("de 19h hoje ate 17h na segunda", "das 8h as 17h do dia 12"),',
+  "  devolva endsAt (ISO-8601 COM offset) com o FIM que o usuario disse. Copie os dois instantes;",
+  "  NUNCA calcule duracao nem subtraia horarios (quem calcula e o sistema). Sem fim na fala,",
+  "  OMITA endsAt (o bot pergunta o fim depois).",
+  '- title: apenas o NOME curto do compromisso ("viagem para Lucena"), NUNCA a frase inteira nem',
+  '  verbo de intencao. "tenho um novo compromisso, uma viagem para Lucena" => title "viagem para',
+  '  Lucena". Sem nome de evento na fala, use uma palavra generica ("compromisso") e confidence baixa.',
+  '- Dia-da-semana sozinho ("segunda") = PROXIMA ocorrencia daquele dia com data >= hoje (hoje no',
+  '  timezone do usuario). Se hoje e segunda, "segunda" E hoje; "proxima segunda" ou "segunda que',
+  '  vem" = a de +7 dias. Sempre preencha dateEvidence com o trecho exato da fala.',
+  "- dateEvidence: o trecho EXATO da fala que fundamentou a data (p/ auditoria).",
+  "- Voce NUNCA decide se o compromisso e valido: so traduz. Na duvida, confidence baixa.",
+].join("\n");
 
 /**
  * Extrator do CRIAR em fala solta (Fase 4, spec regra 5/A1): tool calling + safeParse +
@@ -67,41 +77,47 @@ export class SchedulingInterpreterService {
     observability?: { userId?: string },
   ): Promise<SchedulingExtraction> {
     const userId = observability?.userId;
-    const minConfidence = this.config.get('MIN_CONFIDENCE_TO_ACCEPT', { infer: true });
+    const minConfidence = this.config.get("MIN_CONFIDENCE_TO_ACCEPT", {
+      infer: true,
+    });
     const models = [
-      this.config.get('LLM_MODEL_PRIMARY', { infer: true }),
-      this.config.get('LLM_MODEL_ESCALATION', { infer: true }),
+      this.config.get("LLM_MODEL_PRIMARY", { infer: true }),
+      this.config.get("LLM_MODEL_ESCALATION", { infer: true }),
     ];
 
-    let lastFailure: Extract<SchedulingExtraction, { ok: false }>['reason'] = 'no_tool_use';
+    let lastFailure: Extract<SchedulingExtraction, { ok: false }>["reason"] =
+      "no_tool_use";
     for (const [index, model] of models.entries()) {
       const escalation = index > 0;
       let response: MessagesCreateResult;
       try {
         // llm_calls (Fase 9/D-P2): escopo lexico — run() abarge a chamada.
-        response = await this.llmCtx.run({ userId, purpose: 'scheduling_extraction' }, () =>
-          this.client.create(this.buildParams(model, text, context)),
+        response = await this.llmCtx.run(
+          { userId, purpose: "scheduling_extraction" },
+          () => this.client.create(this.buildParams(model, text, context)),
         );
       } catch (err) {
         // timeout/erro de rede: única tentativa extra e no modelo de escalada (llm.md #7).
         this.logger.warn(
-          `LLM (${model}) falhou: ${String(err)}${escalation ? '' : ' — escalando'}`,
+          `LLM (${model}) falhou: ${String(err)}${escalation ? "" : " — escalando"}`,
         );
-        lastFailure = 'parse';
+        lastFailure = "parse";
         continue;
       }
 
-      const toolUse = response.content.find((b) => b.type === 'tool_use');
-      if (!toolUse || toolUse.type !== 'tool_use') {
-        lastFailure = 'no_tool_use';
+      const toolUse = response.content.find((b) => b.type === "tool_use");
+      if (!toolUse || toolUse.type !== "tool_use") {
+        lastFailure = "no_tool_use";
         if (!escalation) continue;
         break;
       }
 
       const parsed = extrairAgendamentoSchema.safeParse(toolUse.input);
       if (!parsed.success) {
-        this.logger.warn(`Resposta do LLM (${model}) falhou no safeParse: ${parsed.error.message}`);
-        lastFailure = 'parse';
+        this.logger.warn(
+          `Resposta do LLM (${model}) falhou no safeParse: ${parsed.error.message}`,
+        );
+        lastFailure = "parse";
         continue; // escala para tentar de novo no modelo maior
       }
       if (parsed.data.confidence < minConfidence) {
@@ -125,22 +141,36 @@ export class SchedulingInterpreterService {
     return {
       model,
       max_tokens: MAX_TOKENS,
-      system: [{ type: 'text', text: SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } }],
+      system: [
+        {
+          type: "text",
+          text: SYSTEM_PROMPT,
+          cache_control: { type: "ephemeral" },
+        },
+      ],
       tools: [
         {
           name: extrairAgendamentoTool.name,
           description: extrairAgendamentoTool.description,
-          input_schema: extrairAgendamentoTool.input_schema as MessageCreateTool['input_schema'],
+          input_schema:
+            extrairAgendamentoTool.input_schema as MessageCreateTool["input_schema"],
         },
       ],
-      tool_choice: { type: 'tool', name: extrairAgendamentoTool.name },
-      messages: [{ role: 'user', content: this.buildUserContent(text, context) }],
+      tool_choice: { type: "tool", name: extrairAgendamentoTool.name },
+      messages: [
+        { role: "user", content: this.buildUserContent(text, context) },
+      ],
     };
   }
 
-  private buildUserContent(text: string, context: { todayLocal: string }): string {
-    const lines: string[] = [`data de hoje no timezone do usuario: ${context.todayLocal}`];
+  private buildUserContent(
+    text: string,
+    context: { todayLocal: string },
+  ): string {
+    const lines: string[] = [
+      `data de hoje no timezone do usuario: ${context.todayLocal}`,
+    ];
     lines.push(`fala do usuario: """${text}"""`);
-    return lines.join('\n');
+    return lines.join("\n");
   }
 }

@@ -88,9 +88,18 @@ Ele extraiu título + dia + horário + duração de uma vez; as regras decidiram
 dia, hora, fim e a confirmação final — e vai direto perguntar **notas e lembretes**.
 Depois vem o resumo igual ao **A1**.
 
-- Uma fala sem duração ("consulta quinta 14h") vira 1h por padrão.
+- Intervalo completo na frase? "de 19h hoje até 17h na segunda" ele entende os **dois
+  horários** e ecoa o intervalo inteiro ("viagem para lucena — sáb 10/10 19:00 →
+  seg 12/10 17:00"). Dias diferentes são normais: viagem de sexta até segunda é um bloco só.
+- "na segunda" sem data? Ele pega a **próxima segunda** a partir de hoje (dita numa
+  segunda, "segunda" é hoje) e **sempre mostra a data que entendeu** — nada de chute
+  silencioso.
+- Uma fala só com o início ("consulta quinta 14h")? Ele ecoa o que entendeu e **pergunta
+  que horas termina** — ele não chuta mais 1h. (Duração só se você der: "por 1 hora".)
+- Título ele **não** copia da sua frase inteira: se sacar um nome curto ("viagem para
+  Lucena"), usa como sugestão e ecoa no resumo; senão, **pergunta** como chamar.
 - Conflito no horário entendido? Aí ele mostra o conflito (**A2**) antes de salvar.
-- Entendeu só parte ("quinta uma consulta")? Pula o dia e pergunta só o que falta.
+- Entendeu só parte ("quinta uma consulta")? Ecoa e pergunta só o que falta.
 
 ### A7. Ele não entendeu direito → fila de revisão ✅ (Fase 4)
 
@@ -198,27 +207,35 @@ Máximo 2 perguntas. Depois ele desiste com educação.
 
 ### B5. Etapa `lembrete` — escolha de lembretes (Fase 3)
 
-Quando o fluxo chega na etapa `lembrete` (depois das notas), o bot pergunta assim:
+Quando o fluxo chega na etapa `lembrete` (depois das notas), o bot pergunta assim
+(e mostra os botões do lado):
 
 ```
-bot:  Quer lembretes desse compromisso? Pode escolher:
-      [30 min antes] [1 hora antes] [2 horas antes] [1 dia antes] [vários] [não]
-      (ou digite, ex: "30min e 2h antes")
+bot:  Anotado: Consulta dentista — sex 09/10 16:00–17:00
+      Como eu te lembro desse compromisso? Pode falar do seu jeito
+      (ex.: "3 dias antes e 1h antes") ou escolher um atalho.
+      [24h antes] [3 dias antes] [3-2-1] [sem lembrete] [personalizado]
 ```
 
-| Você responde                             | O que acontece                                          |
-| ----------------------------------------- | ------------------------------------------------------- |
-| um botão (ex.: `30 min antes`)            | esse lembrete, e só ele                                 |
-| `vários`                                  | pergunta livre: "30min e 2h antes", "1h e 1 dia antes"… |
-| `não` / `sem lembrete`                    | zero lembretes                                          |
-| frase livre direto ("me lembra 2h antes") | o LLM extrai as antecedências                           |
+| Você faz                               | O que acontece                                                                                                            |
+| -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| **clica** num atalho (`3-2-1`, `24h`…) | escolha direta, sem mágica: o clique já é a resposta (zero interpretação)                                                 |
+| **clica** em `personalizado`           | ele responde um convite ("Me diz como você quer ser avisado — ex.: '3 dias antes e 1h antes'") e espera você **escrever** |
+| `não` / `sem lembrete` (digitado)      | zero lembretes                                                                                                            |
+| frase livre ("me lembra 2h antes")     | atalho determinístico primeiro; senão o LLM extrai as antecedências                                                       |
 
 Regras que valem aqui:
 
-- **Atalhos determinísticos** (não passam pelo LLM): `não`/`sem lembrete` → zero; os
-  4 botões → exatamente a antecedência do botão; "1 dia antes" → 24h. O resto vai ao
-  LLM, que devolve `{rules, confidence}`; parse falho ou confiança baixa → o compromisso
-  entra **em revisão** (fila da web) e o bot avisa — nada de lembrete inventado.
+- **Clique não é fala**: cada botão carrega uma resposta estruturada — clicar
+  nunca vira texto pro interpretador nem gasta LLM.
+- **Atalhos determinísticos** (não passam pelo LLM): os botões e os textos
+  "24h antes"/"3 dias antes"/"3-2-1"/"sem lembrete" → exatamente a antecedência
+  escolhida. O resto digitado vai ao LLM, que devolve `{rules, confidence}`;
+  parse falho ou confiança baixa → **re-pergunta**, nada de lembrete inventado.
+- **Anti-loop**: 1ª frase que ele não entende → re-pergunta com exemplo; **2ª
+  seguida** → ele para de tentar adivinhar e mostra o teclado de atalhos fixo
+  ("prefere escolher?"). Você pode continuar digitando depois — entendendo, ele
+  segue normal.
 - **"2 horas antes" é EXATAS 2h** (`before_hours: 2`), não "2 slots de 1h".
 - **Antecedência maior que o compromisso** (ex.: 1 dia antes de algo em 4h) → o bot avisa
   na escolha e descarta essa antecedência; as outras continuam. Múltiplas inválidas são
@@ -226,7 +243,7 @@ Regras que valem aqui:
 - **"agora"/"já"** → o lembrete fica **retrasado e não dispara** (a regra vale para outros
   compromissos).
 - **Na etapa `lembrete` nada vira cancelamento**: "cancela", "deixa pra lá"… são tratados
-  como resposta do passo (inválida → repete a pergunta, máx. 2 tentativas). Pra desistir
+  como resposta do passo (inválida → conta pro anti-loop acima). Pra desistir
   de vez, diga com as palavras: "cancelar agendamento" / "abandonar agendamento" /
   "cancelar este agendamento".
 - **"alterar lembretes"** na confirmação → volta pra essa etapa, com as escolhas atuais

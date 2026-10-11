@@ -1,4 +1,4 @@
-import { z } from 'zod';
+import { z } from "zod";
 
 /**
  * Saida da extracao de agendamento em linguagem natural (fase 3).
@@ -14,7 +14,25 @@ export const extrairAgendamentoSchema = z.object({
   /** Titulo curto do compromisso (ex.: "consulta oftalmologista"). */
   title: z.string().min(1).max(200),
   /** Inicio em ISO-8601 com offset explicito, ja no timezone do usuario. */
-  startsAt: z.string().regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d{1,3})?)?(Z|[+-]\d{2}:\d{2})$/, 'datetime ISO-8601 com offset'),
+  startsAt: z
+    .string()
+    .regex(
+      /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d{1,3})?)?(Z|[+-]\d{2}:\d{2})$/,
+      "datetime ISO-8601 com offset",
+    ),
+  /**
+   * Fim dito pelo usuario em ISO-8601 com offset explicito ("ate 17h segunda").
+   * A API NUNCA calcula — o modelo copia o instante que o usuario disse (ADR-004).
+   * Ausente => a borda PERGUNTA o fim (decisao 5 da spec fluxo-criacao-robusto;
+   * nao e mais o default silencioso de 60 min do atalho aceito).
+   */
+  endsAt: z
+    .string()
+    .regex(
+      /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d{1,3})?)?(Z|[+-]\d{2}:\d{2})$/,
+      "datetime ISO-8601 com offset",
+    )
+    .optional(),
   /** Duracao estimada em minutos; default da API = 60. */
   durationMinutes: z.number().int().min(5).max(1440).optional(),
   /** Confianca 0..1 da extracao dada pelo proprio modelo. */
@@ -29,23 +47,38 @@ export type ExtrairAgendamentoOutput = z.infer<typeof extrairAgendamentoSchema>;
  * padrao financas: sem minimum/maximum no JSON Schema, strict: true).
  */
 export const extrairAgendamentoTool = {
-  name: 'extrair_agendamento',
+  name: "extrair_agendamento",
   description:
-    'Extrai um compromisso em linguagem natural. Use quando o usuario quiser marcar/agendar algo. ' +
-    'Sempre inclua confidence (0 a 1) sobre a interpretacao da data e do titulo.',
+    "Extrai um compromisso em linguagem natural. Use quando o usuario quiser marcar/agendar algo. " +
+    "Sempre inclua confidence (0 a 1) sobre a interpretacao da data e do titulo.",
   input_schema: {
-    type: 'object' as const,
+    type: "object" as const,
     properties: {
-      title: { type: 'string', description: 'Titulo curto do compromisso' },
+      title: { type: "string", description: "Titulo curto do compromisso" },
       startsAt: {
-        type: 'string',
-        description: 'Inicio em ISO-8601 com offset, ex.: 2026-10-08T14:00:00-03:00',
+        type: "string",
+        description:
+          "Inicio em ISO-8601 com offset, ex.: 2026-10-08T14:00:00-03:00",
       },
-      durationMinutes: { type: 'integer', description: 'Duracao estimada em minutos' },
-      confidence: { type: 'number', description: 'Confianca da extracao, 0 a 1' },
-      dateEvidence: { type: 'string', description: 'Trecho da fala que fundamentou a data' },
+      endsAt: {
+        type: "string",
+        description:
+          'Fim em ISO-8601 com offset quando o usuario deu inicio e fim ("de 19h ate 17h segunda"); nunca calcule',
+      },
+      durationMinutes: {
+        type: "integer",
+        description: "Duracao estimada em minutos",
+      },
+      confidence: {
+        type: "number",
+        description: "Confianca da extracao, 0 a 1",
+      },
+      dateEvidence: {
+        type: "string",
+        description: "Trecho da fala que fundamentou a data",
+      },
     },
-    required: ['title', 'startsAt', 'confidence'],
+    required: ["title", "startsAt", "confidence"],
   },
   /**
    * Nota: mantido deliberadamente SEM `additionalProperties: false`. O modo strict do

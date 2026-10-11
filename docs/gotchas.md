@@ -271,3 +271,26 @@ Dois furos achados no review da Fase 9 (2026-10-09):
    vira unhandled rejection — o OnUncaughtException do SDK derruba o processo
    por um LOG. **Correcao:** telemetria best-effort embrulha o DISPARO em
    try/catch, alem do `.catch`.
+
+## 23. callback de botão reaproveitado como fala (loop do "personalizado")
+
+**Problema:** o fallback genérico do `handleCallback` do fluxo roteava todo
+clique não-decodificado por `handleText(telegramId, label)`. O botão
+"personalizado" do teclado de lembrete não era atalho reconhecido ⇒ a palavra
+solta virou FALA pro interpretador LLM, falhou na régua, e o passo re-perguntou
+**sem contador** — loop de "não tenho certeza se entendi" até desistência
+(incidente de produção 2026-10-10). Um clique de botão tem significado
+estruturado; tratá-lo como texto livre paga LLM por botão e degrada o fluxo.
+**Fix aplicado:** teclado de lembrete com `callback_data` estruturada
+(`flow:lembrete:*` em `messages.ts` → `lembreteAtalhosCallback`), decodificada
+no `handleCallback` direto no evento determinístico `reminderChoice` da máquina
+(zero LLM); "personalizado" só responde o convite de texto livre e mantém o
+passo; fallback residual restrito à whitelist `CALLBACK_TEXT_WHITELIST`
+(sim/não/confirmar/alterar/remarcar/abortar — labels já roteáveis por fala e de
+custo zero), qualquer outro label é logado e ignorado; e o portão da extração
+livre nunca roda para origem `callback` (a flag `origin`/`fromCallback` fecha o
+`openCreate`).
+**Se acontecer de novo:** NUNCA roteie label de teclado por `handleText` —
+botão com significado estruturado tem handler próprio (família de prefixo na
+`callback_data`); label novo sem handler cai na whitelist ou é ignorado, jamais
+vira fala.

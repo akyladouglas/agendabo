@@ -6,16 +6,21 @@ import {
   computeTriggers,
   type AppointmentLike,
   type NotificationRule,
-} from '@agendabo/schedule-core';
+} from "@agendabo/schedule-core";
 import {
   appointmentInputSchema,
   classifyIntentSchema,
   type BotIntent,
   type ClassifyIntentOutput,
   type NotificationRuleInput,
-} from '@agendabo/contracts';
-import { BOT_MESSAGES, givesUp, parseNotesAnswer, parseYesNo } from './messages';
-import type { BotUser } from './bot-access.service';
+} from "@agendabo/contracts";
+import {
+  BOT_MESSAGES,
+  givesUp,
+  parseNotesAnswer,
+  parseYesNo,
+} from "./messages";
+import type { BotUser } from "./bot-access.service";
 import {
   classificarExtracao,
   classificarEdicao,
@@ -25,7 +30,7 @@ import {
   type ExtracaoVeredito,
   type EdicaoPayloadBruto,
   type EdicaoVeredito,
-} from './extraction-ruler';
+} from "./extraction-ruler";
 
 export { classificarExtracao, classificarEdicao, dayFromResolvedUtc };
 export type {
@@ -58,27 +63,27 @@ export type FlowStep =
    * consumida — a fala é dada ao service, que roda o extrator + a régua e chama a máquina
    * com `extracted`. Nenhum turno vive neste passo: ele é o portão do atalho.
    */
-  | 'criar_aberto'
-  | 'titulo'
-  | 'dia'
-  | 'hora'
-  | 'fim'
-  | 'conflito'
-  | 'notas'
-  | 'lembrete'
-  | 'confirmacao'
-  | 'confirmar_cancelamento'
-  | 'confirmar_substituicao'
+  | "criar_aberto"
+  | "titulo"
+  | "dia"
+  | "hora"
+  | "fim"
+  | "conflito"
+  | "notas"
+  | "lembrete"
+  | "confirmacao"
+  | "confirmar_cancelamento"
+  | "confirmar_substituicao"
   /** Fase 4: diff legível da edição + "sim" antes de alterar qualquer coisa (spec C12). */
-  | 'edit_propor'
+  | "edit_propor"
   /** Fase 4: qual compromisso mudar; resposta livre (borda localiza com schedule-core). */
-  | 'edit_descricao'
+  | "edit_descricao"
   /** Fase 4: 2–N candidatas casaram; escolha "1/2/..." determinística (zero LLM). */
-  | 'escolher_candidata'
+  | "escolher_candidata"
   /** Fase 4: "Vou cancelar X de ... Posso? (sim/não)" (spec D14). */
-  | 'confirmar_cancelamento_compromisso'
+  | "confirmar_cancelamento_compromisso"
   /** Fase 4: mesmo diff da proposta, após conflito reportado no "sim" (spec C13). */
-  | 'confirmar_edicao';
+  | "confirmar_edicao";
 
 export interface FlowCandidate {
   title?: string;
@@ -96,11 +101,32 @@ export interface FlowCandidate {
   /** Tentativas de remarcar já usadas (decisão de produto #4: máx 3). */
   conflictTries: number;
   /**
+   * D3 da spec fluxo-criacao-robusto — tentativas CONSECUTIVAS de texto livre falho no
+   * passo `lembrete` (anti-loop, sessão em memória): 1ª falha re-pergunta com exemplo;
+   * 2ª falha exibe o teclado de atalhos fixo + recuperação; sucesso zera.
+   */
+  reminderTries?: number;
+  /**
    * Fase 4 (atalho do criar): o dia veio do instante do modelo (calendário resolvido na
    * BORDA — o LLM ancora no "hoje" do prompt). Guarda o dia no calendário local do
    * usuário para o ramo de remarcação NÃO perder o candidato se `startMinutes` faltar.
    */
   startDayLocal?: { year: number; month: number; day: number };
+  /**
+   * Lote 3 (B2/`sem_titulo`): o início veio MATERIALIZADO do atalho (`startUtc` do
+   * veredito da régua). Marca o candidato como "atalho" mesmo SEM título — os passos
+   * `dia`/`fim` não re-perguntam o quando; só o que falta.
+   */
+  startFromShortcut?: boolean;
+  /**
+   * M1 do review (fluxo-criacao-robusto) — duração do atalho COM FIM EXTRAÍDO
+   * (`endUtc − startUtc`, guardada só por `applyShortcut` quando `endExtracted`).
+   * `setDay` zera `startUtc`/`endUtc`; no `setStart` seguinte a duração é reaplicada
+   * (remarcar/mudar o dia NÃO perde o fim dito — o usuário não re-digita o fim).
+   * Nunca definida no fluxo guiado clássico; limpa quando o fim é respondido no
+   * passo `fim` (a resposta nova prevalece) e quando um novo atalho chega.
+   */
+  shortcutDurationMs?: number;
   /** Fase 4: evidência da data extraída (log de debug da fila — spec regra 7). */
   dateEvidence?: string;
   /** Snapshot p/ intenção `substituir_atual` (decisão de produto #9). */
@@ -124,7 +150,7 @@ export interface EditCandidateLike {
 
 /** O que se sabe do pedido de edição/cancelamento enquanto a conversa não fecha. */
 export interface EditFlowState {
-  action: 'editar' | 'cancelar';
+  action: "editar" | "cancelar";
   /** Compromisso escolhido (após localização unívoca ou escolha numerada). */
   appointmentId?: string;
   /** Snapshot do compromisso-alvo p/ o diff legível e o fallback (nunca re-perguntar "qual?"). */
@@ -154,7 +180,7 @@ export interface FlowSession {
   /** Passo "real" antes das perguntas sim/não de proteção (cancelar/substituir). */
   prevStep?: FlowStep;
   /** Modo do fluxo de edição (Fase 4): editar ou cancelar um compromisso existente. */
-  editMode?: 'edit' | 'cancel';
+  editMode?: "edit" | "cancel";
   /**
    * Fase 4: fala livre em `edit_antes_depois` que ainda NÃO é "antes/depois"
    * (descrição do alvo) — a borda re-interpreta no próximo turno.
@@ -163,7 +189,29 @@ export interface FlowSession {
 }
 
 export type BotReply =
-  { kind: 'text'; text: string } | { kind: 'buttons'; text: string; buttons: string[] };
+  | { kind: "text"; text: string }
+  | ({ kind: "buttons"; text: string; buttons: string[] } & {
+      /**
+       * D5 do plano fluxo-criacao-robusto — teclado de lembrete: `buttonPayloads` mapeia
+       * label → `callback_data` estruturado (`flow:lembrete:*`). O `send()` do service usa
+       * quando presente (nunca `flow:<label>`); clique NUNCA vira fala (spec D1/D4).
+       */
+      buttonPayloads?: Record<string, string>;
+    });
+
+/** Teclado de lembrete (atalhos + convite "personalizado") com callbacks estruturadas. */
+function lembreteKeyboardButtons(text: string): Extract<
+  BotReply,
+  { kind: "buttons" }
+> & {
+  buttonPayloads: Record<string, string>;
+} {
+  const labels = [...BOT_MESSAGES.lembreteAtalhos];
+  const buttonPayloads: Record<string, string> = {};
+  for (const label of labels)
+    buttonPayloads[label] = BOT_MESSAGES.lembreteAtalhosCallback[label]!;
+  return { kind: "buttons", text, buttons: labels, buttonPayloads };
+}
 
 /** Resultado de um turno: respostas ao chat + o que persistir (service fino aplica). */
 export interface FlowOutcome {
@@ -221,26 +269,78 @@ export type ReminderClassified =
  * ADR-008. `falhou` = parse/timeout do extrator (cai no guiado com o que extraiu).
  */
 export type ExtractedClassified =
-  | { kind: 'aceito'; data: { title: string; startUtc: Date; endUtc: Date; dateEvidence?: string } }
   | {
-      kind: 'quando_parcial';
-      data: { title?: string; day: { year: number; month: number; day: number } };
+      kind: "aceito";
+      data: {
+        title: string;
+        startUtc: Date;
+        endUtc: Date;
+        /**
+         * Decisão 5 da spec fluxo-criacao-robusto: a RÉGUA viu um FIM EXPLÍCITO na fala
+         * (`endsAt`) vs materializou o fallback (durationMinutes/default 60). Preenchido
+         * pela BORDA; `false` ⇒ a máquina pergunta o passo `fim` (nunca 1h em silêncio).
+         */
+        endExtracted: boolean;
+        dateEvidence?: string;
+      };
     }
   | {
-      kind: 'fraco' | 'suspeito';
-      data: { title: string; startUtc: Date; endUtc: Date; dateEvidence?: string };
+      kind: "quando_parcial";
+      data: {
+        title?: string;
+        day: { year: number; month: number; day: number };
+      };
+    }
+  | {
+      kind: "fraco" | "suspeito";
+      data: {
+        title: string;
+        startUtc: Date;
+        endUtc: Date;
+        dateEvidence?: string;
+      };
       reviewReason: string;
       rawText: string;
     }
-  | { kind: 'sem_quando' }
-  | { kind: 'falhou'; reason: string; titleHint?: string }
+  | { kind: "sem_quando" }
+  /**
+   * B1 da spec fluxo-criacao-robusto: parse/timeout do extrator. SEM `titleHint` — a
+   * fala jamais vira título (a antiga hipótese `texto.slice(0,200)` está morta); a
+   * máquina cai no guiado e PERGUNTA o título (passo `titulo`).
+   */
+  | { kind: "falhou"; reason: string }
+  /**
+   * Início utilizável, fim dito ilegível/≤ início (veredito `fim_invalido` da régua —
+   * A2/ADR-010): NUNCA needs_review; a máquina reaproveita o início e pergunta só o fim.
+   */
+  | {
+      kind: "fim_invalido";
+      data: { title: string; startUtc: Date; dateEvidence?: string };
+    }
+  /**
+   * B2/B3 da spec fluxo-criacao-robusto (transição mínima da etapa 5): a BORDA aplicou a
+   * heurística `usableTitle` e o título do modelo era a fala quase inteira / prefixo de
+   * intenção ⇒ TÍTULO AUSENTE com início materializado. O candidato segue sem título e a
+   * máquina pergunta o título (B3) reaproveitando o resto: com o intervalo pronto, a
+   * resposta do título cai em `checkConflict` (nunca no guiado do zero).
+   */
+  | {
+      kind: "sem_titulo";
+      data: {
+        startUtc: Date;
+        endUtc?: Date;
+        /** Mesma semântica do `aceito` (decisão 5): sem fim explícito ⇒ pergunta o `fim` antes. */
+        endExtracted: boolean;
+        dateEvidence?: string;
+      };
+    }
   /**
    * Borda CHAMOU o extrator neste turno (portão do atalho) — a máquina sabe que a fala
    * já foi processada e não deve re-classificar/engolir de novo. `consume: false` é o
    * caso raro em que a borda quer que a fala siga como DADO do passo (ex.: nada a
    * extrair); hoje a borda sempre consome no portão.
    */
-  | { kind: 'consumida'; consume: false };
+  | { kind: "consumida"; consume: false };
 
 /** Conflito reportado pela borda após o "sim" da edição (update lançou ConflictError). */
 export interface EditConflictReport {
@@ -254,7 +354,9 @@ export interface HandleTurnInput {
   user: BotUser;
   text: string;
   /** Classificação LLM do turno (borda). `undefined` = não chamar o LLM neste turno. */
-  classified?: { ok: true; intent: BotIntent; confidence: number } | { ok: false; reason: string };
+  classified?:
+    | { ok: true; intent: BotIntent; confidence: number }
+    | { ok: false; reason: string };
   /**
    * Resultado do interpretador de lembrete p/ o passo `lembrete` (borda; padrão do
    * `classified`: a borda chama o interpretador, a máquina só consome o veredito).
@@ -269,10 +371,10 @@ export interface HandleTurnInput {
    * encontrei". A máquina nunca busca nem escolhe sozinha.
    */
   editLocation?:
-    | { kind: 'candidate'; data: EditCandidateLike }
-    | { kind: 'candidates'; data: EditCandidateLike[] }
-    | { kind: 'none' }
-    | { kind: 'ask_descricao' };
+    | { kind: "candidate"; data: EditCandidateLike }
+    | { kind: "candidates"; data: EditCandidateLike[] }
+    | { kind: "none" }
+    | { kind: "ask_descricao" };
   /**
    * Fase 4: candidata ÚNICA localizada durante um turno de DESCRIPTION (resposta ao
    * "qual deles?") — a máquina apresenta direto (confirmar cancelar / pedir a mudança).
@@ -284,8 +386,8 @@ export interface HandleTurnInput {
    */
   editChange?:
     | (
-        | { kind: 'ok'; toStartUtc: Date; toEndUtc: Date; toTitle?: string }
-        | { kind: 'reperguntar'; reason: string }
+        | { kind: "ok"; toStartUtc: Date; toEndUtc: Date; toTitle?: string }
+        | { kind: "reperguntar"; reason: string }
       )
     | null;
   /** Fase 4: conflito reportado pelo update depois do "sim" (volta à proposta). */
@@ -299,6 +401,13 @@ export interface HandleTurnInput {
   dayChoice?: { year: number; month: number; day: number };
   /** callback de teste do teclado de hora ("14:30" local). */
   timeChoice?: string;
+  /**
+   * D1/D5 da spec fluxo-criacao-robusto — clique num atalho do teclado de lembrete,
+   * decodificado da callback `flow:lembrete:*` na BORDA (nunca vira fala/LLM):
+   * 'custom' só responde o convite de texto livre (D2); os demais materializam as
+   * `reminderRules` determinísticas e seguem p/ a confirmação (zero LLM).
+   */
+  reminderChoice?: "24h" | "3d" | "countdown" | "none" | "custom";
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -308,7 +417,9 @@ const MINUTES_RE = /^([01]\d|2[0-3]):([0-5]\d)$/;
 /** Converte a classificacao bruta do LLM em zod (strip) e aplica o limiar (ADR-003). */
 export function acceptedIntent(
   classified:
-    { ok: true; intent: BotIntent; confidence: number } | { ok: false; reason: string } | undefined,
+    | { ok: true; intent: BotIntent; confidence: number }
+    | { ok: false; reason: string }
+    | undefined,
   minConfidence: number,
 ): ClassifyIntentOutput | null {
   if (!classified || !classified.ok) return null;
@@ -327,7 +438,11 @@ export class SchedulingFlowMachine {
   ) {}
 
   newSession(now: Date): FlowSession {
-    return { step: 'titulo', candidate: { conflictTries: 0 }, lastActivityAt: now.getTime() };
+    return {
+      step: "titulo",
+      candidate: { conflictTries: 0 },
+      lastActivityAt: now.getTime(),
+    };
   }
 
   isExpired(session: FlowSession, now: Date): boolean {
@@ -339,7 +454,7 @@ export class SchedulingFlowMachine {
     // Fase 5 (decisão 7): o bot chama pelo nome quando existir; sem nome, texto vigente.
     return [
       {
-        kind: 'text',
+        kind: "text",
         text: BOT_MESSAGES.comNome(
           name,
           BOT_MESSAGES.pedeTitulo,
@@ -353,7 +468,10 @@ export class SchedulingFlowMachine {
   dayButtons(offsetMinutes: number, now: Date, days = 7): string[] {
     const labels: string[] = [];
     for (let i = 0; i < days; i += 1) {
-      const parts = utcToZonedParts(new Date(now.getTime() + i * DAY_MS), offsetMinutes);
+      const parts = utcToZonedParts(
+        new Date(now.getTime() + i * DAY_MS),
+        offsetMinutes,
+      );
       const label =
         i === 0
           ? BOT_MESSAGES.hojeLabel
@@ -367,7 +485,10 @@ export class SchedulingFlowMachine {
 
   /** Teclado de horas cheias (passo hora → minuto livre). */
   hourButtons(): string[] {
-    return Array.from({ length: 24 }, (_, h) => `${String(h).padStart(2, '0')}:00`);
+    return Array.from(
+      { length: 24 },
+      (_, h) => `${String(h).padStart(2, "0")}:00`,
+    );
   }
 
   async handleTurn(input: HandleTurnInput): Promise<FlowOutcome> {
@@ -376,7 +497,10 @@ export class SchedulingFlowMachine {
 
     // Guarda o passo "real" antes das perguntas sim/não de protecao, p/ voltar
     // ao mesmo lugar se o usuario negar (nada e re-perguntado a toa).
-    if (session.step !== 'confirmar_cancelamento' && session.step !== 'confirmar_substituicao') {
+    if (
+      session.step !== "confirmar_cancelamento" &&
+      session.step !== "confirmar_substituicao"
+    ) {
       session.prevStep = session.step;
     }
 
@@ -384,8 +508,8 @@ export class SchedulingFlowMachine {
     // sobre uma classificação de intenção (defesa contra falso positivo do LLM; o LLM
     // nunca descarta estado no chute, mas um "deixa pra lá" claro dispensa pergunta).
     if (
-      session.step !== 'confirmar_cancelamento' &&
-      session.step !== 'confirmar_substituicao' &&
+      session.step !== "confirmar_cancelamento" &&
+      session.step !== "confirmar_substituicao" &&
       givesUp(input.text)
     ) {
       return this.cancel();
@@ -393,10 +517,14 @@ export class SchedulingFlowMachine {
 
     // Passo determinístico (teclado/callback): não passa por LLM — a fala do usuário
     // é que é roteada por intenção (spec #3, decisão de produto #2).
-    if (session.step === 'dia' && input.dayChoice)
+    if (session.step === "dia" && input.dayChoice)
       return this.setDay(session, input.dayChoice, input);
-    if (session.step === 'hora' && input.timeChoice)
+    if (session.step === "hora" && input.timeChoice)
       return this.setStart(session, input.timeChoice, input);
+    // D1/D2 da spec fluxo-criacao-robusto: clique no atalho de lembrete é evento
+    // determinístico (callback decodificada na borda) — nunca fala, nunca LLM.
+    if (session.step === "lembrete" && input.reminderChoice)
+      return this.applyReminderChoice(session, input);
 
     // ---------- Fase 4: atalho do criar — veredito da régua calculado na borda ----------
     // Aceito ⇒ pula dia/hora/fim E a confirmação final (a fala já é a confirmação — D2);
@@ -407,13 +535,14 @@ export class SchedulingFlowMachine {
     // passo inicial `titulo` sem candidato), cinto de segurança contra borda ansiosa.
     if (
       input.extracted &&
-      (session.step === 'criar_aberto' || (session.step === 'titulo' && !session.candidate.title))
+      (session.step === "criar_aberto" ||
+        (session.step === "titulo" && !session.candidate.title))
     ) {
-      if (input.extracted.kind === 'consumida') {
+      if (input.extracted.kind === "consumida") {
         // a fala foi processada pela borda mas não rendeu veredito utilizável: segue
         // como DADO do passo normal (título vazio → re-pergunta educada).
-        session.step = 'titulo';
-        return { replies: [{ kind: 'text', text: BOT_MESSAGES.pedeTitulo }] };
+        session.step = "titulo";
+        return { replies: [{ kind: "text", text: BOT_MESSAGES.pedeTitulo }] };
       }
       return await this.applyShortcut(session, input.extracted, input);
     }
@@ -426,13 +555,18 @@ export class SchedulingFlowMachine {
     if (input.editConflict) return this.reportEditConflict(session, input);
     // Candidata ÚNICA achada na fala da descrição (borda localizou — spec B11/D): a
     // máquina apresenta sem re-perguntar (C2).
-    if (input.editPicked) return this.pickCandidate(session, input.editPicked, input);
+    if (input.editPicked)
+      return this.pickCandidate(session, input.editPicked, input);
     // "Espero re-interpretação" é predicado da BORDA (que roda o interpretador e
     // marca `editRedefine=true` no turno da chamada); os sim/não ("1", "sim", "não")
     // são DADO do passo e nunca chegam com a flag (zero LLM, regra 22).
     if (!this.isEditStep(session.step)) session.editRedefine = false;
     // Mudança de horário pronta (régua + applyShift na borda) ⇒ diff + confirmação (C12).
-    if (input.editChange && session.editRedefine && this.isEditStep(session.step)) {
+    if (
+      input.editChange &&
+      session.editRedefine &&
+      this.isEditStep(session.step)
+    ) {
       return this.applyEditChange(session, input);
     }
 
@@ -455,79 +589,103 @@ export class SchedulingFlowMachine {
     input: HandleTurnInput,
   ): Promise<FlowOutcome | null> {
     switch (intent) {
-      case 'cancelar':
+      case "cancelar":
         // nunca descarta no chute (spec #13): duvida => pergunta antes.
-        if (session.step === 'confirmar_cancelamento') {
+        if (session.step === "confirmar_cancelamento") {
           // re-classificou cancelar com confianca alta durante a pergunta: confirma.
           return this.cancel();
         }
-        session.step = 'confirmar_cancelamento';
-        return { replies: [{ kind: 'text', text: BOT_MESSAGES.confirmarCancelamento }] };
+        session.step = "confirmar_cancelamento";
+        return {
+          replies: [{ kind: "text", text: BOT_MESSAGES.confirmarCancelamento }],
+        };
 
-      case 'editar_compromisso':
-      case 'cancelar_compromisso':
+      case "editar_compromisso":
+      case "cancelar_compromisso":
         // Fase 4 (spec regra 9): com o criar ABERTO, editar/cancelar um Compromisso NÃO
         // descarta o candidato em andamento no chute — abre a sessão do editar com a
         // MESMA proteção "descartar o atual? (sim/não)".
         if (this.isCreatingFlowStep(session.step)) {
           return this.openEditWithProtection(session, intent, input);
         }
-        if (session.step === 'confirmar_substituicao') {
+        if (session.step === "confirmar_substituicao") {
           // re-classificou durante a pergunta de proteção: re-posta a pergunta (a resposta
           // "sim"/"não" dela é dada como DADO do passo — nada é descartado no chute).
-          return { replies: [{ kind: 'text', text: BOT_MESSAGES.confirmarSubstituicao }] };
+          return {
+            replies: [
+              { kind: "text", text: BOT_MESSAGES.confirmarSubstituicao },
+            ],
+          };
         }
-        if (session.step === 'criar_aberto' && session.editMode) {
+        if (session.step === "criar_aberto" && session.editMode) {
           // sessão do editar/cancelar recém-aberta pelo service: re-posta a pergunta de
           // qual compromisso (a fala é DADO do passo; a borda localiza no próximo turno).
           session.editRedefine = true;
-          return { replies: [{ kind: 'text', text: BOT_MESSAGES.pedeDescricaoEdicao }] };
+          return {
+            replies: [{ kind: "text", text: BOT_MESSAGES.pedeDescricaoEdicao }],
+          };
         }
         return null;
 
-      case 'criar':
+      case "criar":
         // com a pergunta de proteção aberta (das duas famílias), "criar" é a resposta
         // "sim" implícita à pergunta (decisão #9: só com "sim" o atual é descartado).
-        if (session.step === 'confirmar_substituicao' || session.step === 'criar_aberto')
+        if (
+          session.step === "confirmar_substituicao" ||
+          session.step === "criar_aberto"
+        )
           return this.cancel();
-        session.step = 'confirmar_substituicao';
-        return { replies: [{ kind: 'text', text: BOT_MESSAGES.confirmarSubstituicao }] };
+        session.step = "confirmar_substituicao";
+        return {
+          replies: [{ kind: "text", text: BOT_MESSAGES.confirmarSubstituicao }],
+        };
 
-      case 'substituir_atual':
-        if (session.step === 'confirmar_substituicao' || session.step === 'criar_aberto')
+      case "substituir_atual":
+        if (
+          session.step === "confirmar_substituicao" ||
+          session.step === "criar_aberto"
+        )
           return this.cancel();
-        session.step = 'confirmar_substituicao';
-        return { replies: [{ kind: 'text', text: BOT_MESSAGES.confirmarSubstituicao }] };
+        session.step = "confirmar_substituicao";
+        return {
+          replies: [{ kind: "text", text: BOT_MESSAGES.confirmarSubstituicao }],
+        };
 
-      case 'remarcar':
-        if (session.step === 'conflito') {
-          session.step = 'dia';
+      case "remarcar":
+        if (session.step === "conflito") {
+          session.step = "dia";
           return {
             replies: [
               {
-                kind: 'buttons',
+                kind: "buttons",
                 text: BOT_MESSAGES.pedeDia(input.text),
                 buttons: this.dayButtons(input.offsetMinutes, input.now),
               },
             ],
           };
         }
-        if (session.step === 'dia' || session.step === 'hora' || session.step === 'fim')
+        if (
+          session.step === "dia" ||
+          session.step === "hora" ||
+          session.step === "fim"
+        )
           return null;
         return {
           replies: [
             {
-              kind: 'text',
-              text: BOT_MESSAGES.pedeDia(session.candidate.title ?? 'o compromisso'),
+              kind: "text",
+              text: BOT_MESSAGES.pedeDia(
+                session.candidate.title ?? "o compromisso",
+              ),
             },
           ],
         };
 
-      case 'continuar_fluxo':
-      case 'fora_do_escopo':
+      case "continuar_fluxo":
+      case "fora_do_escopo":
         return null;
 
-      case 'consultar':
+      case "consultar":
         // Fase 2, decisão #5: consulta durante o criar é respondida pelo
         // SchedulingFlowService (borda LLM/banco) e o turno volta ao mesmo passo —
         // a máquina não tem estado de consulta. null = segue o fluxo do passo.
@@ -546,63 +704,166 @@ export class SchedulingFlowMachine {
     input: HandleTurnInput,
   ): Promise<FlowOutcome> {
     const c = session.candidate;
-    if (extracted.kind === 'consumida') {
+    if (extracted.kind === "consumida") {
       // unreachable (gate trata antes) — narrowing total para o switch abaixo.
-      session.step = 'titulo';
-      return { replies: [{ kind: 'text', text: BOT_MESSAGES.pedeTitulo }] };
+      session.step = "titulo";
+      return { replies: [{ kind: "text", text: BOT_MESSAGES.pedeTitulo }] };
     }
     switch (extracted.kind) {
-      case 'aceito': {
+      case "aceito": {
         c.title = extracted.data.title;
         c.startUtc = extracted.data.startUtc;
-        c.endUtc = extracted.data.endUtc;
+        // O endUtc materializado pela régua SÓ vale se a fala tinha fim explícito
+        // (decisão 5 da spec fluxo-criacao-robusto): sem fim dito, o fallback
+        // (durationMinutes/default 60) é chute — o passo `fim` pergunta.
+        c.endUtc = extracted.data.endExtracted
+          ? extracted.data.endUtc
+          : undefined;
+        // M1 do review: novo atalho ⇒ a duração guardada anterior não vale mais; com fim
+        // extraído guarda a duração original p/ o ramo de remarcação (setDay/setStart).
+        c.shortcutDurationMs = extracted.data.endExtracted
+          ? extracted.data.endUtc.getTime() - extracted.data.startUtc.getTime()
+          : undefined;
         c.startMinutes = undefined;
         c.day = undefined;
-        if (extracted.data.dateEvidence) c.dateEvidence = extracted.data.dateEvidence;
+        c.startFromShortcut = true;
+        if (extracted.data.dateEvidence)
+          c.dateEvidence = extracted.data.dateEvidence;
         // Atalho da Fase 4 (spec A4): o dia veio do instante do modelo (calendário
         // resolvido na borda) — guarda o dia local p/ o ramo de remarcação não perder o
         // candidato se a fala nova só trouxer a hora.
-        const parts = utcToZonedParts(extracted.data.startUtc, input.offsetMinutes);
-        c.startDayLocal = { year: parts.year, month: parts.month, day: parts.day };
-        session.step = 'conflito';
+        const parts = utcToZonedParts(
+          extracted.data.startUtc,
+          input.offsetMinutes,
+        );
+        c.startDayLocal = {
+          year: parts.year,
+          month: parts.month,
+          day: parts.day,
+        };
+        if (!extracted.data.endExtracted) {
+          // Decisão 5: início bom, fim ausente na fala ⇒ ecoa o que entendeu e pergunta
+          // SÓ o fim (C1 — multi-dia com fim ok continua pulando dia/hora/fim).
+          session.step = "fim";
+          const p = utcToZonedParts(
+            extracted.data.startUtc,
+            input.offsetMinutes,
+          );
+          const weekday = ["dom", "seg", "ter", "qua", "qui", "sex", "sáb"][
+            new Date(Date.UTC(p.year, p.month - 1, p.day)).getUTCDay()
+          ];
+          return {
+            replies: [
+              {
+                kind: "text",
+                text: BOT_MESSAGES.perguntaFimAposAtalho(
+                  `${c.title} — ${weekday} ${pad(p.day)}/${pad(p.month)} ${pad(p.hour)}:${pad(p.minute)}`,
+                ),
+              },
+            ],
+          };
+        }
+        session.step = "conflito";
         // retoma no passo `conflito`: findConflict roda contra os confirmed futuros e o
         // bot responde com o resumo + notas (sem conflito) ou a pergunta de conflito
         // (spec A4). O resumo do atalho diz "Entendi" (pedeNotasAtalho em checkConflict).
         return this.checkConflict(session, input);
       }
-      case 'quando_parcial': {
+      case "sem_titulo": {
+        // B2/B3 da spec fluxo-criacao-robusto: a borda descartou o título (a fala quase
+        // inteira / verbo de intenção) MAS o início é utilizável ⇒ mesmo caminho do
+        // `aceito` SEM título: candidato sem título, e PERGUNTA-SE o título (B3)
+        // reaproveitando o resto. Sem fim explícito, o passo `fim` vem antes (decisão 5);
+        // respondido o título com intervalo pronto, a fala cai em `checkConflict`.
+        c.title = undefined;
+        c.startUtc = extracted.data.startUtc;
+        c.endUtc = extracted.data.endExtracted
+          ? extracted.data.endUtc
+          : undefined;
+        // M1 do review: idem `aceito` — novo atalho limpa a duração guardada; só com
+        // fim extraído (`endUtc` presente) é que ela é guardada.
+        c.shortcutDurationMs =
+          extracted.data.endExtracted && extracted.data.endUtc
+            ? extracted.data.endUtc.getTime() -
+              extracted.data.startUtc.getTime()
+            : undefined;
+        c.startMinutes = undefined;
+        // o CALENDÁRIO é dado materializado (startUtc) — `day` vazio jogaria o quando
+        // fora no `answerStep case 'titulo'`; só se pergunta o dia quem não tem início.
+        c.day = undefined;
+        c.startFromShortcut = true; // os passos `dia`/`fim` tratam o candidato como atalho
+        if (extracted.data.dateEvidence)
+          c.dateEvidence = extracted.data.dateEvidence;
+        const parts = utcToZonedParts(
+          extracted.data.startUtc,
+          input.offsetMinutes,
+        );
+        c.startDayLocal = {
+          year: parts.year,
+          month: parts.month,
+          day: parts.day,
+        };
+        if (!extracted.data.endExtracted) {
+          session.step = "fim";
+          const p = parts;
+          const weekday = ["dom", "seg", "ter", "qua", "qui", "sex", "sáb"][
+            new Date(Date.UTC(p.year, p.month - 1, p.day)).getUTCDay()
+          ];
+          return {
+            replies: [
+              {
+                kind: "text",
+                text: BOT_MESSAGES.perguntaFimAposAtalho(
+                  // título ausente: eco só com o quando (sem o separador "— " órfão)
+                  `${weekday} ${pad(p.day)}/${pad(p.month)} ${pad(p.hour)}:${pad(p.minute)}`,
+                ),
+              },
+            ],
+          };
+        }
+        session.step = "titulo";
+        return { replies: [{ kind: "text", text: BOT_MESSAGES.pedeTitulo }] };
+      }
+      case "quando_parcial": {
         if (extracted.data.title) c.title = extracted.data.title;
         c.day = extracted.data.day;
         c.startMinutes = undefined;
         c.startUtc = undefined;
         c.endUtc = undefined;
-        session.step = 'hora'; // pula o que tem, pergunta só o que falta (decisão #5)
+        session.step = "hora"; // pula o que tem, pergunta só o que falta (decisão #5)
+        const diaLabel = BOT_MESSAGES.diaLabel(
+          extracted.data.day,
+          utcToZonedParts(input.now, input.offsetMinutes).year,
+        );
         return {
           replies: [
             {
-              kind: 'buttons',
-              text: BOT_MESSAGES.pedeHora(
-                BOT_MESSAGES.diaLabel(
-                  extracted.data.day,
-                  utcToZonedParts(input.now, input.offsetMinutes).year,
-                ),
-              ),
+              kind: "buttons",
+              // C1 (spec fluxo-criacao-robusto): com título extraído, o eco incremental
+              // mantém título+dia e pergunta SÓ a hora; sem título, a fala vigente.
+              text: c.title
+                ? BOT_MESSAGES.ecoParcialHora(c.title, diaLabel)
+                : BOT_MESSAGES.pedeHora(diaLabel),
               buttons: this.hourButtons(),
             },
           ],
         };
       }
-      case 'fraco':
-      case 'suspeito': {
+      case "fraco":
+      case "suspeito": {
         // needs_review de verdade (spec E16/E17): o service persiste (rawText/reviewReason,
         // zero outbox) e o aviso cita o que foi entendido + a evidência. Sessão encerra
         // SEM notas/lembrete (decisão #6); nada de create/outbox aqui.
         const d = extracted.data;
-        const when = this.formatRange(d.startUtc, d.endUtc, input.offsetMinutes);
+        const when = this.formatRange(
+          d.startUtc,
+          d.endUtc,
+          input.offsetMinutes,
+        );
         return {
           replies: [
             {
-              kind: 'text',
+              kind: "text",
               text: BOT_MESSAGES.avisoNeedsReview({
                 title: d.title,
                 when,
@@ -621,56 +882,139 @@ export class SchedulingFlowMachine {
           },
         };
       }
-      case 'sem_quando': {
+      case "sem_quando": {
         // falou de quando mas não há quando utilizável: guiado do ponto do título
         if (c.title) {
-          session.step = 'dia';
+          session.step = "dia";
           return {
             replies: [
               {
-                kind: 'buttons',
+                kind: "buttons",
                 text: BOT_MESSAGES.pedeDia(c.title),
                 buttons: this.dayButtons(input.offsetMinutes, input.now),
               },
             ],
           };
         }
-        session.step = 'titulo';
-        return { replies: [{ kind: 'text', text: BOT_MESSAGES.pedeTitulo }] };
+        session.step = "titulo";
+        return { replies: [{ kind: "text", text: BOT_MESSAGES.pedeTitulo }] };
       }
-      case 'falhou': {
-        // parse/timeout NUNCA persiste hipótese (régua D1): segue o guiado com o que a
-        // fala trouxe (spec A5).
-        if (extracted.titleHint && extracted.titleHint.trim()) {
-          c.title = extracted.titleHint.trim();
-          session.step = 'dia';
+      case "falhou": {
+        // B1 da spec fluxo-criacao-robusto: parse/timeout NUNCA persiste hipótese de
+        // título (a fala inteira jamais vira título) — cai no guiado PERGUNTANDO o título.
+        // Cinto: se a sessão JÁ tem título (ex.: `sem_quando` prévio preencheu algo),
+        // não re-perguntar um dado que existe — segue para o dia.
+        if (c.title) {
+          session.step = "dia";
           return {
             replies: [
               {
-                kind: 'buttons',
+                kind: "buttons",
                 text: BOT_MESSAGES.pedeDia(c.title),
                 buttons: this.dayButtons(input.offsetMinutes, input.now),
               },
             ],
           };
         }
-        session.step = 'titulo';
-        return { replies: [{ kind: 'text', text: BOT_MESSAGES.pedeTitulo }] };
+        session.step = "titulo";
+        return { replies: [{ kind: "text", text: BOT_MESSAGES.pedeTitulo }] };
+      }
+      case "fim_invalido": {
+        // A2/ADR-010: fim dito ilegível/≤ início NUNCA é needs_review — reaproveita o
+        // início bom (eco C1) e pergunta SÓ o fim (mesma transição do aceito sem fim).
+        c.title = extracted.data.title;
+        c.startUtc = extracted.data.startUtc;
+        c.endUtc = undefined;
+        // M1 do review: fim inválido ⇒ nada de duração guardada (novo atalho limpa a
+        // anterior); o passo `fim` pergunta e define o fim do zero.
+        c.shortcutDurationMs = undefined;
+        c.startMinutes = undefined;
+        c.day = undefined;
+        c.startFromShortcut = true;
+        if (extracted.data.dateEvidence)
+          c.dateEvidence = extracted.data.dateEvidence;
+        const parts = utcToZonedParts(
+          extracted.data.startUtc,
+          input.offsetMinutes,
+        );
+        c.startDayLocal = {
+          year: parts.year,
+          month: parts.month,
+          day: parts.day,
+        };
+        session.step = "fim";
+        const p = utcToZonedParts(extracted.data.startUtc, input.offsetMinutes);
+        const weekday = ["dom", "seg", "ter", "qua", "qui", "sex", "sáb"][
+          new Date(Date.UTC(p.year, p.month - 1, p.day)).getUTCDay()
+        ];
+        return {
+          replies: [
+            {
+              kind: "text",
+              text: BOT_MESSAGES.perguntaFimAposAtalho(
+                `${c.title} — ${weekday} ${pad(p.day)}/${pad(p.month)} ${pad(p.hour)}:${pad(p.minute)}`,
+              ),
+            },
+          ],
+        };
       }
     }
+  }
+
+  /**
+   * D1/D2 da spec fluxo-criacao-robusto: clique no atalho do teclado de lembrete
+   * (callback `flow:lembrete:*` decodificada na borda). Zero LLM, zero reminderRules de
+   * fala: os atalhos materializam as MESMAS saídas de `resolveReminderShortcut`;
+   * 'custom' só responde o convite de texto livre e mantém o passo.
+   */
+  private applyReminderChoice(
+    session: FlowSession,
+    input: HandleTurnInput,
+  ): FlowOutcome {
+    const c = session.candidate;
+    const choice = input.reminderChoice!;
+    if (choice === "custom") {
+      return {
+        replies: [{ kind: "text", text: BOT_MESSAGES.lembreteConviteCustom }],
+      };
+    }
+    const regras: NotificationRuleInput[] =
+      choice === "24h"
+        ? [{ type: "before_days", value: 1 }]
+        : choice === "3d"
+          ? [{ type: "before_days", value: 3 }]
+          : choice === "countdown"
+            ? [{ type: "countdown_3_2_1" }]
+            : [{ type: "none" }];
+    c.reminderRules = regras;
+    c.reminderTries = 0; // sucesso (por clique ou texto) zera o anti-loop
+    session.step = "confirmacao";
+    return {
+      replies: [
+        {
+          kind: "buttons",
+          text: BOT_MESSAGES.resumoFinal(
+            this.resumo(c, input),
+            c.notes ? c.notes : "sem notas",
+            this.lembreteResumo(c, input),
+          ),
+          buttons: ["confirmar", "alterar"],
+        },
+      ],
+    };
   }
 
   /** Passo do criar que PODE ser substituído pela sessão do editar (spec regra 9). */
   private isCreatingFlowStep(step: FlowStep): boolean {
     return (
-      step === 'titulo' ||
-      step === 'dia' ||
-      step === 'hora' ||
-      step === 'fim' ||
-      step === 'conflito' ||
-      step === 'notas' ||
-      step === 'lembrete' ||
-      step === 'confirmacao'
+      step === "titulo" ||
+      step === "dia" ||
+      step === "hora" ||
+      step === "fim" ||
+      step === "conflito" ||
+      step === "notas" ||
+      step === "lembrete" ||
+      step === "confirmacao"
     );
   }
 
@@ -682,15 +1026,15 @@ export class SchedulingFlowMachine {
    */
   private openEditWithProtection(
     session: FlowSession,
-    intent: 'editar_compromisso' | 'cancelar_compromisso',
+    intent: "editar_compromisso" | "cancelar_compromisso",
     input: HandleTurnInput,
   ): FlowOutcome {
     const edit: EditFlowState = {
-      action: intent === 'cancelar_compromisso' ? 'cancelar' : 'editar',
+      action: intent === "cancelar_compromisso" ? "cancelar" : "editar",
       descricao: input.text.trim() || undefined,
       tries: 0,
     };
-    session.editMode = intent === 'cancelar_compromisso' ? 'cancel' : 'edit';
+    session.editMode = intent === "cancelar_compromisso" ? "cancel" : "edit";
     const c = session.candidate;
     if (c.title) edit.fromTitle = c.title;
     if (c.startUtc && c.endUtc) {
@@ -698,16 +1042,20 @@ export class SchedulingFlowMachine {
       edit.fromEndUtc = c.endUtc;
     }
     session.candidate.edit = edit;
-    if (session.step === 'titulo' && !session.candidate.title) {
+    if (session.step === "titulo" && !session.candidate.title) {
       // Nada concreto em andamento (criar recém-aberto sem título): não há o que
       // proteger (spec regra 9 protege o CANDIDATO) — abre direto o editar.
-      session.step = 'edit_descricao';
+      session.step = "edit_descricao";
       session.editRedefine = true;
-      return { replies: [{ kind: 'text', text: BOT_MESSAGES.pedeDescricaoEdicao }] };
+      return {
+        replies: [{ kind: "text", text: BOT_MESSAGES.pedeDescricaoEdicao }],
+      };
     }
     session.prevStep = session.step;
-    session.step = 'confirmar_substituicao';
-    return { replies: [{ kind: 'text', text: BOT_MESSAGES.confirmarSubstituicao }] };
+    session.step = "confirmar_substituicao";
+    return {
+      replies: [{ kind: "text", text: BOT_MESSAGES.confirmarSubstituicao }],
+    };
   }
 
   /**
@@ -716,26 +1064,31 @@ export class SchedulingFlowMachine {
    * com escolha determinística; 0 ⇒ "não encontrei" e a sessão morre (spec D da
    * consulta continua disponível — o service já ofereceu a consulta na mensagem).
    */
-  private applyEditLocation(session: FlowSession, input: HandleTurnInput): FlowOutcome {
+  private applyEditLocation(
+    session: FlowSession,
+    input: HandleTurnInput,
+  ): FlowOutcome {
     const loc = input.editLocation!;
-    if (loc.kind === 'ask_descricao') {
+    if (loc.kind === "ask_descricao") {
       // sem descrição E sem quando: re-pergunta qual compromisso (risco do plano —
       // nunca listar o mundo). A sessão de edição espera a resposta em `edit_descricao`.
-      session.step = 'edit_descricao';
+      session.step = "edit_descricao";
       session.editRedefine = true;
-      return { replies: [{ kind: 'text', text: BOT_MESSAGES.pedeDescricaoEdicao }] };
-    }
-    if (loc.kind === 'none') {
       return {
-        replies: [{ kind: 'text', text: BOT_MESSAGES.naoEncontreiCandidato }],
+        replies: [{ kind: "text", text: BOT_MESSAGES.pedeDescricaoEdicao }],
+      };
+    }
+    if (loc.kind === "none") {
+      return {
+        replies: [{ kind: "text", text: BOT_MESSAGES.naoEncontreiCandidato }],
         done: true,
       };
     }
-    if (loc.kind === 'candidates') {
+    if (loc.kind === "candidates") {
       const list = loc.data.slice(0, BOT_MESSAGES.maxCandidatas);
-      session.step = 'escolher_candidata';
+      session.step = "escolher_candidata";
       session.candidate.edit = {
-        action: session.candidate.edit?.action ?? 'editar',
+        action: session.candidate.edit?.action ?? "editar",
         descricao: session.candidate.edit?.descricao,
         intervalRange: session.candidate.edit?.intervalRange,
         candidates: list,
@@ -744,18 +1097,25 @@ export class SchedulingFlowMachine {
       return {
         replies: [
           {
-            kind: 'text',
-            text: BOT_MESSAGES.listaCandidatas(this.candidateLines(list, input).join('\n')),
+            kind: "text",
+            text: BOT_MESSAGES.listaCandidatas(
+              this.candidateLines(list, input).join("\n"),
+            ),
           },
         ],
       };
     }
     // candidata única (o ramo `candidates` já devolveu acima; narrowing explícito)
-    if (loc.kind !== 'candidate') {
-      return { replies: [{ kind: 'text', text: BOT_MESSAGES.pediuEsclarecimento }] };
+    if (loc.kind !== "candidate") {
+      return {
+        replies: [{ kind: "text", text: BOT_MESSAGES.pediuEsclarecimento }],
+      };
     }
     const appt = loc.data;
-    const edit = session.candidate.edit ?? { action: 'editar' as const, tries: 0 };
+    const edit = session.candidate.edit ?? {
+      action: "editar" as const,
+      tries: 0,
+    };
     session.editRedefine = false;
     session.candidate.edit = {
       ...edit,
@@ -767,15 +1127,18 @@ export class SchedulingFlowMachine {
     };
     // needs_review não é editável/cancelável pelo chat? Cancelar PODE (apagar é sempre
     // possível e derruba a fila); EDITAR em revisão ⇒ aponta o site (decisão #3).
-    if (edit.action === 'editar' && appt.status === 'needs_review') {
-      return { replies: [{ kind: 'text', text: BOT_MESSAGES.needsReviewNoChat }], done: true };
+    if (edit.action === "editar" && appt.status === "needs_review") {
+      return {
+        replies: [{ kind: "text", text: BOT_MESSAGES.needsReviewNoChat }],
+        done: true,
+      };
     }
-    if (edit.action === 'cancelar') {
-      session.step = 'confirmar_cancelamento_compromisso';
+    if (edit.action === "cancelar") {
+      session.step = "confirmar_cancelamento_compromisso";
       return {
         replies: [
           {
-            kind: 'text',
+            kind: "text",
             text: BOT_MESSAGES.perguntaCancelarCompromisso(
               appt.title,
               this.formatRange(appt.startsAt, appt.endsAt, input.offsetMinutes),
@@ -784,17 +1147,26 @@ export class SchedulingFlowMachine {
         ],
       };
     }
-    if (edit.action === 'editar') {
+    if (edit.action === "editar") {
       // guarda o snapshot; a fala do próximo turno é a MUDANÇA (interpretador edit) OU
       // um "dd/mm HH:MM" resolvido deterministicamente pela própria máquina.
       session.editRedefine = true;
-      return { replies: [{ kind: 'text', text: BOT_MESSAGES.pedeOQueMudar(appt.title) }] };
+      return {
+        replies: [
+          { kind: "text", text: BOT_MESSAGES.pedeOQueMudar(appt.title) },
+        ],
+      };
     }
-    return { replies: [{ kind: 'text', text: BOT_MESSAGES.pediuEsclarecimento }] };
+    return {
+      replies: [{ kind: "text", text: BOT_MESSAGES.pediuEsclarecimento }],
+    };
   }
 
   /** Linhas "1. Título — qui 08/10 11:00–12:00" (escape é de quem renderiza — gotcha 6). */
-  private candidateLines(list: EditCandidateLike[], input: HandleTurnInput): string[] {
+  private candidateLines(
+    list: EditCandidateLike[],
+    input: HandleTurnInput,
+  ): string[] {
     return list.map(
       (a, i) =>
         `${i + 1}. ${a.title} — ${this.formatRange(a.startsAt, a.endsAt, input.offsetMinutes)}`,
@@ -807,54 +1179,64 @@ export class SchedulingFlowMachine {
    * (a resposta "sim"/"1" é DADO do passo — zero LLM; spec regra 22).
    */
   private awaitsEditReinterpret(step: FlowStep): boolean {
-    return step === 'edit_descricao' || step === 'edit_propor';
+    return step === "edit_descricao" || step === "edit_propor";
   }
 
   /** Fase 4: fala livre nos passos do editar/cancelar (zero LLM — spec regra 22). */
   private isEditStep(step: FlowStep): boolean {
     return (
-      step === 'edit_propor' ||
-      step === 'edit_descricao' ||
-      step === 'escolher_candidata' ||
-      step === 'confirmar_edicao' ||
-      step === 'confirmar_cancelamento_compromisso'
+      step === "edit_propor" ||
+      step === "edit_descricao" ||
+      step === "escolher_candidata" ||
+      step === "confirmar_edicao" ||
+      step === "confirmar_cancelamento_compromisso"
     );
   }
 
   /** Fase 4: fala LIVRE nos passos de edição/cancelamento — tudo determinístico. */
-  private answerEditStep(session: FlowSession, input: HandleTurnInput): FlowOutcome {
+  private answerEditStep(
+    session: FlowSession,
+    input: HandleTurnInput,
+  ): FlowOutcome {
     const text = input.text.trim();
     const edit = session.candidate.edit;
 
     switch (session.step) {
       // ---------- passo `edit_propor`: re-pergunta do quando novo APÓS um conflito ----------
-      case 'edit_propor': {
+      case "edit_propor": {
         if (!edit?.appointmentId || !edit.fromStartUtc || !edit.fromEndUtc) {
           return {
-            replies: [{ kind: 'text', text: BOT_MESSAGES.pediuEsclarecimento }],
+            replies: [{ kind: "text", text: BOT_MESSAGES.pediuEsclarecimento }],
             done: true,
           };
         }
         if (edit.tries >= MAX_RESCHEDULE_TRIES) {
           const limite = BOT_MESSAGES.conflitoEdicao({
-            title: edit.toTitle ?? edit.fromTitle ?? 'o compromisso',
+            title: edit.toTitle ?? edit.fromTitle ?? "o compromisso",
             range: this.formatRange(
               edit.toStartUtc ?? edit.fromStartUtc,
               edit.toEndUtc ?? edit.fromEndUtc,
               input.offsetMinutes,
             ),
-            conflictTitle: edit.lastConflict?.title ?? 'outro compromisso',
+            conflictTitle: edit.lastConflict?.title ?? "outro compromisso",
             conflictRange: edit.lastConflict
               ? this.formatRange(
                   edit.lastConflict.startsAt,
                   edit.lastConflict.endsAt,
                   input.offsetMinutes,
                 )
-              : this.formatRange(edit.fromStartUtc, edit.fromEndUtc, input.offsetMinutes),
+              : this.formatRange(
+                  edit.fromStartUtc,
+                  edit.fromEndUtc,
+                  input.offsetMinutes,
+                ),
           });
           return {
             replies: [
-              { kind: 'text', text: `${limite}\n\n${BOT_MESSAGES.conflitoLimiteAtingido}` },
+              {
+                kind: "text",
+                text: `${limite}\n\n${BOT_MESSAGES.conflitoLimiteAtingido}`,
+              },
             ],
           };
         }
@@ -862,17 +1244,26 @@ export class SchedulingFlowMachine {
         if (whenText) {
           edit.toStartUtc = whenText.startUtc;
           edit.toEndUtc = new Date(
-            whenText.startUtc.getTime() + (edit.fromEndUtc.getTime() - edit.fromStartUtc.getTime()),
+            whenText.startUtc.getTime() +
+              (edit.fromEndUtc.getTime() - edit.fromStartUtc.getTime()),
           );
-          session.step = 'confirmar_edicao';
+          session.step = "confirmar_edicao";
           return {
             replies: [
               {
-                kind: 'text',
+                kind: "text",
                 text: BOT_MESSAGES.diffEdicao({
-                  title: edit.fromTitle ?? 'o compromisso',
-                  from: this.formatRange(edit.fromStartUtc, edit.fromEndUtc, input.offsetMinutes),
-                  to: this.formatRange(edit.toStartUtc, edit.toEndUtc, input.offsetMinutes),
+                  title: edit.fromTitle ?? "o compromisso",
+                  from: this.formatRange(
+                    edit.fromStartUtc,
+                    edit.fromEndUtc,
+                    input.offsetMinutes,
+                  ),
+                  to: this.formatRange(
+                    edit.toStartUtc,
+                    edit.toEndUtc,
+                    input.offsetMinutes,
+                  ),
                 }),
               },
             ],
@@ -881,30 +1272,47 @@ export class SchedulingFlowMachine {
         // fala sem quando utilizável: re-posta a pergunta do conflito (o "desistir" da
         // regra 13 é reconhecido na entrada do turno; aqui a fala não foi entendida).
         return {
-          replies: [{ kind: 'text', text: BOT_MESSAGES.reperguntaHorarioNovo }],
+          replies: [{ kind: "text", text: BOT_MESSAGES.reperguntaHorarioNovo }],
         };
       }
 
-      case 'edit_descricao': {
-        if (!text) return { replies: [{ kind: 'text', text: BOT_MESSAGES.pedeDescricaoEdicao }] };
+      case "edit_descricao": {
+        if (!text)
+          return {
+            replies: [{ kind: "text", text: BOT_MESSAGES.pedeDescricaoEdicao }],
+          };
         // candidata já achada e a fala é o QUANDO novo em texto simples ("sexta 16h"):
         // resolve deterministicamente só os formatos que o teclado de dias usa
         // ("dd/mm" e "HH:MM") — o resto volta ao interpretador (borda) no service.
         const resolved = this.resolveWhenText(text, input);
-        if (resolved && edit?.appointmentId && edit.fromStartUtc && edit.fromEndUtc) {
+        if (
+          resolved &&
+          edit?.appointmentId &&
+          edit.fromStartUtc &&
+          edit.fromEndUtc
+        ) {
           edit.toStartUtc = resolved.startUtc;
           edit.toEndUtc = new Date(
-            resolved.startUtc.getTime() + (edit.fromEndUtc.getTime() - edit.fromStartUtc.getTime()),
+            resolved.startUtc.getTime() +
+              (edit.fromEndUtc.getTime() - edit.fromStartUtc.getTime()),
           );
-          session.step = 'confirmar_edicao';
+          session.step = "confirmar_edicao";
           return {
             replies: [
               {
-                kind: 'text',
+                kind: "text",
                 text: BOT_MESSAGES.diffEdicao({
-                  title: edit.fromTitle ?? 'o compromisso',
-                  from: this.formatRange(edit.fromStartUtc, edit.fromEndUtc, input.offsetMinutes),
-                  to: this.formatRange(edit.toStartUtc, edit.toEndUtc, input.offsetMinutes),
+                  title: edit.fromTitle ?? "o compromisso",
+                  from: this.formatRange(
+                    edit.fromStartUtc,
+                    edit.fromEndUtc,
+                    input.offsetMinutes,
+                  ),
+                  to: this.formatRange(
+                    edit.toStartUtc,
+                    edit.toEndUtc,
+                    input.offsetMinutes,
+                  ),
                 }),
               },
             ],
@@ -913,22 +1321,33 @@ export class SchedulingFlowMachine {
         // com candidata escolhida e texto que NÃO é quando utilizável: a fala é outro
         // pedido de mudança — mantém a candidata e deixa a borda reinterpretar.
         if (edit?.appointmentId) {
-          return { replies: [{ kind: 'text', text: BOT_MESSAGES.procurandoMudanca }] };
+          return {
+            replies: [{ kind: "text", text: BOT_MESSAGES.procurandoMudanca }],
+          };
         }
         // sem candidata: a fala é a DESCRIÇÃO do compromisso procurado (spec B11).
         if (edit) edit.descricao = text;
-        else session.candidate.edit = { action: 'editar', descricao: text, tries: 0 };
-        return { replies: [{ kind: 'text', text: BOT_MESSAGES.procurandoCandidato }] };
+        else
+          session.candidate.edit = {
+            action: "editar",
+            descricao: text,
+            tries: 0,
+          };
+        return {
+          replies: [{ kind: "text", text: BOT_MESSAGES.procurandoCandidato }],
+        };
       }
 
-      case 'escolher_candidata': {
+      case "escolher_candidata": {
         const list = edit?.candidates ?? [];
         if (!text || list.length === 0) {
           return {
             replies: [
               {
-                kind: 'text',
-                text: BOT_MESSAGES.listaCandidatas(this.candidateLines(list, input).join('\n')),
+                kind: "text",
+                text: BOT_MESSAGES.listaCandidatas(
+                  this.candidateLines(list, input).join("\n"),
+                ),
               },
             ],
           };
@@ -954,10 +1373,12 @@ export class SchedulingFlowMachine {
           return {
             replies: [
               {
-                kind: 'text',
+                kind: "text",
                 text:
                   BOT_MESSAGES.naoEntendi +
-                  BOT_MESSAGES.listaCandidatas(this.candidateLines(list, input).join('\n')),
+                  BOT_MESSAGES.listaCandidatas(
+                    this.candidateLines(list, input).join("\n"),
+                  ),
               },
             ],
           };
@@ -965,27 +1386,34 @@ export class SchedulingFlowMachine {
         return this.pickCandidate(session, picked, input);
       }
 
-      case 'confirmar_edicao': {
+      case "confirmar_edicao": {
         const yes = parseYesNo(text);
         if (yes === true) {
           if (!edit?.appointmentId || !edit.toStartUtc || !edit.toEndUtc) {
             return {
-              replies: [{ kind: 'text', text: BOT_MESSAGES.reperguntaHorarioNovo }],
+              replies: [
+                { kind: "text", text: BOT_MESSAGES.reperguntaHorarioNovo },
+              ],
             };
           }
           const patch: { title?: string; startsAt?: Date; endsAt?: Date } = {
             startsAt: edit.toStartUtc,
             endsAt: edit.toEndUtc,
           };
-          if (edit.toTitle && edit.toTitle !== edit.fromTitle) patch.title = edit.toTitle;
-          const title = edit.toTitle ?? edit.fromTitle ?? 'o compromisso';
+          if (edit.toTitle && edit.toTitle !== edit.fromTitle)
+            patch.title = edit.toTitle;
+          const title = edit.toTitle ?? edit.fromTitle ?? "o compromisso";
           return {
             replies: [
               {
-                kind: 'text',
+                kind: "text",
                 text: BOT_MESSAGES.edicaoFeita(
                   title,
-                  this.formatRange(edit.toStartUtc, edit.toEndUtc, input.offsetMinutes),
+                  this.formatRange(
+                    edit.toStartUtc,
+                    edit.toEndUtc,
+                    input.offsetMinutes,
+                  ),
                 ),
               },
             ],
@@ -994,15 +1422,18 @@ export class SchedulingFlowMachine {
           };
         }
         if (yes === false || givesUp(text)) {
-          return { replies: [{ kind: 'text', text: BOT_MESSAGES.edicaoNegada }], done: true };
+          return {
+            replies: [{ kind: "text", text: BOT_MESSAGES.edicaoNegada }],
+            done: true,
+          };
         }
         // texto ambíguo: re-posta a pergunta COM o diff (a pergunta de confirmação)
         return {
           replies: [
             {
-              kind: 'text',
+              kind: "text",
               text: BOT_MESSAGES.diffEdicao({
-                title: edit?.toTitle ?? edit?.fromTitle ?? 'o compromisso',
+                title: edit?.toTitle ?? edit?.fromTitle ?? "o compromisso",
                 from: this.formatRange(
                   edit?.fromStartUtc ?? new Date(0),
                   edit?.fromEndUtc ?? new Date(0),
@@ -1019,22 +1450,24 @@ export class SchedulingFlowMachine {
         };
       }
 
-      case 'confirmar_cancelamento_compromisso': {
+      case "confirmar_cancelamento_compromisso": {
         const yes = parseYesNo(text);
         if (yes === true) {
           if (!edit?.appointmentId) {
             return {
-              replies: [{ kind: 'text', text: BOT_MESSAGES.pediuEsclarecimento }],
+              replies: [
+                { kind: "text", text: BOT_MESSAGES.pediuEsclarecimento },
+              ],
               done: true,
             };
           }
           const from = edit.fromStartUtc ?? new Date(0);
           const to = edit.fromEndUtc ?? new Date(0);
-          const title = edit.fromTitle ?? 'o compromisso';
+          const title = edit.fromTitle ?? "o compromisso";
           return {
             replies: [
               {
-                kind: 'text',
+                kind: "text",
                 text: BOT_MESSAGES.cancelamentoFeito(
                   title,
                   this.formatRange(from, to, input.offsetMinutes),
@@ -1051,15 +1484,18 @@ export class SchedulingFlowMachine {
           };
         }
         if (yes === false || givesUp(text)) {
-          return { replies: [{ kind: 'text', text: BOT_MESSAGES.edicaoNegada }], done: true };
+          return {
+            replies: [{ kind: "text", text: BOT_MESSAGES.edicaoNegada }],
+            done: true,
+          };
         }
         // ambíguo: re-posta a pergunta de cancelar
         return {
           replies: [
             {
-              kind: 'text',
+              kind: "text",
               text: BOT_MESSAGES.perguntaCancelarCompromisso(
-                edit?.fromTitle ?? 'o compromisso',
+                edit?.fromTitle ?? "o compromisso",
                 this.formatRange(
                   edit?.fromStartUtc ?? new Date(0),
                   edit?.fromEndUtc ?? new Date(0),
@@ -1071,7 +1507,9 @@ export class SchedulingFlowMachine {
         };
       }
     }
-    return { replies: [{ kind: 'text', text: BOT_MESSAGES.pediuEsclarecimento }] };
+    return {
+      replies: [{ kind: "text", text: BOT_MESSAGES.pediuEsclarecimento }],
+    };
   }
 
   /** Fase 4: candidata escolhida ⇒ cancelar pede confirmação; editar espera a mudança. */
@@ -1085,15 +1523,18 @@ export class SchedulingFlowMachine {
     edit.fromTitle = appt.title;
     edit.fromStartUtc = appt.startsAt;
     edit.fromEndUtc = appt.endsAt;
-    if (edit.action === 'editar' && appt.status === 'needs_review') {
-      return { replies: [{ kind: 'text', text: BOT_MESSAGES.needsReviewNoChat }], done: true };
+    if (edit.action === "editar" && appt.status === "needs_review") {
+      return {
+        replies: [{ kind: "text", text: BOT_MESSAGES.needsReviewNoChat }],
+        done: true,
+      };
     }
-    if (edit.action === 'cancelar') {
-      session.step = 'confirmar_cancelamento_compromisso';
+    if (edit.action === "cancelar") {
+      session.step = "confirmar_cancelamento_compromisso";
       return {
         replies: [
           {
-            kind: 'text',
+            kind: "text",
             text: BOT_MESSAGES.perguntaCancelarCompromisso(
               appt.title,
               this.formatRange(appt.startsAt, appt.endsAt, input.offsetMinutes),
@@ -1102,17 +1543,27 @@ export class SchedulingFlowMachine {
         ],
       };
     }
-    session.step = 'edit_descricao';
-    return { replies: [{ kind: 'text', text: BOT_MESSAGES.pedeOQueMudar(appt.title) }] };
+    session.step = "edit_descricao";
+    return {
+      replies: [{ kind: "text", text: BOT_MESSAGES.pedeOQueMudar(appt.title) }],
+    };
   }
 
   /** Fase 4: "dd/mm [HH:MM]" / "HH:MM" falados no passo de edição (determinístico). */
-  private resolveWhenText(text: string, input: HandleTurnInput): { startUtc: Date } | null {
-    const t = text.toLowerCase().replace(/\s+/g, ' ').trim();
+  private resolveWhenText(
+    text: string,
+    input: HandleTurnInput,
+  ): { startUtc: Date } | null {
+    const t = text.toLowerCase().replace(/\s+/g, " ").trim();
     const day = this.resolveDayShortcut(t, input);
     const time = parseTime(t);
     if (day && time === null) {
-      return { startUtc: zonedTimeToUtc({ ...day, hour: 9, minute: 0 }, input.offsetMinutes) };
+      return {
+        startUtc: zonedTimeToUtc(
+          { ...day, hour: 9, minute: 0 },
+          input.offsetMinutes,
+        ),
+      };
     }
     if (day && time !== null) {
       return {
@@ -1136,32 +1587,46 @@ export class SchedulingFlowMachine {
   }
 
   /** Fase 4: régua do quando do editar consumida (spec C12/C13). */
-  private applyEditChange(session: FlowSession, input: HandleTurnInput): FlowOutcome {
+  private applyEditChange(
+    session: FlowSession,
+    input: HandleTurnInput,
+  ): FlowOutcome {
     const change = input.editChange!;
     const edit = session.candidate.edit;
     if (!edit?.appointmentId || !edit.fromStartUtc || !edit.fromEndUtc) {
       // estado perdido (sessão velha): melhor caminho é recomeçar o pedido
-      return { replies: [{ kind: 'text', text: BOT_MESSAGES.pediuEsclarecimento }], done: true };
+      return {
+        replies: [{ kind: "text", text: BOT_MESSAGES.pediuEsclarecimento }],
+        done: true,
+      };
     }
-    if (change.kind === 'reperguntar') {
+    if (change.kind === "reperguntar") {
       session.editRedefine = true;
       return {
-        replies: [{ kind: 'text', text: BOT_MESSAGES.reperguntaHorarioNovo }],
+        replies: [{ kind: "text", text: BOT_MESSAGES.reperguntaHorarioNovo }],
       };
     }
     edit.toStartUtc = change.toStartUtc;
     edit.toEndUtc = change.toEndUtc;
     if (change.toTitle) edit.toTitle = change.toTitle;
     session.editRedefine = false;
-    session.step = 'confirmar_edicao';
+    session.step = "confirmar_edicao";
     return {
       replies: [
         {
-          kind: 'text',
+          kind: "text",
           text: BOT_MESSAGES.diffEdicao({
-            title: edit.toTitle ?? edit.fromTitle ?? 'o compromisso',
-            from: this.formatRange(edit.fromStartUtc, edit.fromEndUtc, input.offsetMinutes),
-            to: this.formatRange(change.toStartUtc, change.toEndUtc, input.offsetMinutes),
+            title: edit.toTitle ?? edit.fromTitle ?? "o compromisso",
+            from: this.formatRange(
+              edit.fromStartUtc,
+              edit.fromEndUtc,
+              input.offsetMinutes,
+            ),
+            to: this.formatRange(
+              change.toStartUtc,
+              change.toEndUtc,
+              input.offsetMinutes,
+            ),
           }),
         },
       ],
@@ -1169,14 +1634,20 @@ export class SchedulingFlowMachine {
   }
 
   /** Fase 4: o "sim" estourou conflito no update — mostra o conflitante e re-pergunta (C13). */
-  private reportEditConflict(session: FlowSession, input: HandleTurnInput): FlowOutcome {
+  private reportEditConflict(
+    session: FlowSession,
+    input: HandleTurnInput,
+  ): FlowOutcome {
     const edit = session.candidate.edit;
     if (!edit)
-      return { replies: [{ kind: 'text', text: BOT_MESSAGES.pediuEsclarecimento }], done: true };
+      return {
+        replies: [{ kind: "text", text: BOT_MESSAGES.pediuEsclarecimento }],
+        done: true,
+      };
     edit.tries += 1;
     const conflict = input.editConflict!;
     edit.lastConflict = conflict;
-    session.step = 'edit_propor';
+    session.step = "edit_propor";
     const text = BOT_MESSAGES.conflitoEdicao({
       title: edit.toTitle ?? edit.fromTitle ?? conflict.title,
       range: this.formatRange(
@@ -1185,64 +1656,96 @@ export class SchedulingFlowMachine {
         input.offsetMinutes,
       ),
       conflictTitle: conflict.title,
-      conflictRange: this.formatRange(conflict.startsAt, conflict.endsAt, input.offsetMinutes),
+      conflictRange: this.formatRange(
+        conflict.startsAt,
+        conflict.endsAt,
+        input.offsetMinutes,
+      ),
     });
     const finalText =
       edit.tries >= MAX_RESCHEDULE_TRIES
         ? `${text}\n\n${BOT_MESSAGES.conflitoLimiteAtingido}`
         : text;
-    return { replies: [{ kind: 'text', text: finalText }] };
+    return { replies: [{ kind: "text", text: finalText }] };
   }
 
   /** Resposta ao passo atual: o texto do usuario e interpretado como DADO do passo. */
-  private async answerStep(session: FlowSession, input: HandleTurnInput): Promise<FlowOutcome> {
+  private async answerStep(
+    session: FlowSession,
+    input: HandleTurnInput,
+  ): Promise<FlowOutcome> {
     const text = input.text.trim();
     const c = session.candidate;
 
     switch (session.step) {
       // ---------- Fase 4: passos do editar/cancelar (fala livre determinística) ----------
 
-      case 'edit_propor':
-      case 'edit_descricao':
-      case 'escolher_candidata':
-      case 'confirmar_edicao':
-      case 'confirmar_cancelamento_compromisso':
+      case "edit_propor":
+      case "edit_descricao":
+      case "escolher_candidata":
+      case "confirmar_edicao":
+      case "confirmar_cancelamento_compromisso":
         return this.answerEditStep(session, input);
 
-      case 'confirmar_cancelamento': {
+      case "confirmar_cancelamento": {
         const yes = parseYesNo(text);
         if (yes === true || givesUp(text)) return this.cancel();
         if (yes === false) {
           // volta ao passo em que estava (candidato intacto — spec: nada é descartado)
           session.step = this.rewindStep(session);
-          return { replies: [{ kind: 'text', text: 'Beleza, seguimos de onde paramos! 🙂' }] };
+          return {
+            replies: [
+              { kind: "text", text: "Beleza, seguimos de onde paramos! 🙂" },
+            ],
+          };
         }
-        return { replies: [{ kind: 'text', text: BOT_MESSAGES.pediuEsclarecimento }] };
+        return {
+          replies: [{ kind: "text", text: BOT_MESSAGES.pediuEsclarecimento }],
+        };
       }
 
-      case 'confirmar_substituicao': {
+      case "confirmar_substituicao": {
         const yes = parseYesNo(text);
         if (yes === true) return this.cancel();
         if (yes === false) {
           session.step = this.rewindStep(session);
           return {
-            replies: [{ kind: 'text', text: 'Beleza, continuamos o agendamento atual. 🙂' }],
+            replies: [
+              {
+                kind: "text",
+                text: "Beleza, continuamos o agendamento atual. 🙂",
+              },
+            ],
           };
         }
-        return { replies: [{ kind: 'text', text: BOT_MESSAGES.pediuEsclarecimento }] };
+        return {
+          replies: [{ kind: "text", text: BOT_MESSAGES.pediuEsclarecimento }],
+        };
       }
 
-      case 'titulo': {
+      case "titulo": {
         if (!text)
           return {
-            replies: [{ kind: 'text', text: BOT_MESSAGES.naoEntendi + BOT_MESSAGES.pedeTitulo }],
+            replies: [
+              {
+                kind: "text",
+                text: BOT_MESSAGES.naoEntendi + BOT_MESSAGES.pedeTitulo,
+              },
+            ],
           };
         c.title = text;
-        session.step = 'dia';
+        // B2/B3 da spec fluxo-criacao-robusto: título perguntado sobre um candidato cujo
+        // QUANDO já veio materializado do atalho (sem_titulo) ⇒ o intervalo está pronto:
+        // segue direto p/ o conflito (nunca guiado re-perguntando dia/hora — C1).
+        if (!c.day && c.startMinutes === undefined && c.startUtc && c.endUtc) {
+          session.step = "conflito";
+          return this.checkConflict(session, input);
+        }
+        session.step = "dia";
         return {
           replies: [
             {
-              kind: 'buttons',
+              kind: "buttons",
               text: BOT_MESSAGES.pedeDia(text),
               buttons: this.dayButtons(input.offsetMinutes, input.now),
             },
@@ -1250,33 +1753,42 @@ export class SchedulingFlowMachine {
         };
       }
 
-      case 'dia': {
+      case "dia": {
         const day = this.resolveDayShortcut(text, input);
         if (day) return this.setDay(session, day, input);
         // Atalho do criar (Fase 4): horário livre em texto ("14:00") no dia já extraído
         // pelo modelo — mesmo atalho determinístico do teclado de horas (zero LLM).
-        if (c.startDayLocal && !c.startUtc && parseTime(text) !== null)
+        // Guard (B2/sem_titulo): com o início JÁ materializado do atalho o dia não é
+        // perguntado — um horário solto aqui é DADO do passo (re-pergunta o teclado).
+        if (
+          c.startDayLocal &&
+          !c.startFromShortcut &&
+          !c.startUtc &&
+          parseTime(text) !== null
+        )
           return this.setStart(session, text, input);
         // texto livre de dia é Fase 3: re-pergunta o teclado (spec fora de escopo).
         return {
           replies: [
             {
-              kind: 'buttons',
-              text: BOT_MESSAGES.naoEntendi + BOT_MESSAGES.pedeDia(c.title ?? 'o compromisso'),
+              kind: "buttons",
+              text:
+                BOT_MESSAGES.naoEntendi +
+                BOT_MESSAGES.pedeDia(c.title ?? "o compromisso"),
               buttons: this.dayButtons(input.offsetMinutes, input.now),
             },
           ],
         };
       }
 
-      case 'hora': {
+      case "hora": {
         const minutes = parseTime(text);
         if (minutes === null) {
           const label = dayLabel(c.day, input.now, input.offsetMinutes);
           return {
             replies: [
               {
-                kind: 'buttons',
+                kind: "buttons",
                 text: BOT_MESSAGES.naoEntendi + BOT_MESSAGES.pedeHora(label),
                 buttons: this.hourButtons(),
               },
@@ -1286,41 +1798,65 @@ export class SchedulingFlowMachine {
         return this.setStart(session, text, input);
       }
 
-      case 'fim': {
-        if (!c.startUtc || !c.day || c.startMinutes === undefined) return this.resetToTitle();
+      case "fim": {
+        // dono do passo: atalho (decisão 5 / fim_invalido / sem_titulo) ⇒ `startFromShortcut`
+        // marca o candidato: `startUtc` sem `day`, nada é re-perguntado; guiado clássico
+        // (`dia`+`hora`): o dia do calendário local é obrigatório.
+        const fromShortcut = c.startFromShortcut === true;
+        if (
+          !c.startUtc ||
+          (!fromShortcut && !(c.day && c.startMinutes !== undefined))
+        )
+          return this.resetToTitle();
         const endUtc = this.resolveEnd(text, c.startUtc, input.offsetMinutes);
         if (!endUtc) {
-          return { replies: [{ kind: 'text', text: BOT_MESSAGES.erroHorarioInvalido }] };
+          return {
+            replies: [{ kind: "text", text: BOT_MESSAGES.erroHorarioInvalido }],
+          };
         }
         c.endUtc = endUtc;
+        // M1 do review: a resposta do usuário define o fim AGORA — a duração guardada do
+        // atalho é substituída (supersede) e nunca reaparece numa remarcação posterior.
+        c.shortcutDurationMs = undefined;
+        if (!c.title) {
+          // B2/B3: título inutilizável veio do atalho — com o intervalo completo pronto,
+          // PERGUNTA o título (não descarta o quando). Respondido, `checkConflict` roda
+          // (novo `findConflict` usa o endUtc recém-resolvido — nada fica para trás).
+          session.step = "titulo";
+          return { replies: [{ kind: "text", text: BOT_MESSAGES.pedeTitulo }] };
+        }
         return this.checkConflict(session, input);
       }
 
-      case 'conflito': {
+      case "conflito": {
         const t = this.normalize(text);
-        if (/(abandon|desist|desisti|para por|esquece)/.test(t)) return this.cancel();
+        if (/(abandon|desist|desisti|para por|esquece)/.test(t))
+          return this.cancel();
         if (/(aborta|abortar)/.test(t)) return this.abort();
         if (/cancela/.test(t))
-          return session.candidate.conflictTries >= 1 ? this.abort() : this.cancel();
+          return session.candidate.conflictTries >= 1
+            ? this.abort()
+            : this.cancel();
         const yes = parseYesNo(text);
         if (yes === false) return this.abort();
         // sem uma nova proposta de horário clara, re-pergunta o dia (ramo remarcar).
-        session.step = 'dia';
+        session.step = "dia";
         return {
           replies: [
             {
-              kind: 'buttons',
+              kind: "buttons",
               text:
                 yes === true
-                  ? BOT_MESSAGES.pedeDia('o novo horário')
-                  : BOT_MESSAGES.naoEntendi + BOT_MESSAGES.pedeDia(c.title ?? 'o compromisso'),
+                  ? BOT_MESSAGES.pedeDia("o novo horário")
+                  : BOT_MESSAGES.naoEntendi +
+                    BOT_MESSAGES.pedeDia(c.title ?? "o compromisso"),
               buttons: this.dayButtons(input.offsetMinutes, input.now),
             },
           ],
         };
       }
 
-      case 'notas': {
+      case "notas": {
         // resumo do candidato para a pergunta; texto vazio = replay do passo
         // (consulta do bot respondida — decisão #5 da Fase 2).
         const resumo = this.resumo(c, input);
@@ -1332,28 +1868,28 @@ export class SchedulingFlowMachine {
           // ambiguo: aceita como nota apenas texto "substantivo"; re-pergunta ruido curto
           if (text.length <= 3) {
             return {
-              replies: [{ kind: 'text', text: BOT_MESSAGES.pedeNotas(resumo) }],
+              replies: [{ kind: "text", text: BOT_MESSAGES.pedeNotas(resumo) }],
             };
           }
         }
         if (!text) {
-          return { replies: [{ kind: 'text', text: BOT_MESSAGES.pedeNotas(resumo) }] };
+          return {
+            replies: [{ kind: "text", text: BOT_MESSAGES.pedeNotas(resumo) }],
+          };
         }
         const notes = parseNotesAnswer(text);
         c.notes = notes;
-        session.step = 'lembrete';
+        session.step = "lembrete";
         return {
           replies: [
-            {
-              kind: 'buttons',
-              text: BOT_MESSAGES.pedeLembrete(this.resumo(c, input)),
-              buttons: [...BOT_MESSAGES.lembreteAtalhos],
-            },
+            lembreteKeyboardButtons(
+              BOT_MESSAGES.pedeLembrete(this.resumo(c, input)),
+            ),
           ],
         };
       }
 
-      case 'lembrete': {
+      case "lembrete": {
         // Fase 3 (spec regras 1–5): a fala do passo é roteada pela borda ANTES de
         // chegar aqui (atalho determinístico > interpretador). A máquina consome o
         // veredito em `input.reminder`; duvida => re-pergunta, nunca grava no chute.
@@ -1361,11 +1897,9 @@ export class SchedulingFlowMachine {
         if (!text) {
           return {
             replies: [
-              {
-                kind: 'buttons',
-                text: BOT_MESSAGES.pedeLembrete(this.resumo(c, input)),
-                buttons: [...BOT_MESSAGES.lembreteAtalhos],
-              },
+              lembreteKeyboardButtons(
+                BOT_MESSAGES.pedeLembrete(this.resumo(c, input)),
+              ),
             ],
           };
         }
@@ -1374,64 +1908,83 @@ export class SchedulingFlowMachine {
           // borda sem veredito (ex.: replay de passo): re-pergunta com os atalhos.
           return {
             replies: [
-              {
-                kind: 'buttons',
-                text: BOT_MESSAGES.pedeLembrete(this.resumo(c, input)),
-                buttons: [...BOT_MESSAGES.lembreteAtalhos],
-              },
+              lembreteKeyboardButtons(
+                BOT_MESSAGES.pedeLembrete(this.resumo(c, input)),
+              ),
             ],
           };
         }
         if (!reminder.ok) {
-          // spec 4: parse falho / confiança baixa => RE-PERGUNTA (sem contador: "não"
-          // sempre resolve determinístico na borda, então a saída existe sempre).
+          // D3 da spec fluxo-criacao-robusto (anti-loop, decisão humana: 2 tentativas):
+          // 1ª falha ⇒ re-pergunta com exemplo; 2ª falha CONSECUTIVA ⇒ fala de
+          // recuperação + teclado de atalhos FIXO (sem "personalizado": o convite de
+          // texto livre vai na própria fala — o teclado anti-loop não reabre o loop).
+          // Sucesso zera `reminderTries`.
+          const tries = (c.reminderTries ?? 0) + 1;
+          c.reminderTries = tries;
+          const recovered = tries >= 2;
+          if (recovered) {
+            return {
+              replies: [
+                lembreteKeyboardButtons(
+                  `${BOT_MESSAGES.lembreteNaoEntendido}\n\n${BOT_MESSAGES.lembreteRecuperacao}`,
+                ),
+              ],
+            };
+          }
           return {
             replies: [
-              {
-                kind: 'buttons',
-                text: BOT_MESSAGES.lembreteNaoEntendido,
-                buttons: [...BOT_MESSAGES.lembreteAtalhos],
-              },
+              lembreteKeyboardButtons(BOT_MESSAGES.lembreteNaoEntendido),
             ],
           };
         }
         c.reminderRules = reminder.regras;
-        session.step = 'confirmacao';
+        c.reminderTries = 0; // sucesso (texto livre ou atalho falado) limpa o anti-loop
+        session.step = "confirmacao";
         return {
           replies: [
             {
-              kind: 'buttons',
+              kind: "buttons",
               text: BOT_MESSAGES.resumoFinal(
                 this.resumo(c, input),
-                c.notes ? c.notes : 'sem notas',
+                c.notes ? c.notes : "sem notas",
                 this.lembreteResumo(c, input),
               ),
-              buttons: ['confirmar', 'alterar'],
+              buttons: ["confirmar", "alterar"],
             },
           ],
         };
       }
 
-      case 'confirmacao': {
-        const head = text.split(/\s+/)[0]?.toLowerCase() ?? '';
+      case "confirmacao": {
+        const head = text.split(/\s+/)[0]?.toLowerCase() ?? "";
         if (/(confirm|sim|pode|ok|isso|bora|manda)/.test(head))
           return this.buildCreate(session, input);
         if (/(alter|corrige|muda|mudar|edita|edit)/.test(head)) {
           const target = this.alterTarget(text);
           if (!target)
-            return { replies: [{ kind: 'text', text: BOT_MESSAGES.alterarNaoEntendido }] };
+            return {
+              replies: [
+                { kind: "text", text: BOT_MESSAGES.alterarNaoEntendido },
+              ],
+            };
           return this.rewindTo(session, target, input);
         }
         return {
-          replies: [{ kind: 'text', text: BOT_MESSAGES.naoEntendi + BOT_MESSAGES.alterarPergunta }],
+          replies: [
+            {
+              kind: "text",
+              text: BOT_MESSAGES.naoEntendi + BOT_MESSAGES.alterarPergunta,
+            },
+          ],
         };
       }
 
-      case 'criar_aberto':
+      case "criar_aberto":
         // portao do atalho: o service roda a borda (extrator + regua) antes de chamar a
         // maquina; se chegou aqui sem veredito, re-pergunta o titulo (nada se perde).
-        session.step = 'titulo';
-        return { replies: [{ kind: 'text', text: BOT_MESSAGES.pedeTitulo }] };
+        session.step = "titulo";
+        return { replies: [{ kind: "text", text: BOT_MESSAGES.pedeTitulo }] };
     }
   }
 
@@ -1442,26 +1995,37 @@ export class SchedulingFlowMachine {
     return text
       .trim()
       .toLowerCase()
-      .normalize('NFD')
-      .replace(/[\u0300-\u036f]/g, '');
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "");
   }
 
   /** Passo "real" anterior às perguntas sim/não de proteção (candidato intacto). */
   private rewindStep(session: FlowSession): FlowStep {
-    return session.prevStep ?? 'titulo';
+    return session.prevStep ?? "titulo";
   }
 
   private cancel(): FlowOutcome {
-    return { replies: [{ kind: 'text', text: BOT_MESSAGES.cancelado }], done: true };
+    return {
+      replies: [{ kind: "text", text: BOT_MESSAGES.cancelado }],
+      done: true,
+    };
   }
 
   private abort(): FlowOutcome {
-    return { replies: [{ kind: 'text', text: BOT_MESSAGES.abortado }], done: true };
+    return {
+      replies: [{ kind: "text", text: BOT_MESSAGES.abortado }],
+      done: true,
+    };
   }
 
   private resetToTitle(): FlowOutcome {
     return {
-      replies: [{ kind: 'text', text: BOT_MESSAGES.naoEntendi + BOT_MESSAGES.pedeTitulo }],
+      replies: [
+        {
+          kind: "text",
+          text: BOT_MESSAGES.naoEntendi + BOT_MESSAGES.pedeTitulo,
+        },
+      ],
     };
   }
 
@@ -1475,24 +2039,37 @@ export class SchedulingFlowMachine {
     c.startMinutes = undefined;
     c.startUtc = undefined;
     c.endUtc = undefined;
-    session.step = 'hora';
-    const label = BOT_MESSAGES.diaLabel(day, utcToZonedParts(input.now, input.offsetMinutes).year);
+    // M1 do review: `shortcutDurationMs` sobrevive DE PROPÓSITO — `setStart` reaplica a
+    // duração do atalho (o fim extraído na fala não se perde ao trocar o dia).
+    session.step = "hora";
+    const label = BOT_MESSAGES.diaLabel(
+      day,
+      utcToZonedParts(input.now, input.offsetMinutes).year,
+    );
     return {
       replies: [
-        { kind: 'buttons', text: BOT_MESSAGES.pedeHora(label), buttons: this.hourButtons() },
+        {
+          kind: "buttons",
+          text: BOT_MESSAGES.pedeHora(label),
+          buttons: this.hourButtons(),
+        },
       ],
     };
   }
 
-  private setStart(session: FlowSession, timeText: string, input: HandleTurnInput): FlowOutcome {
+  private async setStart(
+    session: FlowSession,
+    timeText: string,
+    input: HandleTurnInput,
+  ): Promise<FlowOutcome> {
     const c = session.candidate;
     const minutes = parseTime(timeText);
     if (!c.day || minutes === null) {
       return {
         replies: [
           {
-            kind: 'buttons',
-            text: BOT_MESSAGES.naoEntendi + BOT_MESSAGES.pedeHora(''),
+            kind: "buttons",
+            text: BOT_MESSAGES.naoEntendi + BOT_MESSAGES.pedeHora(""),
             buttons: this.hourButtons(),
           },
         ],
@@ -1504,14 +2081,26 @@ export class SchedulingFlowMachine {
       { ...c.day, hour: Math.floor(minutes / 60), minute: minutes % 60 },
       input.offsetMinutes,
     );
+    // M1 do review: atalho com FIM EXTRAÍDO guarda a duração original (applyShortcut) —
+    // ao remarcar/mudar o dia, o fim dito na fala é recalculado com a MESMA duração em
+    // vez de se perder em silêncio (o passo `fim` só volta a perguntar sem ela).
+    if (c.shortcutDurationMs !== undefined) {
+      c.endUtc = new Date(c.startUtc.getTime() + c.shortcutDurationMs);
+      session.step = "conflito";
+      return this.checkConflict(session, input);
+    }
     c.endUtc = undefined;
-    session.step = 'fim';
-    return { replies: [{ kind: 'text', text: BOT_MESSAGES.pedeFim }] };
+    session.step = "fim";
+    return { replies: [{ kind: "text", text: BOT_MESSAGES.pedeFim }] };
   }
 
   /** "15:30" (pos-início) | "1h30"/"45min"/"90" (duração) | "1h" → Date UTC; null = inválido. */
-  private resolveEnd(text: string, startUtc: Date, offsetMinutes: number): Date | null {
-    const t = text.trim().toLowerCase().replace(/\s+/g, '');
+  private resolveEnd(
+    text: string,
+    startUtc: Date,
+    offsetMinutes: number,
+  ): Date | null {
+    const t = text.trim().toLowerCase().replace(/\s+/g, "");
     const hm = t.match(/^(\d{1,2})h(\d{2})?(min)?$/);
     if (hm && !t.match(/^(\d{1,2}):(\d{2})$/)) {
       const hours = Number(hm[1]);
@@ -1532,25 +2121,33 @@ export class SchedulingFlowMachine {
       offsetMinutes,
     );
     if (endUtc.getTime() === startUtc.getTime()) return null; // spec 12: fim == inicio e invalido
-    if (endUtc.getTime() < startUtc.getTime()) endUtc.setTime(endUtc.getTime() + DAY_MS); // atravessa a meia-noite
+    if (endUtc.getTime() < startUtc.getTime())
+      endUtc.setTime(endUtc.getTime() + DAY_MS); // atravessa a meia-noite
     return endUtc;
   }
 
   /** Conflito 100% schedule-core (spec #16) — o LLM nunca passa por aqui. */
-  private async checkConflict(session: FlowSession, input: HandleTurnInput): Promise<FlowOutcome> {
+  private async checkConflict(
+    session: FlowSession,
+    input: HandleTurnInput,
+  ): Promise<FlowOutcome> {
     const { candidate: c } = session;
     const candidate = { startsAt: c.startUtc!, endsAt: c.endUtc! };
-    const result = findConflict(candidate, input.existing ?? [], { now: input.now });
+    const result = findConflict(candidate, input.existing ?? [], {
+      now: input.now,
+    });
     if (!result.conflict || !result.with) {
-      session.step = 'notas';
+      session.step = "notas";
       // Atalho da Fase 4: a fala já é a confirmação (spec A4), então o resumo que abre a
       // pergunta de notas diz "Entendi" (não "Anotado", que é o passo do fluxo guiado).
-      const isShortcut = !c.day && c.startMinutes === undefined && !!c.startDayLocal;
+      const isShortcut =
+        c.startFromShortcut === true ||
+        (!c.day && c.startMinutes === undefined && !!c.startDayLocal);
       const resumo = this.resumo(c, input);
       return {
         replies: [
           {
-            kind: 'text',
+            kind: "text",
             text: isShortcut
               ? BOT_MESSAGES.pedeNotasAtalho(resumo)
               : BOT_MESSAGES.pedeNotas(resumo),
@@ -1559,23 +2156,34 @@ export class SchedulingFlowMachine {
       };
     }
     c.conflictTries += 1;
-    session.step = 'conflito';
+    session.step = "conflito";
     const existente = {
       title: result.with.title,
-      range: this.formatRange(result.with.startsAt, result.with.endsAt, input.offsetMinutes),
+      range: this.formatRange(
+        result.with.startsAt,
+        result.with.endsAt,
+        input.offsetMinutes,
+      ),
     };
     const text = BOT_MESSAGES.conflito(existente);
     const finalText =
       c.conflictTries >= MAX_RESCHEDULE_TRIES
         ? `${text}\n\n${BOT_MESSAGES.conflitoLimiteAtingido}`
         : text;
-    return { replies: [{ kind: 'buttons', text: finalText, buttons: ['remarcar', 'abortar'] }] };
+    return {
+      replies: [
+        { kind: "buttons", text: finalText, buttons: ["remarcar", "abortar"] },
+      ],
+    };
   }
 
   /** Valida o payload final com zod (spec #18) e devolve o create p/ o service aplicar. */
-  private buildCreate(session: FlowSession, input: HandleTurnInput): FlowOutcome {
+  private buildCreate(
+    session: FlowSession,
+    input: HandleTurnInput,
+  ): FlowOutcome {
     const c = session.candidate;
-    const rules = (c.reminderRules ?? []).filter((r) => r.type !== 'none');
+    const rules = (c.reminderRules ?? []).filter((r) => r.type !== "none");
     const parsed = appointmentInputSchema.safeParse({
       title: c.title,
       startsAt: c.startUtc,
@@ -1586,16 +2194,25 @@ export class SchedulingFlowMachine {
     if (!parsed.success || !c.title || !c.startUtc || !c.endUtc) {
       // maquina de estados nao deveria chegar aqui; loga e re-pergunta (spec nota tecnica).
       return {
-        replies: [{ kind: 'text', text: BOT_MESSAGES.naoEntendi + BOT_MESSAGES.alterarPergunta }],
+        replies: [
+          {
+            kind: "text",
+            text: BOT_MESSAGES.naoEntendi + BOT_MESSAGES.alterarPergunta,
+          },
+        ],
       };
     }
     const outcome: FlowOutcome = {
       replies: [
         {
-          kind: 'text',
+          kind: "text",
           text: BOT_MESSAGES.criado(
             parsed.data.title,
-            this.formatRange(parsed.data.startsAt, parsed.data.endsAt, input.offsetMinutes),
+            this.formatRange(
+              parsed.data.startsAt,
+              parsed.data.endsAt,
+              input.offsetMinutes,
+            ),
           ),
         },
       ],
@@ -1615,46 +2232,53 @@ export class SchedulingFlowMachine {
   /** "alterar X" no resumo final: volta ao passo correspondente mantendo o resto. */
   private rewindTo(
     session: FlowSession,
-    target: 'titulo' | 'dia' | 'hora' | 'fim' | 'notas' | 'lembrete',
+    target: "titulo" | "dia" | "hora" | "fim" | "notas" | "lembrete",
     input: HandleTurnInput,
   ): FlowOutcome {
     const c = session.candidate;
     session.step = target;
     switch (target) {
-      case 'titulo':
-        return { replies: [{ kind: 'text', text: BOT_MESSAGES.pedeTitulo }] };
-      case 'dia':
+      case "titulo":
+        return { replies: [{ kind: "text", text: BOT_MESSAGES.pedeTitulo }] };
+      case "dia":
         return {
           replies: [
             {
-              kind: 'buttons',
-              text: BOT_MESSAGES.pedeDia(c.title ?? 'o compromisso'),
+              kind: "buttons",
+              text: BOT_MESSAGES.pedeDia(c.title ?? "o compromisso"),
               buttons: this.dayButtons(input.offsetMinutes, input.now),
             },
           ],
         };
-      case 'hora':
+      case "hora":
         return {
           replies: [
             {
-              kind: 'buttons',
-              text: BOT_MESSAGES.pedeHora(dayLabel(c.day, input.now, input.offsetMinutes)),
+              kind: "buttons",
+              text: BOT_MESSAGES.pedeHora(
+                dayLabel(c.day, input.now, input.offsetMinutes),
+              ),
               buttons: this.hourButtons(),
             },
           ],
         };
-      case 'fim':
-        return { replies: [{ kind: 'text', text: BOT_MESSAGES.pedeFim }] };
-      case 'notas':
-        return { replies: [{ kind: 'text', text: BOT_MESSAGES.pedeNotas(this.resumo(c, input)) }] };
-      case 'lembrete':
+      case "fim":
+        return { replies: [{ kind: "text", text: BOT_MESSAGES.pedeFim }] };
+      case "notas":
         return {
           replies: [
             {
-              kind: 'buttons',
-              text: BOT_MESSAGES.pedeLembrete(this.resumo(c, input)),
-              buttons: [...BOT_MESSAGES.lembreteAtalhos],
+              kind: "text",
+              text: BOT_MESSAGES.pedeNotas(this.resumo(c, input)),
             },
+          ],
+        };
+      case "lembrete":
+        return {
+          replies: [
+            lembreteKeyboardButtons(
+              BOT_MESSAGES.pedeLembrete(this.resumo(c, input)),
+            ),
           ],
         };
     }
@@ -1662,11 +2286,11 @@ export class SchedulingFlowMachine {
 
   private alterTarget(
     text: string,
-  ): 'titulo' | 'dia' | 'hora' | 'fim' | 'notas' | 'lembrete' | null {
+  ): "titulo" | "dia" | "hora" | "fim" | "notas" | "lembrete" | null {
     const t = text
       .toLowerCase()
-      .normalize('NFD')
-      .replace(/[\u0300-\u036f]/g, '');
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "");
     for (const [key, step] of Object.entries(BOT_MESSAGES.alterarMapa)) {
       if (t.includes(key)) return step;
     }
@@ -1681,13 +2305,16 @@ export class SchedulingFlowMachine {
     const t = text
       .trim()
       .toLowerCase()
-      .normalize('NFD')
-      .replace(/[\u0300-\u036f]/g, '');
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "");
     const local = (shiftMs: number) =>
-      utcToZonedParts(new Date(input.now.getTime() + shiftMs), input.offsetMinutes);
-    if (t === 'hoje') return pick(local(0));
-    if (t === 'amanha' || t === 'amanha.') return pick(local(DAY_MS));
-    if (t === 'depois de amanha' || t === 'depois de amanha.') {
+      utcToZonedParts(
+        new Date(input.now.getTime() + shiftMs),
+        input.offsetMinutes,
+      );
+    if (t === "hoje") return pick(local(0));
+    if (t === "amanha" || t === "amanha.") return pick(local(DAY_MS));
+    if (t === "depois de amanha" || t === "depois de amanha.") {
       return pick(local(2 * DAY_MS));
     }
     // resposta do teclado inline ("08/10", "08/10/2027") — offset-invariante:
@@ -1695,15 +2322,19 @@ export class SchedulingFlowMachine {
     const m = t.match(/^(\d{2})\/(\d{2})(?:\/(\d{4}))?$/);
     if (m) {
       const today = local(0);
-      return { year: m[3] ? Number(m[3]) : today.year, month: Number(m[2]), day: Number(m[1]) };
+      return {
+        year: m[3] ? Number(m[3]) : today.year,
+        month: Number(m[2]),
+        day: Number(m[1]),
+      };
     }
     return null;
   }
 
   /** "Título — seg 14:00–15:30" no timezone do usuário (ADR-002). */
   resumo(c: FlowCandidate, input: HandleTurnInput): string {
-    if (!c.startUtc || !c.endUtc) return c.title ?? '';
-    return `${c.title ?? ''} — ${this.formatRange(c.startUtc, c.endUtc, input.offsetMinutes)}`;
+    if (!c.startUtc || !c.endUtc) return c.title ?? "";
+    return `${c.title ?? ""} — ${this.formatRange(c.startUtc, c.endUtc, input.offsetMinutes)}`;
   }
 
   /**
@@ -1713,28 +2344,34 @@ export class SchedulingFlowMachine {
    */
   private lembreteResumo(c: FlowCandidate, input: HandleTurnInput): string {
     const rules = c.reminderRules ?? [];
-    if (rules.length === 0 || rules.every((r) => r.type === 'none'))
+    if (rules.length === 0 || rules.every((r) => r.type === "none"))
       return BOT_MESSAGES.lembreteResumoNenhum;
     const labels = rulesLabelsPtBr(rules.map(toCoreRuleFromInput));
     const fired = c.startUtc
-      ? computeTriggers(c.startUtc, rules.map(toCoreRuleFromInput), { now: input.now })
+      ? computeTriggers(c.startUtc, rules.map(toCoreRuleFromInput), {
+          now: input.now,
+        })
       : [];
     const firedTypes = new Set(fired.map((t) => `${t.ruleType}`));
     const retroativos = rules
       .map((r, i) => ({ r, label: labels[i] ?? r.type }))
       .filter(({ r }) => !firedTypes.has(r.type))
       .map(({ label }) => `o lembrete de ${label}`);
-    const line = BOT_MESSAGES.lembreteResumo(labels.join(' · '));
+    const line = BOT_MESSAGES.lembreteResumo(labels.join(" · "));
     if (retroativos.length > 0 && c.startUtc) {
       return `${line}\n${BOT_MESSAGES.lembreteRetroativo(retroativos)}`;
     }
     return line;
   }
 
-  private formatRange(startsAt: Date, endsAt: Date, offsetMinutes: number): string {
+  private formatRange(
+    startsAt: Date,
+    endsAt: Date,
+    offsetMinutes: number,
+  ): string {
     const s = utcToZonedParts(startsAt, offsetMinutes);
     const e = utcToZonedParts(endsAt, offsetMinutes);
-    const weekday = ['dom', 'seg', 'ter', 'qua', 'qui', 'sex', 'sáb'][
+    const weekday = ["dom", "seg", "ter", "qua", "qui", "sex", "sáb"][
       new Date(Date.UTC(s.year, s.month - 1, s.day)).getUTCDay()
     ];
     const sameDay = s.year === e.year && s.month === e.month && s.day === e.day;
@@ -1742,7 +2379,7 @@ export class SchedulingFlowMachine {
     const end = sameDay
       ? `${pad(e.hour)}:${pad(e.minute)}`
       : `${
-          ['dom', 'seg', 'ter', 'qua', 'qui', 'sex', 'sáb'][
+          ["dom", "seg", "ter", "qua", "qui", "sex", "sáb"][
             new Date(Date.UTC(e.year, e.month - 1, e.day)).getUTCDay()
           ]
         } ${pad(e.day)}/${pad(e.month)} ${pad(e.hour)}:${pad(e.minute)}`;
@@ -1758,19 +2395,19 @@ function parseTime(text: string): number | null {
 /** Input de regra (contracts) -> regra do domínio schedule-core (rótulos/computeTriggers). */
 function toCoreRuleFromInput(rule: NotificationRuleInput): NotificationRule {
   switch (rule.type) {
-    case 'none':
-      return { type: 'none' };
-    case 'before_hours':
-      return { type: 'before_hours', hours: rule.value ?? 0 };
-    case 'before_days':
-      return { type: 'before_days', days: rule.value ?? 0 };
-    case 'countdown_3_2_1':
-      return { type: 'countdown_3_2_1' };
+    case "none":
+      return { type: "none" };
+    case "before_hours":
+      return { type: "before_hours", hours: rule.value ?? 0 };
+    case "before_days":
+      return { type: "before_days", days: rule.value ?? 0 };
+    case "countdown_3_2_1":
+      return { type: "countdown_3_2_1" };
   }
 }
 
 function pad(n: number): string {
-  return String(n).padStart(2, '0');
+  return String(n).padStart(2, "0");
 }
 
 function pick(p: { year: number; month: number; day: number }): {
@@ -1786,6 +2423,6 @@ function dayLabel(
   now: Date,
   offsetMinutes: number,
 ): string {
-  if (!day) return '';
+  if (!day) return "";
   return BOT_MESSAGES.diaLabel(day, utcToZonedParts(now, offsetMinutes).year);
 }
