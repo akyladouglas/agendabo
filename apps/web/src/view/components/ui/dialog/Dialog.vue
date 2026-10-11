@@ -11,12 +11,17 @@
             'fixed z-50 flex flex-col border border-border bg-card text-card-foreground shadow-xl focus:outline-none',
             // mobile: bottom-sheet
             'inset-x-0 bottom-0 max-h-[94dvh] rounded-t-2xl',
-            // tablet/desktop: centralado, máx 560px, raio 16
-            'md:inset-x-auto md:left-1/2 md:top-1/2 md:max-h-[88dvh] md:w-full md:max-w-[560px] md:-translate-x-1/2 md:-translate-y-1/2 md:rounded-2xl',
+            // tablet/desktop: CENTRALADO em altura e largura via inset+flex
+            // justify-center (o filho com inset-0 vira wrapper-centro do radix; sem
+            // translate — não briga com transform de animação). Conteúdo interno
+            // w-full define a largura efetiva: fit até máx 560px (ajustado ao texto),
+            // nunca altura fixa: h-fit + max-h e corpo rolável
+            'md:inset-0 md:flex md:items-center md:justify-center md:bg-transparent md:border-0 md:shadow-none md:p-4',
             props.class,
           )
         "
       >
+        <div class="pointer-events-auto flex max-h-full w-full max-w-[560px] flex-col rounded-2xl border border-border bg-card text-card-foreground shadow-xl">
         <div class="flex flex-row items-center gap-2 border-b border-border px-4 py-3 md:px-6">
           <DialogTitle class="title-modal flex-1 font-heading">
             {{ props.title }}
@@ -42,6 +47,7 @@
           class="sticky bottom-0 border-t border-border bg-card px-4 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] md:px-6"
         >
           <slot name="footer" />
+        </div>
         </div>
       </DialogContent>
     </DialogPortal>
