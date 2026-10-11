@@ -35,6 +35,8 @@ defineOptions({ inheritAttrs: false });
 const props = defineProps<{
   class?: HTMLAttributes['class'];
   type?: string;
+  /** Valor controlado (v-model ou `:model-value`): texto do campo, sempre escalar. */
+  modelValue?: string;
   /** Valor inicial por programa (rascunho do cadastro que volta do /confirmar).
    *  Semente do `local` no setup — independe do vee-validate ecoar o form (em DEV
    *  as multi-cópias engolem `setValue`), então o campo NASCE preenchido. */
@@ -61,14 +63,20 @@ watch(
 
 /** Só o que não controlamos vai direto ao <input> nativo. */
 const passed = computed(() => {
-  const {
-    class: _cls,
-    type: _type,
-    value: _v,
-    modelValue: _mv,
-    'onUpdate:modelValue': _u,
-    ...rest
-  } = attrs as Record<string, unknown>;
+  const rest = { ...(attrs as Record<string, unknown>) };
+  for (const key of Object.keys(rest)) {
+    const flat = key.toLowerCase();
+    // os controlados chegam em qualquer casing (o runtime normalizeia o kebab
+    // reservado `model-value` para a forma achatada) — nada deles vai ao DOM.
+    if (
+      flat === 'type' ||
+      flat === 'value' ||
+      flat === 'modelvalue' ||
+      flat === 'onupdatemodelvalue'
+    ) {
+      delete rest[key];
+    }
+  }
   return rest;
 });
 
@@ -85,8 +93,9 @@ function scalar(v: unknown): string {
   return cur == null ? '' : String(cur);
 }
 
-const remoteText = computed(() => scalar(attrs.modelValue ?? undefined));
+const remoteText = computed(() => scalar(props.modelValue));
 
+/** Valor controlado declarativo (o template amarra `:value="modelText"`). */
 const modelText = computed(() => {
   // rascunho preenchido por programa via form (remote) vence; o `local` só segura
   // a digitação quando o emit de outra cópia do vee-validate é no-op.

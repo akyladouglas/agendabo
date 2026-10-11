@@ -41,12 +41,18 @@ import {
 /** Modo do formulário único (D4): criar | editar | corrigir (fila de revisão). */
 export type AppointmentFormMode = 'create' | 'edit' | 'review';
 
-/** Estado bruto do form — datas como strings locais (D7: inputs nativos). */
+/**
+ * Estado bruto do form — datas como strings locais (D7: inputs nativos).
+ * Spec notas-e-fim-na-web B1/decisão #4: o form expõe INÍCIO (date+time) e FIM
+ * (endDate+endTime); `durationMinutes` deixou de ser entrada — sobrevive apenas
+ * derivado (`durationMinutes` computed) para exibição.
+ */
 export interface AppointmentFormValues {
   title: string;
   date: string;
   time: string;
-  durationMinutes: number;
+  endDate: string;
+  endTime: string;
   notes: string;
   rules: NotificationRuleInput[];
 }
@@ -90,10 +96,10 @@ function fromAppointment(app: AppointmentWithRules | ReviewWithRules, timezone: 
     title: app.title,
     date: toLocalDateString(app.startsAt, timezone),
     time: toLocalTimeString(app.startsAt, timezone),
-    durationMinutes: Math.max(
-      5,
-      Math.round((app.endsAt.getTime() - app.startsAt.getTime()) / 60_000),
-    ),
+    // Fim EXPLÍCITO — multi-dia vira data+hora locais legíveis (spec B1: nunca
+    // "3960 minutos"; o Gherkin: sáb 23:00 → seg 17:00).
+    endDate: toLocalDateString(app.endsAt, timezone),
+    endTime: toLocalTimeString(app.endsAt, timezone),
     notes: app.notes ?? '',
     rules: rulesFromDto(app.notificationRules),
   };
@@ -101,7 +107,7 @@ function fromAppointment(app: AppointmentWithRules | ReviewWithRules, timezone: 
 
 /**
  * Edição que veio de um DROP com conflito (Etapa 2.3): o preset traz o horário
- * CANDIDATO (translação) + a duração real do item; sem preset é a session
+ * CANDIDATO (translação) + o fim real do item; sem preset é a session
  * vigente (o item como está).
  */
 function fromAppointmentWithPreset(
@@ -111,14 +117,19 @@ function fromAppointmentWithPreset(
 ): AppointmentFormValues {
   const base = fromAppointment(app, timezone);
   if (!preset) return base;
-  const durationMin = preset.endsAt
-    ? Math.max(5, Math.round((preset.endsAt.getTime() - preset.date.getTime()) / 60_000))
-    : base.durationMinutes;
+  const endsAt =
+    preset.endsAt ??
+    new Date(
+      preset.date.getTime() +
+        Math.max(5, Math.round((app.endsAt.getTime() - app.startsAt.getTime()) / 60_000)) *
+          60_000,
+    );
   return {
     ...base,
     date: toLocalDateString(preset.date, timezone),
     time: toLocalTimeString(preset.date, timezone),
-    durationMinutes: durationMin,
+    endDate: toLocalDateString(endsAt, timezone),
+    endTime: toLocalTimeString(endsAt, timezone),
   };
 }
 
@@ -151,13 +162,20 @@ export interface AppointmentPreset {
 function emptyValues(timezone: string, preset?: AppointmentPreset): AppointmentFormValues {
   const day = preset?.date ?? new Date();
   const isPreset = preset !== undefined;
+  const time = isPreset
+    ? (preset.hour ?? `${String(DEFAULT_CREATE_HOUR).padStart(2, '0')}:00`)
+    : toLocalTimeString(day, timezone);
+  const date = toLocalDateString(day, timezone);
+  // Criação: fim = início + duração default 60min (spec B4: preset entra como
+  // início+duração e o fim é derivado); o preset de DROP já traz o fim absoluto.
+  const startUtc = localDateTimeToUtc(date, time, timezone);
+  const end = preset?.endsAt ?? new Date(startUtc.getTime() + 60 * 60_000);
   return {
     title: '',
-    date: toLocalDateString(day, timezone),
-    time: isPreset
-      ? (preset.hour ?? `${String(DEFAULT_CREATE_HOUR).padStart(2, '0')}:00`)
-      : toLocalTimeString(day, timezone),
-    durationMinutes: 60,
+    date,
+    time,
+    endDate: toLocalDateString(end, timezone),
+    endTime: toLocalTimeString(end, timezone),
     notes: '',
     rules: [],
   };
@@ -169,30 +187,72 @@ export function countRetroactiveTriggers(startsAt: Date, rules: readonly Notific
   return computeAllTriggers(startsAt, domain).length - computeTriggers(startsAt, domain).length;
 }
 
-/** Puro e testável: strings locais → instantes UTC (null se inválido). */
+/**
+ * Presets/edição materializam strings locais do FIM a partir de um instante UTC
+ * (spec notas-e-fim-na-web B1/B4): fim = instante + `minutes` (null ⇒ sem fim).
+ * Conversão pura de borda via `tz.ts` (ADR-002) — nenhum `.vue` calcula data.
+ */
+export function endFromStart(
+  startsAt: Date,
+  minutes: number,
+  timezone: string,
+): Pick<AppointmentFormValues, 'endDate' | 'endTime'> | null {
+  if (!Number.isFinite(minutes) || minutes <= 0) return null;
+  const end = new Date(startsAt.getTime() + minutes * 60_000);
+  return {
+    endDate: toLocalDateString(end, timezone),
+    endTime: toLocalTimeString(end, timezone),
+  };
+}
+
+/**
+ * Início (hora e/ou data) mudou ⇒ o fim DESLIZA preservando a duração vigente
+ * (spec B2). Sem fim configurado ⇒ null (o fim é derivado na exibição). Conversão
+ * pura de borda (ADR-002) — nenhum `.vue` calcula data.
+ */
+export function shiftEndToStart(
+  oldStart: Pick<AppointmentFormValues, 'date' | 'time'>,
+  newStart: Pick<AppointmentFormValues, 'date' | 'time'>,
+  oldEnd: Pick<AppointmentFormValues, 'endDate' | 'endTime'>,
+  timezone: string,
+): Pick<AppointmentFormValues, 'endDate' | 'endTime'> | null {
+  if (!oldEnd.endDate || !oldEnd.endTime) return null;
+  const a = localDateTimeToUtc(oldStart.date, oldStart.time, timezone);
+  const b = localDateTimeToUtc(newStart.date, newStart.time, timezone);
+  const e = localDateTimeToUtc(oldEnd.endDate, oldEnd.endTime, timezone);
+  if ([a, b, e].some((d) => Number.isNaN(d.getTime()))) return null;
+  const shifted = new Date(e.getTime() + (b.getTime() - a.getTime()));
+  return {
+    endDate: toLocalDateString(shifted, timezone),
+    endTime: toLocalTimeString(shifted, timezone),
+  };
+}
+
+/**
+ * Puro e testável: strings locais de início E fim → instantes UTC (null se
+ * inválido). Modelo novo da spec notas-e-fim-na-web B1–B3: o form NÃO tem mais
+ * duração como entrada — o fim é editável inclusive em OUTRO DIA (multi-dia
+ * lícito, sem cap), e fim ≤ início é inválido (a UI mostra o erro inline do zod).
+ */
 export function resolveRange(
-  values: Pick<AppointmentFormValues, 'date' | 'time' | 'durationMinutes'>,
+  values: Pick<AppointmentFormValues, 'date' | 'time' | 'endDate' | 'endTime'>,
   timezone: string,
 ): { startsAt: Date; endsAt: Date } | null {
-  if (!values.date || !values.time || !Number.isFinite(values.durationMinutes) || values.durationMinutes < 5) {
-    return null;
-  }
-  const parts = values.time.split(':').map(Number);
-  const [hh = -1, mm = -1] = parts;
-  const dateParts = values.date.slice(5).split('-').map(Number);
-  const [mo = -1, day = -1] = dateParts;
+  if (!values.date || !values.time || !values.endDate || !values.endTime) return null;
+  const dateRe = /^\d{4}-\d{2}-\d{2}$/;
+  const timeRe = /^\d{2}:\d{2}$/;
   if (
-    !Number.isInteger(hh) || hh < 0 || hh > 23 ||
-    !Number.isInteger(mm) || mm < 0 || mm > 59 ||
-    !Number.isInteger(mo) || mo < 1 || mo > 12 ||
-    !Number.isInteger(day) || day < 1 || day > 31
+    !dateRe.test(values.date) || !timeRe.test(values.time) ||
+    !dateRe.test(values.endDate) || !timeRe.test(values.endTime)
   ) {
     return null;
   }
   try {
     const startsAt = localDateTimeToUtc(values.date, values.time, timezone);
-    if (Number.isNaN(startsAt.getTime())) return null;
-    return { startsAt, endsAt: new Date(startsAt.getTime() + values.durationMinutes * 60_000) };
+    const endsAt = localDateTimeToUtc(values.endDate, values.endTime, timezone);
+    if (Number.isNaN(startsAt.getTime()) || Number.isNaN(endsAt.getTime())) return null;
+    if (endsAt.getTime() <= startsAt.getTime()) return null;
+    return { startsAt, endsAt };
   } catch {
     return null;
   }
@@ -245,6 +305,23 @@ export function useAppointmentForm(options: {
   /** Instantes UTC derivados (reativos) — null enquanto as strings são inválidas. */
   const range = computed(() => resolveRange(values, timezone.value));
 
+  /** Duração em minutos DERIVADA do par início/fim (fim − início) — só exibição. */
+  const durationMinutes = computed(() =>
+    range.value
+      ? Math.round((range.value.endsAt.getTime() - range.value.startsAt.getTime()) / 60_000)
+      : null,
+  );
+
+  /**
+   * Fim ≤ início (spec B3): erro inline "O fim precisa ser depois do início".
+   * Distinto de "strings incompletas/inválidas" (estas só bloqueiam o submit).
+   */
+  const rangeOrderError = computed(() => {
+    const parsed = fieldsSchema.safeParse(values);
+    if (parsed.success) return false;
+    return parsed.error.issues.some((i) => i.path[0] === 'endTime');
+  });
+
   /** Gatilhos que não vão disparar porque já passaram (aviso antes de salvar). */
   const retroactiveCount = computed(() =>
     range.value ? countRetroactiveTriggers(range.value.startsAt, values.rules) : 0,
@@ -258,20 +335,27 @@ export function useAppointmentForm(options: {
         title: z.string().trim().min(1, 'Informe um título.').max(200),
         date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Data inválida.'),
         time: z.string().regex(/^\d{2}:\d{2}$/, 'Hora inválida.'),
-        durationMinutes: z
-          .number()
-          .int('Inteiro.')
-          .min(5, 'Mínimo de 5 minutos.')
-          .max(24 * 60 * 30, 'Duração longa demais.'),
+        endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Data inválida.'),
+        endTime: z.string().regex(/^\d{2}:\d{2}$/, 'Hora inválida.'),
         notes: z.string().max(2000),
         rules: rulesSchema,
       })
-      .superRefine((_v, ctx) => {
+      .superRefine((v, ctx) => {
         if (!range.value) {
+          // fim ≤ início com strings válidas ⇒ erro inline específico (B3);
+          // qualquer outro problema de horário fica como "Horário inválido." no início.
+          const start = localDateTimeToUtc(v.date, v.time, timezone.value);
+          const end = localDateTimeToUtc(v.endDate, v.endTime, timezone.value);
+          const orderInvalid =
+            !Number.isNaN(start.getTime()) &&
+            !Number.isNaN(end.getTime()) &&
+            end.getTime() <= start.getTime();
           ctx.addIssue({
             code: z.ZodIssueCode.custom,
-            path: ['time'],
-            message: 'Horário inválido.',
+            path: orderInvalid ? ['endTime'] : ['time'],
+            message: orderInvalid
+              ? 'O fim precisa ser depois do início'
+              : 'Horário inválido.',
           });
         }
       });
@@ -284,7 +368,8 @@ export function useAppointmentForm(options: {
       title: values.title,
       date: values.date,
       time: values.time,
-      durationMinutes: values.durationMinutes,
+      endDate: values.endDate,
+      endTime: values.endTime,
       notes: values.notes,
       rules: values.rules,
     },
@@ -313,6 +398,95 @@ export function useAppointmentForm(options: {
     checkedSignature = null;
     conflictWarning.value = null;
     closeRelocation();
+  }
+
+  // ---- Edição bidirecional início↔fim (spec B2, decisão humana #2) --------
+  // Toda a aritmética mora nos puros (`shiftEndToStart`/`resolveRange`); o
+  // composable só coordena estado — o `.vue` nunca calcula data (`vue.md`).
+
+  /** Snapshot do início anterior a esta edição (comparado nos handlers de change). */
+  const lastStart = ref({ date: values.date, time: values.time });
+
+  /**
+   * true ⇒ o usuário mexeu SÓ a DATA de início com fim já configurado: o form
+   * PERGUNTA (decisão 2) — "manter o intervalo" (default, fim desliza) vs.
+   * "definir novo fim" (fim fica à espera da edição manual do usuário).
+   */
+  const startDatePrompt = ref(false);
+
+  /** Hora de início mudou ⇒ fim desliza preservando a duração (sem pergunta). */
+  function onStartTimeChange(newTime: string): void {
+    values.time = newTime;
+    if (!startDatePrompt.value) {
+      const shifted = shiftEndToStart(
+        lastStart.value,
+        { date: values.date, time: newTime },
+        { endDate: values.endDate, endTime: values.endTime },
+        timezone.value,
+      );
+      if (shifted) {
+        values.endDate = shifted.endDate;
+        values.endTime = shifted.endTime;
+      }
+    }
+    lastStart.value = { date: values.date, time: newTime };
+    invalidateCheck();
+  }
+
+  /**
+   * Data de início mudou: sem fim configurado (criação nova sem fim) ⇒ nada
+   * perguntar, fim derivado normalmente; com fim ⇒ pergunta (default manter
+   * intervalo = fim desliza junto, já aplicado).
+   */
+  function onStartDateChange(newDate: string): void {
+    const hasEnd = Boolean(values.endDate && values.endTime);
+    const dateOnlyChange = newDate !== lastStart.value.date;
+    values.date = newDate;
+    if (dateOnlyChange && hasEnd) {
+      const shifted = shiftEndToStart(
+        lastStart.value,
+        { date: newDate, time: values.time },
+        { endDate: values.endDate, endTime: values.endTime },
+        timezone.value,
+      );
+      if (shifted) {
+        values.endDate = shifted.endDate;
+        values.endTime = shifted.endTime;
+      }
+      startDatePrompt.value = true;
+    } else if (!hasEnd) {
+      const derived = endFromStart(
+        localDateTimeToUtc(newDate, values.time, timezone.value),
+        60,
+        timezone.value,
+      );
+      if (derived) {
+        values.endDate = derived.endDate;
+        values.endTime = derived.endTime;
+      }
+    }
+    lastStart.value = { date: newDate, time: values.time };
+    invalidateCheck();
+  }
+
+  /** Escolha "manter o intervalo" (default): fim já deslizou — só fecha a pergunta. */
+  function keepInterval(): void {
+    startDatePrompt.value = false;
+  }
+
+  /**
+   * Escolha "definir novo fim": mantém a DATA em que o fim deslizaria (o campo
+   * fica em foco p/ o usuário digitar a hora nova — spec B2); nada mais muda.
+   */
+  function defineNewEnd(): void {
+    startDatePrompt.value = false;
+  }
+
+  /** Fim (dia e/ou hora) editado pelo usuário ⇒ início intacto; a pergunta morre. */
+  function onEndChange(patch: Partial<Pick<AppointmentFormValues, 'endDate' | 'endTime'>>): void {
+    Object.assign(values, patch);
+    startDatePrompt.value = false;
+    invalidateCheck();
   }
 
   /** Fecha a seção de jogadas sem salvar nada (Cancelar — D-W1). */
@@ -520,7 +694,6 @@ export function useAppointmentForm(options: {
       invalidMessage.value = 'Horário inválido.';
       return { ok: false };
     }
-
     try {
       await ensureConflictCheck();
     } catch {
@@ -569,6 +742,7 @@ export function useAppointmentForm(options: {
     values,
     form,
     range,
+    durationMinutes,
     timezone,
     conflictWarning,
     submitError,
@@ -578,6 +752,14 @@ export function useAppointmentForm(options: {
     invalidateCheck,
     buildInput,
     submit,
+    // Edição bidirecional início↔fim (spec notas-e-fim-na-web B2)
+    startDatePrompt,
+    rangeOrderError,
+    onStartTimeChange,
+    onStartDateChange,
+    onEndChange,
+    keepInterval,
+    defineNewEnd,
     // Reagendamento Assistido (Etapa 0)
     relocationLoading,
     relocationOptions,

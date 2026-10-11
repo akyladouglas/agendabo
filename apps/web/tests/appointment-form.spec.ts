@@ -2,8 +2,10 @@ import { describe, expect, it } from 'vitest';
 import type { AppointmentDto } from '@agendabo/contracts';
 import {
   countRetroactiveTriggers,
+  endFromStart,
   resolveRange,
   rulesFromDto,
+  shiftEndToStart,
   toDomainRule,
 } from '../src/app/composables/useAppointmentForm.composable';
 
@@ -14,28 +16,99 @@ import {
  */
 const TZ = 'America/Sao_Paulo';
 
-describe('resolveRange (strings locais -> UTC)', () => {
-  it('14:30 + 90min em SP = 17:30Z -> 19:00Z', () => {
+describe('resolveRange (início + fim locais -> UTC — spec notas-e-fim-na-web B)', () => {
+  it('qua 10:00 → qui 12:30 em SP: instante multi-dia correto (26h30 depois)', () => {
     const r = resolveRange(
-      { date: '2026-10-08', time: '14:30', durationMinutes: 90 },
+      { date: '2026-10-07', time: '10:00', endDate: '2026-10-08', endTime: '12:30' },
       TZ,
     );
-    expect(r?.startsAt.toISOString()).toBe('2026-10-08T17:30:00.000Z');
-    expect(r?.endsAt.toISOString()).toBe('2026-10-08T19:00:00.000Z');
+    expect(r?.startsAt.toISOString()).toBe('2026-10-07T13:00:00.000Z');
+    expect(r?.endsAt.toISOString()).toBe('2026-10-08T15:30:00.000Z');
+    expect(
+      Math.round((r!.endsAt.getTime() - r!.startsAt.getTime()) / 60_000),
+    ).toBe(26 * 60 + 30);
   });
 
-  it('duração < 5min -> null', () => {
+  it('fim em outro dia é LÍCITO (multi-dia sem cap): sáb 23:00 → seg 17:00 = 42h', () => {
+    const r = resolveRange(
+      { date: '2026-10-10', time: '23:00', endDate: '2026-10-12', endTime: '17:00' },
+      TZ,
+    );
+    expect(r?.startsAt.toISOString()).toBe('2026-10-11T02:00:00.000Z');
+    expect(r?.endsAt.toISOString()).toBe('2026-10-12T20:00:00.000Z');
     expect(
-      resolveRange({ date: '2026-10-08', time: '14:30', durationMinutes: 4 }, TZ),
+      Math.round((r!.endsAt.getTime() - r!.startsAt.getTime()) / 60_000),
+    ).toBe(42 * 60);
+  });
+
+  it('fim igual ou anterior ao início -> null (erro inline "O fim precisa ser depois do início")', () => {
+    expect(
+      resolveRange({ date: '2026-10-08', time: '14:30', endDate: '2026-10-08', endTime: '14:30' }, TZ),
+    ).toBeNull();
+    expect(
+      resolveRange({ date: '2026-10-08', time: '14:30', endDate: '2026-10-08', endTime: '14:00' }, TZ),
+    ).toBeNull();
+    // anterior em outro dia também
+    expect(
+      resolveRange({ date: '2026-10-08', time: '14:30', endDate: '2026-10-07', endTime: '23:00' }, TZ),
     ).toBeNull();
   });
 
-  it('data/hora vazias ou inválidas -> null', () => {
-    expect(resolveRange({ date: '', time: '14:30', durationMinutes: 60 }, TZ)).toBeNull();
-    expect(resolveRange({ date: '2026-10-08', time: '25:99', durationMinutes: 60 }, TZ)).toBeNull();
+  it('datas/horas vazias ou inválidas -> null', () => {
+    expect(resolveRange({ date: '', time: '14:30', endDate: '2026-10-08', endTime: '15:30' }, TZ)).toBeNull();
+    expect(resolveRange({ date: '2026-10-08', time: '25:99', endDate: '2026-10-08', endTime: '15:30' }, TZ)).toBeNull();
+    expect(resolveRange({ date: 'ontem', time: '14:30', endDate: '2026-10-08', endTime: '15:30' }, TZ)).toBeNull();
+    expect(resolveRange({ date: '2026-10-08', time: '14:30', endDate: '', endTime: '15:30' }, TZ)).toBeNull();
+    expect(resolveRange({ date: '2026-10-08', time: '14:30', endDate: '2026-10-08', endTime: '' }, TZ)).toBeNull();
+  });
+});
+
+describe('shiftEndToStart (início mudou -> fim desliza preservando a duração — spec B2)', () => {
+  it('hora do início 23:00 -> 21:00 com fim seg 17:00: fim vira seg 15:00 (mesma duração)', () => {
+    const shifted = shiftEndToStart(
+      { date: '2026-10-10', time: '23:00' },
+      { date: '2026-10-10', time: '21:00' },
+      { endDate: '2026-10-12', endTime: '17:00' },
+      TZ,
+    );
+    expect(shifted).toEqual({ endDate: '2026-10-12', endTime: '15:00' });
+  });
+
+  it('Gherkin B: início sáb 23:00 -> qua 23:00 no compromisso sáb→seg 17:00: fim vira sex 17:00 (dias acompanham, hora preservada)', () => {
+    const shifted = shiftEndToStart(
+      { date: '2026-10-10', time: '23:00' },
+      { date: '2026-10-14', time: '23:00' },
+      { endDate: '2026-10-12', endTime: '17:00' },
+      TZ,
+    );
+    expect(shifted).toEqual({ endDate: '2026-10-16', endTime: '17:00' });
+    // 16/10/2026 é sexta-feira
+    expect(new Date(`${shifted!.endDate}T12:00:00Z`).getUTCDay()).toBe(5);
+  });
+
+  it('sem fim configurado (criação) -> null (o fim é derivado na exibição)', () => {
     expect(
-      resolveRange({ date: 'ontem', time: '14:30', durationMinutes: 60 }, TZ),
+      shiftEndToStart(
+        { date: '2026-10-08', time: '10:00' },
+        { date: '2026-10-08', time: '11:00' },
+        { endDate: '', endTime: '' },
+        TZ,
+      ),
     ).toBeNull();
+  });
+});
+
+describe('endFromStart (preset/instante -> strings locais do fim)', () => {
+  it('17:00Z + 60min = fim 15:00 local (SP)', () => {
+    expect(endFromStart(new Date('2026-10-08T17:00:00Z'), 60, TZ)).toEqual({
+      endDate: '2026-10-08',
+      endTime: '15:00',
+    });
+  });
+
+  it('minutos inválidos -> null', () => {
+    expect(endFromStart(new Date('2026-10-08T17:00:00Z'), 0, TZ)).toBeNull();
+    expect(endFromStart(new Date('2026-10-08T17:00:00Z'), NaN, TZ)).toBeNull();
   });
 });
 

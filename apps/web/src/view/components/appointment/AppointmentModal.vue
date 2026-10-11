@@ -33,9 +33,9 @@
           </AppLabel>
           <AppInput
             id="ap-date"
-            v-model="form.values.date"
+            :model-value="form.values.date"
             type="date"
-            @change="form.invalidateCheck()"
+            @change="onDateChange"
           />
         </AppField>
         <AppField>
@@ -44,31 +44,95 @@
           </AppLabel>
           <AppInput
             id="ap-time"
-            v-model="form.values.time"
+            :model-value="form.values.time"
             type="time"
-            @change="form.invalidateCheck()"
+            @change="onTimeChange"
           />
         </AppField>
       </div>
 
+      <!-- Fim (data + hora) — spec notas-e-fim-na-web B1: o usuário LÊ e DEFINE
+           "termina segunda 17:00"; multi-dia lícito; duração é DERIVADA (só lê). -->
+      <div class="grid grid-cols-2 gap-3">
+        <AppField>
+          <AppLabel for="ap-end-date">
+            Fim — data
+          </AppLabel>
+          <AppInput
+            id="ap-end-date"
+            :model-value="form.values.endDate"
+            type="date"
+            data-testid="ap-end-date"
+            @change="onEndDateChange"
+          />
+        </AppField>
+        <AppField>
+          <AppLabel for="ap-end-time">
+            Fim — hora
+          </AppLabel>
+          <AppInput
+            id="ap-end-time"
+            :model-value="form.values.endTime"
+            type="time"
+            data-testid="ap-end-time"
+            @change="onEndTimeChange"
+          />
+        </AppField>
+      </div>
+
+      <!-- Decisão humana #2: mudou SÓ a data de início com fim configurado ⇒ o
+           form PERGUNTA (default: manter o intervalo, já aplicado). -->
+      <div
+        v-if="form.startDatePrompt.value"
+        class="flex flex-col gap-2 rounded-md border border-border bg-muted/40 p-3"
+        role="group"
+        aria-label="Fim após mudar a data de início"
+        data-testid="end-date-prompt"
+      >
+        <p class="text-sm text-foreground">
+          Você mudou a data de início. O que fazer com o fim?
+        </p>
+        <div class="flex gap-2">
+          <AppButton
+            size="sm"
+            data-testid="end-date-keep"
+            @click="form.keepInterval()"
+          >
+            Manter o intervalo (fim acompanha)
+          </AppButton>
+          <AppButton
+            variant="outline"
+            size="sm"
+            data-testid="end-date-new"
+            @click="onDefineNewEnd"
+          >
+            Definir novo fim
+          </AppButton>
+        </div>
+      </div>
+
       <AppField>
-        <AppLabel for="ap-duration">
-          Duração (minutos)
-        </AppLabel>
-        <AppInput
-          id="ap-duration"
-          v-model.number="form.values.durationMinutes"
-          type="number"
-          min="5"
-          step="5"
-          @input="form.invalidateCheck()"
-        />
+        <p
+          v-if="form.rangeOrderError.value"
+          class="rounded-md border border-danger/60 bg-danger/10 px-3 py-2 text-sm text-danger"
+          role="alert"
+          data-testid="form-end-order-error"
+        >
+          O fim precisa ser depois do início
+        </p>
         <p
           v-if="preview"
           class="text-xs text-muted-foreground"
           data-testid="form-range-preview"
         >
           {{ preview }}
+        </p>
+        <p
+          v-if="form.durationMinutes.value !== null"
+          class="text-xs text-muted-foreground"
+          data-testid="form-duration-derived"
+        >
+          Duração: {{ durationLabel }}
         </p>
       </AppField>
 
@@ -285,6 +349,41 @@ const preview = computed(() => {
   const tz = f.timezone.value;
   return `${formatDayHeading(r.startsAt, tz, new Date()).label} · ${formatRangeInTz(r.startsAt, r.endsAt, tz)}`;
 });
+
+/** Duração derivada em texto (Xh[Ymin]) — exibição pura, nenhuma aritmética aqui. */
+const durationLabel = computed(() => {
+  const mins = form.value?.durationMinutes.value ?? null;
+  if (mins === null) return '';
+  const h = Math.floor(mins / 60);
+  const m = mins % 60;
+  if (h && m) return `${h}h${String(m).padStart(2, '0')}`;
+  if (h) return `${h}h`;
+  return `${m} min`;
+});
+
+// ---- Handlers finos (view → composable; zero cálculo de data no .vue) ------
+
+function onDateChange(v: string): void {
+  form.value?.onStartDateChange(String(v ?? ''));
+}
+
+function onTimeChange(v: string): void {
+  form.value?.onStartTimeChange(String(v ?? ''));
+}
+
+function onEndDateChange(v: string): void {
+  form.value?.onEndChange({ endDate: String(v ?? '') });
+}
+
+function onEndTimeChange(v: string): void {
+  form.value?.onEndChange({ endTime: String(v ?? '') });
+}
+
+/** "Definir novo fim": fecha a pergunta e dá foco ao campo de hora do fim. */
+function onDefineNewEnd(): void {
+  form.value?.defineNewEnd();
+  document.getElementById('ap-end-time')?.focus();
+}
 
 async function onSave(): Promise<void> {
   if (!form.value) return;

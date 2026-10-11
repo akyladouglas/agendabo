@@ -151,12 +151,13 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-/** Candidato conflituoso em SP: 14:00 + 60min = 17:00Z–18:00Z. */
+/** Candidato conflituoso em SP: 14:00 + 60min = 17:00Z–18:00Z (fim explícito 15:00). */
 function fillConflicting(form: ReturnType<typeof useAppointmentForm>['values']) {
   form.title = 'Consulta';
   form.date = '2026-10-08';
   form.time = '14:00';
-  form.durationMinutes = 60;
+  form.endDate = '2026-10-08';
+  form.endTime = '15:00';
 }
 
 describe('Reagendamento Assistido — fetch de jogadas (D-W1)', () => {

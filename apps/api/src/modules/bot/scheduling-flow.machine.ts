@@ -19,6 +19,7 @@ import {
   givesUp,
   parseNotesAnswer,
   parseYesNo,
+  startsWithNegation,
 } from "./messages";
 import type { BotUser } from "./bot-access.service";
 import {
@@ -1865,7 +1866,20 @@ export class SchedulingFlowMachine {
         // (texto que nao e nem sim/nao nem nota legivel) re-pergunta a pergunta.
         const yesNo = parseYesNo(text);
         if (text && yesNo === null) {
-          // ambiguo: aceita como nota apenas texto "substantivo"; re-pergunta ruido curto
+          // spec notas-e-fim-na-web A2: frase real (>= 4 palavras) comecando com
+          // negacao NAO e ruido — vira nota no parseNotesAnswer abaixo. So re-pergunta
+          // o ruido curto (<= 3 chars) que nao e nota nem sim/nao.
+          if (startsWithNegation(text)) {
+            c.notes = null;
+            session.step = "lembrete";
+            return {
+              replies: [
+                lembreteKeyboardButtons(
+                  BOT_MESSAGES.pedeLembrete(this.resumo(c, input)),
+                ),
+              ],
+            };
+          }
           if (text.length <= 3) {
             return {
               replies: [{ kind: "text", text: BOT_MESSAGES.pedeNotas(resumo) }],

@@ -285,8 +285,12 @@
             <dt class="text-muted-foreground">
               Quando
             </dt>
+            <!-- C2 da spec: rótulo com o FIM completo (dia+hora) — "23:00–seg
+                 12/10 17:00" vira "qui 08/10 14:00 → seg 12/10 17:00" (formato do
+                 bug: o usuário precisa LER "termina segunda 17:00"). -->
             <dd class="font-medium text-foreground">
-              {{ formatRange(detailsItem) }}
+              {{ formatDateTimeInTz(detailsItem.startsAt, timezone) }} →
+              {{ formatDateTimeInTz(detailsItem.endsAt, timezone) }}
             </dd>
           </div>
           <div v-if="detailsItem.notes">
@@ -353,7 +357,7 @@
             :disabled="deleting.isPending.value"
             @click="doDelete"
           >
-            Excluir de verdade
+            Excluir
           </AppButton>
         </div>
       </template>
@@ -382,6 +386,7 @@ import { useAgendaPage } from '@/app/composables/useAgendaPage.composable';
 import { useAgendaDrag, dropOriginKey } from '@/app/composables/useAgendaDrag.composable';
 import { useDeleteAppointmentMutation } from '@/app/composables/mutations/useDeleteAppointment.mutation';
 import {
+  formatDateTimeInTz,
   formatDayHeading,
   formatRangeInTz,
   formatWeekHeading,

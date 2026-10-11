@@ -25,6 +25,7 @@ const NO_WORDS = [
   "nao",
   "n",
   "no",
+  "nada",
   "negado",
   "sem",
   "depois",
@@ -69,12 +70,51 @@ export function givesUp(text: string): boolean {
 export const NOTES_PREFIX_RE =
   /^(anotar|anota|nota|obs|observaç[õa]es?)\s*(?::|-)?\s*/i;
 
-/** Texto de nota do usuario: "não" -> null; "anotar: X" -> "X" (spec #5). */
+/**
+ * Spec notas-e-fim-na-web (A2/A3, decisao humana #1): minimo de PALAVRAS NORMALIZADAS
+ * para uma resposta que comeca com negacao ser FRASE REAL do usuario (nota literal) em
+ * vez de negativa. Constante testavel da borda do bot — nao e regra de schedule-core.
+ */
+export const NOTES_MIN_PHRASE_WORDS = 4;
+
+/**
+ * Texto de nota do usuario: "nao" -> null; "anotar: X" -> "X" (spec #5).
+ *
+ * Correcao do bug de producao 2026-10-10 (gotcha 24): a versao antiga delegava a
+ * `parseYesNo`, que casa negacao pela PRIMEIRA PALAVRA — "Nao esquecer nada na volta"
+ * gravava sem nota. Regra nova (spec notas-e-fim-na-web A1-A4, decisao #1):
+ *  - comeca com palavra de negacao E tem < NOTES_MIN_PHRASE_WORDS palavras
+ *    normalizadas -> negativa (`null`);
+ *  - comeca com negacao mas e frase (>= NOTES_MIN_PHRASE_WORDS palavras) -> nota
+ *    LITERAL integral (sem limpeza alem de NOTES_PREFIX_RE — ADR-004, zero LLM);
+ *  - `parseYesNo` continua o sim/nao puro de cabeca de frase (demais passos do
+ *    fluxo dependem disso — NAO mexer aqui).
+ */
 export function parseNotesAnswer(text: string): string | null {
   const t = text.trim();
-  if (parseYesNo(t) === false) return null;
+  if (startsWithNegation(t)) return null;
   const stripped = t.replace(NOTES_PREFIX_RE, "").trim();
   return stripped.length > 0 ? stripped : t;
+}
+
+/**
+ * Spec notas-e-fim-na-web (A1, decisao humana #1): comeca com negacao e tem
+ * < NOTES_MIN_PHRASE_WORDS palavras normalizadas -> negativa ("nao", "nao tenho
+ * nada", "sem notas"). Frase real (>= 4) comecando com "nao" NAO e negativa.
+ * `NO_WORDS` tambem contem multi-palavra ("agora nao") -> comparada no texto
+ * normalizado inteiro, e desistencia (givesUp) conta como negativa (como em
+ * `parseYesNo`).
+ */
+export function startsWithNegation(text: string): boolean {
+  const n = normalize(text);
+  if (!n) return false;
+  if (givesUp(text)) return true;
+  if (NO_WORDS.includes(n)) return true;
+  const words = n.split(/\s+/);
+  const first = words[0];
+  return (
+    words.length < NOTES_MIN_PHRASE_WORDS && first !== undefined && NO_WORDS.includes(first)
+  );
 }
 
 /**

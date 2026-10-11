@@ -294,3 +294,21 @@ livre nunca roda para origem `callback` (a flag `origin`/`fromCallback` fecha o
 botão com significado estruturado tem handler próprio (família de prefixo na
 `callback_data`); label novo sem handler cai na whitelist ou é ignorado, jamais
 vira fala.
+
+## 24. negacao de cabeca engole frase (notas comecadas com "nao")
+
+**Problema:** `parseNotesAnswer` reusava `parseYesNo`, que decide negativa por
+PRIMEIRA PALAVRA. Em producao (2026-10-10), "nao tenho nada pra falar sobre"
+(4+ palavras, nota literal do usuario) virou notes=null e a frase se perdeu;
+o mesmo padrao no passo `notas` da maquina re-perguntava em vez de aceitar.
+**Fix aplicado (spec notas-e-fim-na-web A):** `startsWithNegation` (exportada
+em `messages.ts`) so decide negativa com < `NOTES_MIN_PHRASE_WORDS` (4)
+palavras normalizadas; NO_WORDS multi-palavra ("agora nao") e comparado no texto
+normalizado inteiro; desistencia (`givesUp`) continua negativa. O passo
+`notas` da maquina tem o ramo ANTES do re-pergunte de ruido (1-3 caracteres),
+senao "nao" puro virava re-pergunte em vez de notes=null -> lembrete.
+`parseYesNo` esta blindado por testes (demais passos dependem da regra de
+cabeca) -- NAO "conserta-lo" sem auditarem os call sites.
+**Se acontecer de novo:** em qualquer passo de texto-livre, "comeca com nao" NAO
+implica negativa; a borda entre negativa e conteudo e o NUMERO DE PALAVRAS, e a
+regra mora num puro exportado com teste proprio, nunca inline no handler.
