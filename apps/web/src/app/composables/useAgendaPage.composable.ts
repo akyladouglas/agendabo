@@ -1,9 +1,10 @@
 import { computed, onMounted, onUnmounted, ref, watch, type ComputedRef, type Ref } from 'vue';
 import {
   dayDensity,
-  groupByLocalDay,
+  groupByLocalDayTouched,
   hourGrid,
   layoutDayTimeline,
+  sliceTimelineItems,
   MS_DAY,
   monthCells,
   monthGridRange,
@@ -19,9 +20,11 @@ import {
   type CalendarDay,
   type DateRange,
   type DayHourRow,
+  type DaySlice,
   type HourCell,
   type MonthDensity,
   type TimelineBlock,
+  type TimelineItem,
 } from '@agendabo/schedule-core';
 import type { AppointmentDto } from '@agendabo/contracts';
 import { useAuthStore } from '../store/authStore';
@@ -35,6 +38,17 @@ import { monthName, measureTzOffset } from '../utils/tz';
  * e deriva período/células/linhas/densidade CHAMANDO o schedule-core. Zero regra de
  * data aqui também — só composição (vue.md #6/#7).
  */
+
+export type SliceTimelineItem = TimelineItem & DaySlice<AppointmentDto>;
+
+/**
+ * Bloco posicionado cujo `item` é um slice de dia (Semana/Dia com recorte multi-dia):
+ * o layout é do slice, o clique/drag/aria-label são do `slice.item` (intervalo
+ * integral). Usado pelo composable e pela página como tipo dos `TimelineBlock`.
+ */
+export type SliceTimelineBlock = Omit<TimelineBlock<TimelineItem>, 'item'> & {
+  item: DaySlice<AppointmentDto>;
+};
 
 export type AgendaView = 'day' | 'week' | 'month' | 'year';
 
@@ -112,12 +126,26 @@ export interface UseAgendaPage {
   yearMonthCells: ComputedRef<CalendarDay[][]>;
   /** 7 linhas da semana (dom..sáb, semana da âncora). */
   rows: ComputedRef<DayHourRow[]>;
-  /** dateKey → compromissos do dia (E.2 — vale para o período da query atual). */
+  /**
+   * dateKey → compromissos que TOCAM o dia (multi-dia: o item entra em TODOS os dias
+   * que toca — spec multi-dia-nas-visoes F.1/D5; vale para o período da query atual).
+   */
   byDay: ComputedRef<Map<string, AppointmentDto[]>>;
+  /**
+   * Semana: dateKey da coluna → SLICES do recorte local do dia (`sliceItemToRange`).
+   * A página dá o range [meia-noite local, próxima) de cada coluna; aqui só corta
+   * (borda) — o recorte é schedule-core. Itens que não tocam a coluna ficam fora.
+   */
+  slicesByRowDate: ComputedRef<Map<string, DaySlice<AppointmentDto>[]>>;
   /** Grade de horas da visão Dia (célula por hora local coberta pelo range — 1.1). */
   hourCells: ComputedRef<HourCell[]>;
-  /** Blocos da visão Dia posicionados em % (layoutDayTimeline sobre `items`). */
-  dayBlocks: ComputedRef<TimelineBlock<AppointmentDto>[]>;
+  /**
+   * Dia: SLICES do recorte dos itens ao range do dia (`sliceTimelineItems`) — o
+   * layout posiciona pelo recorte, as flags de continuação vêm daqui (D4).
+   */
+  daySlices: ComputedRef<DaySlice<AppointmentDto>[]>;
+  /** Blocos da visão Dia posicionados em % (layoutDayTimeline sobre os slices). */
+  dayBlocks: ComputedRef<SliceTimelineBlock[]>;
   /** Offset do fuso no RANGE (meia-noite local do dia focado) — a grade deriva daqui. */
   rangeOffsetMin: ComputedRef<number>;
   /** Visão Ano: densidade por mês do ano da âncora; dia de hoje (dateKey local). */
@@ -301,7 +329,11 @@ export function useAgendaPage(): UseAgendaPage {
   const items = computed(() => sortAppointmentsByStart(appointmentsQuery.data.value?.items ?? []));
 
   const cells = computed(() => monthCells(grid.value, offset.value, now.value));
-  const byDay = computed(() => groupByLocalDay(items.value, offset.value));
+  /**
+   * dateKey → itens que TOCAM o dia (multi-dia — D5). Alimenta os chips do Mês e a
+   * densidade das bolinhas; o Dia usa `items` inteiro (a carga já é por intersecção).
+   */
+  const byDay = computed(() => groupByLocalDayTouched(items.value, offset.value));
 
   /**
    * Offset do fuso no RANGE: meia-noite LOCAL do início do período (o MESMO offset
@@ -337,12 +369,38 @@ export function useAgendaPage(): UseAgendaPage {
     );
   });
   /**
+   * Semana (D7): dateKey da coluna → SLICES do recorte dos itens ao dia da coluna.
+   * Cada coluna recebe os itens que a TOCAM como recorte local ([meia-noite local,
+   * próxima) da coluna — `sliceItemToRange`), NÃO o bucket de dia de início. O
+   * `item` do slice é o ORIGINAL — clique/drag/aria usam o intervalo integral.
+   * A meia-noite local de cada linha vem do próprio `row.start`/`row.end`
+   * (meia-noites locais reais — mesma fonte da grade de horas da linha).
+   */
+  const slicesByRowDate = computed<Map<string, DaySlice<AppointmentDto>[]>>(() => {
+    const out = new Map<string, DaySlice<AppointmentDto>[]>();
+    for (const row of rows.value) {
+      out.set(row.date, sliceTimelineItems(items.value, { start: row.start, end: row.end }));
+    }
+    return out;
+  });
+  /**
    * Grade de horas da visão Dia (plano grades-dia-semana-mes 1.1/1.3): regra 100%
    * schedule-core (`hourGrid` + `layoutDayTimeline`) — a página só compõe (E.4).
    */
   const hourCells = computed(() => hourGrid(range.value, rangeOffsetMin.value, now.value));
-  const dayBlocks = computed(() =>
-    layoutDayTimeline(items.value, range.value, rangeOffsetMin.value, now.value),
+  /**
+   * Visão Dia (D4): os itens do período são RECORTADOS ao range do dia antes do
+   * layout — o bloco mostra a faixa local do dia (23:00→24:00 no dia de início)
+   * com as flags `continuesBefore`/`continuesAfter` (spec multi-dia-nas-visoes B.3).
+   */
+  const daySlices = computed(() => sliceTimelineItems(items.value, range.value));
+  const dayBlocks = computed<SliceTimelineBlock[]>(() =>
+    layoutDayTimeline(
+      daySlices.value.map<SliceTimelineItem>((slice) => ({ ...slice, id: slice.item.id })),
+      range.value,
+      rangeOffsetMin.value,
+      now.value,
+    ).map((b) => ({ ...b, item: b.item as DaySlice<AppointmentDto> })),
   );
 
   /** Visão Ano: grade do mês da ÂNCORA + a do mês seguinte (âncora em trailing →
@@ -433,7 +491,9 @@ export function useAgendaPage(): UseAgendaPage {
     yearMonthCells,
     rows,
     byDay,
+    slicesByRowDate,
     hourCells,
+    daySlices,
     dayBlocks,
     rangeOffsetMin,
     density,

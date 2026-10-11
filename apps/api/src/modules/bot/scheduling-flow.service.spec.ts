@@ -625,8 +625,9 @@ describe("SchedulingFlowService (bordas)", () => {
     await m.svc.handleText("111", "14:00"); // hora local
     await m.svc.handleText("111", "1h"); // duração -> checagem de conflito (nenhum) -> notas
 
-    // consulta p/ findConflict: confirmed+needs_review e endsAt > now (R1:
-    // alinha com a carga de escrita da API — ADR-0015/D6)
+    // consulta p/ findConflict: confirmed+needs_review na janela futura [now, now+90d)
+    // com INTERSEÇÃO meia-aberta (multi-dia D3: startsAt < horizon AND endsAt >= now —
+    // espelho listOverlapping; R1: alinha com a carga de escrita da API — ADR-0015/D6)
     expect(m.prisma.appointment.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
@@ -635,6 +636,13 @@ describe("SchedulingFlowService (bordas)", () => {
         }),
       }),
     );
+    const conflictWhere = (m.prisma.appointment.findMany.mock.calls as [unknown[]][])
+      .map((c) => (c[0] as { where?: Record<string, any> }).where)
+      .find((w) => w?.status?.in?.includes("needs_review") && w.startsAt?.lt)!;
+    expect(conflictWhere).toBeDefined();
+    expect(conflictWhere.endsAt).toEqual({ gte: expect.any(Date) }); // >= now, NUNCA { gt: now }
+    expect(conflictWhere.endsAt.gt).toBeUndefined();
+    expect(conflictWhere.startsAt.lt.getTime()).toBeGreaterThan(Date.now()); // horizonte 90d
 
     await m.svc.handleText("111", "não"); // notas => null
     await m.svc.handleText("111", "sem lembrete"); // passo lembrete (Fase 3): atalho determinístico

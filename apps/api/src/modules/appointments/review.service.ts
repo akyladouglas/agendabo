@@ -3,7 +3,7 @@ import { findConflict, type AppointmentLike } from '@agendabo/schedule-core';
 import { reviewConfirmInputSchema } from '@agendabo/contracts';
 import { PrismaService } from '../../shared/prisma/prisma.service';
 import { OutboxService } from '../notifications/outbox.service';
-import { AppointmentConflictError } from './appointments.service';
+import { AppointmentConflictError, CONFLICT_HORIZON_MS } from './appointments.service';
 
 /**
  * Fila `needs_review` (Fase 4, spec E15/E16): o que o bot não entendeu com confiança
@@ -18,6 +18,11 @@ export class ReviewService {
     private readonly prisma: PrismaService,
     private readonly outbox: OutboxService,
   ) {}
+
+  /** Relógio da borda (testes sobrescrevem — mesma convenção do AppointmentsService). */
+  now(): Date {
+    return new Date();
+  }
 
   /** GET /review: rascunhos do usuário, mais antigos primeiro (`startsAt asc`). */
   async list(userId: string) {
@@ -57,8 +62,9 @@ export class ReviewService {
 
     // conflito contra os confirmed futuros (o próprio id fica fora — é needs_review,
     // mas ignoreId protege o invariante se o status um dia fluir por outro caminho).
-    const existing = await this.existingConfirmed(userId, id);
-    const result = findConflict({ startsAt: input.startsAt, endsAt: input.endsAt }, existing);
+    const candidate = { startsAt: input.startsAt, endsAt: input.endsAt };
+    const existing = await this.existingConfirmed(userId, candidate, id);
+    const result = findConflict(candidate, existing);
     if (result.conflict && result.with) throw new AppointmentConflictError(result.with);
 
     const now = new Date();
@@ -105,13 +111,32 @@ export class ReviewService {
     return { dismissed: true } as const;
   }
 
-  /** Carga da checagem: confirmed futuros do usuário, sem o próprio id. */
-  private async existingConfirmed(userId: string, ignoreId: string): Promise<AppointmentLike[]> {
+  /**
+   * Carga da checagem: interseção meia-aberta com o candidato expandido
+   * `[min(now, cStart), max(cEnd, now+HORIZON))` — mesma janela de
+   * `appointments.service.existingFor` (multi-dia, spec §B.2/D2; gotcha 25: o corte
+   * antigo `endsAt > new Date()` escondia multi-dia pré-now e candidatos no passado).
+   */
+  private async existingConfirmed(
+    userId: string,
+    candidate: { startsAt: Date; endsAt: Date },
+    ignoreId: string,
+  ): Promise<AppointmentLike[]> {
     // ADR-0015/D6: `needs_review` conta como obstáculo (a fila mostra ⚠️ e o item
     // pode ser confirmado a qualquer momento — ignorá-lo criaria sobreposição
     // latente proibida pela invariante).
+    const now = this.now();
+    const horizon = new Date(
+      Math.max(candidate.endsAt.getTime(), now.getTime() + CONFLICT_HORIZON_MS),
+    );
+    const floor = new Date(Math.min(now.getTime(), candidate.startsAt.getTime()));
     const rows = await this.prisma.appointment.findMany({
-      where: { userId, status: { in: ['confirmed', 'needs_review'] }, endsAt: { gt: new Date() } },
+      where: {
+        userId,
+        status: { in: ['confirmed', 'needs_review'] },
+        startsAt: { lt: horizon },
+        endsAt: { gte: floor },
+      },
       orderBy: { startsAt: 'asc' },
       select: { id: true, title: true, startsAt: true, endsAt: true },
     });

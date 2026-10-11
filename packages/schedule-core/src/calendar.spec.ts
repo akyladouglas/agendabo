@@ -2,8 +2,11 @@ import { describe, expect, it } from 'vitest';
 import { monthGridRange, userDayRange, userMonthRange, userWeekRange, userYearRange } from './dates';
 import {
   dayDensity,
-  groupByLocalDay,
+  groupByLocalDayTouched,
+  localDaysTouched,
   monthCells,
+  sliceItemToRange,
+  sliceTimelineItems,
   weekRows,
   type LocalizedItem,
 } from './calendar';
@@ -207,19 +210,68 @@ describe('weekRows — 7 linhas da semana (dom..sáb) da âncora (4.2)', () => {
   });
 });
 
-describe('groupByLocalDay — agrupa pelo INÍCIO LOCAL (4.3)', () => {
-  it('critério Gherkin: 23:50→00:10 local pertence ao dia de INÍCIO (só um dateKey)', () => {
-    // 23:50 local (-03) = 02:50Z do dia 10; 00:10 local do dia 11 = 03:10Z do dia 11
+describe('localDaysTouched — date-keys locais TOCADOS por um item (multi-dia)', () => {
+  it('viagem 10/10 23:00 → 12/10 17:00 local toca os 3 dias (10, 11 e 12)', () => {
+    // 23:00 local (-03) = 02:00Z do dia 11; 17:00 local do dia 12 = 20:00Z do dia 12
+    const trip = item(new Date('2026-10-11T02:00:00Z'), new Date('2026-10-12T20:00:00Z'));
+    expect(localDaysTouched(trip, sp)).toEqual(['2026-10-10', '2026-10-11', '2026-10-12']);
+  });
+
+  it('half-open: item terminando EXATAMENTE na meia-noite NÃO toca o dia seguinte', () => {
+    // 10/10 14:00 → 11/10 00:00 local (fim = meia-noite em ponto, exclusive)
+    const untilMidnight = item(new Date('2026-10-10T17:00:00Z'), new Date('2026-10-11T03:00:00Z'));
+    expect(localDaysTouched(untilMidnight, sp)).toEqual(['2026-10-10']);
+  });
+
+  it('half-open: item começando EXATAMENTE na meia-noite toca só o novo dia', () => {
+    // 11/10 00:00 local = 03:00Z do dia 11 (início inclusive)
+    const fromMidnight = item(new Date('2026-10-11T03:00:00Z'), new Date('2026-10-11T06:00:00Z'));
+    expect(localDaysTouched(fromMidnight, sp)).toEqual(['2026-10-11']);
+  });
+
+  it('item dentro de um único dia = um dateKey; item degenerado [x, x) = lista vazia', () => {
+    const same = item(new Date('2026-10-08T13:00:00Z'), new Date('2026-10-08T14:00:00Z'));
+    expect(localDaysTouched(same, sp)).toEqual(['2026-10-08']);
+    const point = item(new Date('2026-10-08T13:00:00Z'), new Date('2026-10-08T13:00:00Z'));
+    expect(localDaysTouched(point, sp)).toEqual([]);
+  });
+
+  it('23:50→00:10 local (critério da mãe) toca os DOIS dias', () => {
     const overnight = item(new Date('2026-10-11T02:50:00Z'), new Date('2026-10-11T03:10:00Z'));
-    const map = groupByLocalDay([overnight], sp);
-    expect([...map.keys()]).toEqual(['2026-10-10']);
+    expect(localDaysTouched(overnight, sp)).toEqual(['2026-10-10', '2026-10-11']);
+  });
+
+  it('DST (modelo de offset único): atravessa a transição sem repetir nem pular dateKey', () => {
+    // fim 15/11 12:00 naive: com offset fixo -180 as meias-noites locais vêm a cada 24h
+    const trip = item(new Date('2026-11-14T20:00:00Z'), new Date('2026-11-15T15:00:00Z'));
+    expect(localDaysTouched(trip, sp)).toEqual(['2026-11-14', '2026-11-15']);
+  });
+
+  it('item de ANO novo vira a grade sem perder dias (31/12 → 02/01)', () => {
+    const réveillon = item(new Date('2026-12-31T21:00:00Z'), new Date('2027-01-02T06:00:00Z'));
+    expect(localDaysTouched(réveillon, sp)).toEqual(['2026-12-31', '2027-01-01', '2027-01-02']);
+  });
+});
+
+describe('groupByLocalDayTouched — item em TODOS os dias que toca (multi-dia)', () => {
+  it('critério Gherkin: 23:50→00:10 local aparece nos DOIS dateKeys', () => {
+    const overnight = item(new Date('2026-10-11T02:50:00Z'), new Date('2026-10-11T03:10:00Z'));
+    const map = groupByLocalDayTouched([overnight], sp);
+    expect([...map.keys()]).toEqual(['2026-10-10', '2026-10-11']);
     expect(map.get('2026-10-10')).toEqual([overnight]);
-    expect(map.has('2026-10-11')).toBe(false);
+    expect(map.get('2026-10-11')).toEqual([overnight]);
+  });
+
+  it('viagem multi-dia: os 3 buckets com o mesmo item (chips 10/11/12 do Mês)', () => {
+    const trip = item(new Date('2026-10-11T02:00:00Z'), new Date('2026-10-12T20:00:00Z'));
+    const map = groupByLocalDayTouched([trip], sp);
+    expect([...map.keys()]).toEqual(['2026-10-10', '2026-10-11', '2026-10-12']);
+    for (const key of map.keys()) expect(map.get(key)).toEqual([trip]);
   });
 
   it('dias sem compromisso não criam chave (Map esparso)', () => {
     const a = item(new Date('2026-10-08T13:00:00Z'), new Date('2026-10-08T14:00:00Z'));
-    const map = groupByLocalDay([a], sp);
+    const map = groupByLocalDayTouched([a], sp);
     expect([...map.keys()]).toEqual(['2026-10-08']);
   });
 
@@ -227,24 +279,131 @@ describe('groupByLocalDay — agrupa pelo INÍCIO LOCAL (4.3)', () => {
     const later = item(new Date('2026-10-08T15:00:00Z'), new Date('2026-10-08T16:00:00Z'), 'b');
     const earlier = item(new Date('2026-10-08T12:00:00Z'), new Date('2026-10-08T13:00:00Z'), 'a');
     const nextDay = item(new Date('2026-10-09T12:00:00Z'), new Date('2026-10-09T13:00:00Z'), 'c');
-    const map = groupByLocalDay([later, earlier, nextDay], sp);
+    const map = groupByLocalDayTouched([later, earlier, nextDay], sp);
     expect([...map.get('2026-10-08')!].map((i) => i.id)).toEqual(['a', 'b']);
     expect([...map.keys()]).toEqual(['2026-10-08', '2026-10-09']);
   });
 
-  it('vários itens cruzando a meia-noite em sequência agrupam cada um no seu dia de início', () => {
-    const items = [
-      item(new Date('2026-10-11T02:30:00Z'), new Date('2026-10-11T03:30:00Z'), 'x'), // 23:30→00:30 de 10
-      item(new Date('2026-10-11T02:50:00Z'), new Date('2026-10-11T03:10:00Z'), 'y'), // 23:50→00:10 de 10
-      item(new Date('2026-10-12T02:10:00Z'), new Date('2026-10-12T02:40:00Z'), 'z'), // 23:10→23:40 de 11 (não cruza)
-    ];
-    const map = groupByLocalDay(items, sp);
-    expect([...map.get('2026-10-10')!].map((i) => i.id)).toEqual(['x', 'y']);
-    expect([...map.get('2026-10-11')!].map((i) => i.id)).toEqual(['z']);
+  it('multi-dia ordena junto com os itens do dia intermediário pelo startsAt', () => {
+    const trip = item(new Date('2026-10-11T02:00:00Z'), new Date('2026-10-12T20:00:00Z'), 'trip');
+    const meio = item(new Date('2026-10-11T13:00:00Z'), new Date('2026-10-11T14:00:00Z'), 'm');
+    const map = groupByLocalDayTouched([meio, trip], sp);
+    // dia 11: a viagem começa ANTES (startsAt 02:00Z < 13:00Z) mesmo nascendo no dia 10
+    expect([...map.get('2026-10-11')!].map((i) => i.id)).toEqual(['trip', 'm']);
   });
 
   it('array vazio devolve Map vazio', () => {
-    expect(groupByLocalDay([], sp).size).toBe(0);
+    expect(groupByLocalDayTouched([], sp).size).toBe(0);
+  });
+});
+
+describe('sliceItemToRange — recorte half-open de um item a um range (Semana/Dia)', () => {
+  const day10 = { start: new Date('2026-10-10T03:00:00Z'), end: new Date('2026-10-11T03:00:00Z') };
+  const day11 = { start: new Date('2026-10-11T03:00:00Z'), end: new Date('2026-10-12T03:00:00Z') };
+  const day12 = { start: new Date('2026-10-12T03:00:00Z'), end: new Date('2026-10-13T03:00:00Z') };
+  const trip = item(new Date('2026-10-11T02:00:00Z'), new Date('2026-10-12T20:00:00Z'), 'trip');
+
+  it('dia de início: recorte 23:00→24:00 com continuesAfter (10/10)', () => {
+    const slice = sliceItemToRange(trip, day10);
+    expect(slice).not.toBeNull();
+    expect(slice!.startsAt.toISOString()).toBe('2026-10-11T02:00:00.000Z');
+    expect(slice!.endsAt.toISOString()).toBe('2026-10-11T03:00:00.000Z');
+    expect(slice!.continuesBefore).toBe(false);
+    expect(slice!.continuesAfter).toBe(true);
+  });
+
+  it('dia do meio: 00:00→24:00 com as DUAS flags (11/10)', () => {
+    const slice = sliceItemToRange(trip, day11)!;
+    expect(slice.startsAt.toISOString()).toBe('2026-10-11T03:00:00.000Z');
+    expect(slice.endsAt.toISOString()).toBe('2026-10-12T03:00:00.000Z');
+    expect(slice.continuesBefore).toBe(true);
+    expect(slice.continuesAfter).toBe(true);
+  });
+
+  it('dia do fim: 00:00→17:00 com continuesBefore e SEM continuesAfter (12/10)', () => {
+    const slice = sliceItemToRange(trip, day12)!;
+    expect(slice.startsAt.toISOString()).toBe('2026-10-12T03:00:00.000Z');
+    expect(slice.endsAt.toISOString()).toBe('2026-10-12T20:00:00.000Z');
+    expect(slice.continuesBefore).toBe(true);
+    expect(slice.continuesAfter).toBe(false);
+  });
+
+  it('dia por onde o item NÃO passa devolve null (13/10); recorte idêntido = null (não-toca)', () => {
+    const day13 = { start: new Date('2026-10-13T03:00:00Z'), end: new Date('2026-10-14T03:00:00Z') };
+    expect(sliceItemToRange(trip, day13)).toBeNull();
+    const contained = item(new Date('2026-10-10T13:00:00Z'), new Date('2026-10-10T13:00:00Z'), 'x');
+    expect(sliceItemToRange(contained, day10)).toBeNull();
+  });
+
+  it('flags = o item VAI nascer/morrer FORA do range (multi-dia recortado no fim do dia)', () => {
+    // 10/10 09:00→11/10 09:00 local: no range do dia 10 o recorte morre na meia-noite
+    // mas o item VIVE depois dela ⇒ continuesAfter true, não null
+    const day = item(new Date('2026-10-10T12:00:00Z'), new Date('2026-10-11T12:00:00Z'), 'd');
+    const slice = sliceItemToRange(day, day10)!;
+    expect(slice.endsAt.toISOString()).toBe('2026-10-11T03:00:00.000Z');
+    expect(slice.continuesAfter).toBe(true);
+  });
+
+  it('item INTEIRO que morre EXATAMENTE na meia-noite do range: não continua (half-open — review 2026-10-11)', () => {
+    // "reunião 10/10 09:00 → 11/10 00:00 local": nada existe em [to, to) — o item
+    // morreu NA fronteira. O recorte é o bloco 09:00→23:59 do dia, SEM o marcador de
+    // continuação (a UI pintaria "↦" mentindo que há vida no dia seguinte).
+    const meeting = item(new Date('2026-10-10T12:00:00Z'), new Date('2026-10-11T03:00:00Z'), 'm');
+    const slice = sliceItemToRange(meeting, day10)!;
+    expect(slice.endsAt.toISOString()).toBe('2026-10-11T03:00:00.000Z');
+    expect(slice.continuesAfter).toBe(false);
+    expect(slice.continuesBefore).toBe(false);
+    // e o dia seguinte NÃO o recebe (encostado não toca):
+    expect(sliceItemToRange(meeting, day11)).toBeNull();
+  });
+
+  it('range vazio (start >= end) devolve null', () => {
+    expect(sliceItemToRange(trip, { start: day11.end, end: day11.start })).toBeNull();
+  });
+});
+
+describe('sliceTimelineItems — corte por dia para o layout da grade (Semana/Dia)', () => {
+  const day10 = { start: new Date('2026-10-10T03:00:00Z'), end: new Date('2026-10-11T03:00:00Z') };
+  const day11 = { start: new Date('2026-10-11T03:00:00Z'), end: new Date('2026-10-12T03:00:00Z') };
+  const trip = item(new Date('2026-10-11T02:00:00Z'), new Date('2026-10-12T20:00:00Z'), 'trip');
+
+  it('um multi-dia vira um slice por dia tocado, com o original preservado', () => {
+    const slices = sliceTimelineItems([trip], day10);
+    expect(slices).toHaveLength(1);
+    expect(slices[0]!.item).toBe(trip);
+    expect(slices[0]!.continuesBefore).toBe(false);
+    expect(slices[0]!.continuesAfter).toBe(true);
+    // nos DOIS dias o slice é o MESMO objeto de compromisso (clique abre o mesmo item)
+    const meio = sliceTimelineItems([trip], day11);
+    expect(meio).toHaveLength(1);
+    expect(meio[0]!.item).toBe(trip);
+  });
+
+  it('item dia INTEIRO (00:00→24:00 locais) é slice do dia sem marcadores', () => {
+    // 10/10 00:00 → 11/10 00:00 local: o recorte é o dia inteiro; o item morreu NA
+    // fronteira (half-open) ⇒ não continua (review 2026-10-11: sem o "↦" mentiroso)
+    const day = item(new Date('2026-10-10T03:00:00Z'), new Date('2026-10-11T03:00:00Z'), 'd');
+    const slices = sliceTimelineItems([day], day10);
+    expect(slices).toHaveLength(1);
+    expect(slices[0]!.continuesAfter).toBe(false);
+    expect(slices[0]!.continuesBefore).toBe(false);
+  });
+
+  it('itens sem recorte saem fora; ordem pela POSIÇÃO na grade (instantes, não id)', () => {
+    const normal = item(new Date('2026-10-10T15:00:00Z'), new Date('2026-10-10T16:00:00Z'), 'n');
+    const fora = item(new Date('2026-10-12T13:00:00Z'), new Date('2026-10-12T14:00:00Z'), 'f');
+    const slices = sliceTimelineItems([fora, normal, trip], day10);
+    // o slice da viagem nasce 14:00 local (02:00Z do dia 11 = 23:00 de 10) — ANTES do
+    // normal das 12:00 local (15:00Z): a ordem é a posição na régua do dia
+    expect(slices.map((s) => s.item.id)).toEqual(['n', 'trip']);
+    expect(slices.map((s) => s.startsAt.toISOString())).toEqual([
+      '2026-10-10T15:00:00.000Z',
+      '2026-10-11T02:00:00.000Z',
+    ]);
+  });
+
+  it('array vazio devolve array vazio', () => {
+    expect(sliceTimelineItems([], day10)).toEqual([]);
   });
 });
 
@@ -301,12 +460,31 @@ describe('dayDensity — dias civis com ≥1 compromisso por mês (4.4)', () => 
     expect(july?.dayKeys[30]).toBe('2026-07-31');
   });
 
-  it('dayKeys em ordem cronológica; item que cruza a meia-noite conta no dia de início', () => {
+  it('dayKeys em ordem cronológica; item que cruza a meia-noite conta nos DOIS dias tocados', () => {
     const overnight = item(new Date('2026-10-11T02:50:00Z'), new Date('2026-10-11T03:10:00Z'));
     const normal = item(new Date('2026-10-03T13:00:00Z'), new Date('2026-10-03T14:00:00Z'));
     const oct = dayDensity([overnight, normal], year, sp).get(10);
-    expect(oct?.dayKeys).toEqual(['2026-10-03', '2026-10-10']);
-    expect(oct?.daysWithAppointments).toBe(2);
+    expect(oct?.dayKeys).toEqual(['2026-10-03', '2026-10-10', '2026-10-11']);
+    expect(oct?.daysWithAppointments).toBe(3);
+  });
+
+  it('multi-dia marca os DIAS TOCADOS (10→12/10 = 3 dias), não só o de início', () => {
+    const trip = item(new Date('2026-10-11T02:00:00Z'), new Date('2026-10-12T20:00:00Z'), 'trip');
+    const oct = dayDensity([trip], year, sp).get(10);
+    expect(oct?.dayKeys).toEqual(['2026-10-10', '2026-10-11', '2026-10-12']);
+    expect(oct?.daysWithAppointments).toBe(3);
+  });
+
+  it('item que NASCE FORA do período conta os dias tocados DENTRO dele (virada de ano)', () => {
+    // A web consulta SEMPRE o período da grade (grade do Ano = ano civil completo), mas a
+    // regra é defensiva: item nascido antes do período conta os dias tocados DENTRO dele
+    const rveillon = item(new Date('2026-12-31T21:00:00Z'), new Date('2027-01-02T06:00:00Z'), 'rv');
+    const jan = { start: new Date('2027-01-01T03:00:00Z'), end: new Date('2027-02-01T03:00:00Z') };
+    const byMonth = dayDensity([rveillon], jan, sp);
+    expect(byMonth.get(1)?.dayKeys).toEqual(['2027-01-01', '2027-01-02']);
+    // e o inverso: período terminando no meio do item não conta dia além do fim
+    const dec = { start: new Date('2026-12-01T03:00:00Z'), end: new Date('2027-01-01T03:00:00Z') };
+    expect(dayDensity([rveillon], dec, sp).get(12)?.dayKeys).toEqual(['2026-12-31']);
   });
 
   it('sem itens: todos os meses do período com 0 dias (visão Ano vazia)', () => {

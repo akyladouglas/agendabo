@@ -56,6 +56,13 @@ export class RelocationNotAvailableError extends Error {
  * (computeTriggers no OutboxService) e são materializadas no outbox JUNTO com o
  * compromisso (spec Fase 3, regras 6/9/10). A fila só recebe job pós-commit.
  */
+
+/** Horizonte de carga para as checagens de conflito (180 dias — o dobro do horizonte
+ *  do bot; spec multi-dia-nas-visoes D2: a carga é a intersecção meia-aberta com o
+ *  candidato expandido [min(now, cStart), max(cEnd, now + H)), o recorte fino é
+ *  `findConflict`, nunca contenção). */
+export const CONFLICT_HORIZON_MS = 180 * 24 * 60 * 60_000;
+
 @Injectable()
 export class AppointmentsService {
   constructor(
@@ -68,10 +75,18 @@ export class AppointmentsService {
     return new Date();
   }
 
+  /**
+   * Compromissos que TOCAM o período [from, to) — intersecção half-open
+   * `startsAt < to AND endsAt >= from` (multi-dia — spec multi-dia-nas-visoes M1).
+   * Espelho EXATO de `listOverlapping` (inclusive a borda `endsAt == from`): um evento
+   * 10/10 23:00 → 12/10 17:00 chega à query do Dia 11/10 mesmo começando antes dela.
+   * Diferente da contenção antiga (`startsAt >= from AND endsAt <= to`), que deixava o
+   * multi-dia invisível na grade (gotcha 25). Status/campos/order inalterados.
+   */
   async list(userId: string, raw: unknown) {
     const { from, to } = listAppointmentsQuerySchema.parse(raw);
     const items = await this.prisma.appointment.findMany({
-      where: { userId, startsAt: { gte: from }, endsAt: { lte: to } },
+      where: { userId, startsAt: { lt: to }, endsAt: { gte: from } },
       orderBy: { startsAt: 'asc' },
       include: { notificationRules: true },
     });
@@ -80,10 +95,11 @@ export class AppointmentsService {
 
   /**
    * Compromissos que TOCAM o intervalo [from, to) — intersecção half-open
-   * `startsAt < to AND endsAt >= from` (Fase 2, spec #8). Diferente da `list` da web
-   * (que usa contenção `startsAt >= from AND endsAt <= to`): um compromisso que
-   * começa antes do período ou termina depois dele também aparece. Ordenado por
-   * `startsAt`. `cancelled` nunca entra (filtro de status, default confirmado+revisão).
+   * `startsAt < to AND endsAt >= from` (Fase 2, spec #8; multi-dia — spec
+   * multi-dia-nas-visoes M1: a `list` da web agora espelha ESTA semântica). Um
+   * compromisso que começa antes do período ou termina depois dele também aparece.
+   * Ordenado por `startsAt`. `cancelled` nunca entra (filtro de status, default
+   * confirmado+revisão).
    */
   async listOverlapping(
     userId: string,
@@ -104,7 +120,7 @@ export class AppointmentsService {
 
   async checkConflict(userId: string, raw: unknown) {
     const input = checkConflictInputSchema.parse(raw);
-    const existing = await this.existingFor(userId, input.ignoreId);
+    const existing = await this.existingFor(userId, input, input.ignoreId);
     const result = findConflict(input, existing);
     return { conflict: result.conflict, with: result.with ?? null };
   }
@@ -118,7 +134,7 @@ export class AppointmentsService {
    */
   async relocationOptions(userId: string, raw: unknown) {
     const input = relocationOptionsInputSchema.parse(raw);
-    const existing = await this.existingFor(userId, input.movedId);
+    const existing = await this.existingFor(userId, input, input.movedId);
     const plan = planRelocation(input, existing, { now: this.now(), movedId: input.movedId });
     if (plan.kind === 'blocked') {
       const firstConflict = existing
@@ -153,7 +169,7 @@ export class AppointmentsService {
     if (otherId) await this.loadOwned(userId, otherId);
 
     // 2. Pré-checagem com a carga completa (a revalidação de verdade é DENTRO da tx)
-    const existing = await this.existingFor(userId, movedId);
+    const existing = await this.existingFor(userId, candidate, movedId);
     this.assertPlanHasMove(input, candidate, existing);
 
     const now = this.now();
@@ -164,7 +180,7 @@ export class AppointmentsService {
       // revalida DENTRO da tx (E5): carga relida + jogada recomputada — e é a
       // ÚNICA checagem que vale (pré-checagem de leitura fica só como
       // fail-fast; entre ela e a tx o mundo pode mudar).
-      const fresh = await this.existingForInTx(tx, userId, movedId);
+      const fresh = await this.existingForInTx(tx, userId, candidate, movedId);
       this.assertPlanHasMove(input, candidate, fresh, now);
       const plan = planRelocation(candidate, fresh, { now, movedId });
       const expectedOtherSlot =
@@ -554,17 +570,47 @@ export class AppointmentsService {
    * Carga dos compromissos do usuario para a checagem deterministica.
    * ADR-0015/D6: `needs_review` conta como obstáculo (a checagem antiga só via
    * `confirmed` — era o vetor real da sobreposição).
+   *
+   * multi-dia (spec §B.2 / decisão D2): a carga é a INTERSEÇÃO MEIA-ABERTA com o
+   * candidato expandido — `[min(now, candidateStart), max(candidateEnd, now+H))` —
+   * e não mais o horizonte cortado em `now`. Os dois lados do buraco fechados:
+   *  - obstáculo multi-dia começado ANTES de now que cobre o candidato (o corte
+   *    antigo `endsAt > now` o escondia);
+   *  - candidato NO PASSADO que toca um obstáculo futuro (spec §A.2/M6: a carga
+   *    antiga começava em now e não via o obstáculo).
+   * `findConflict` ainda descarta encerrados antes de `now` e aplica `ignoreId`
+   * (invariante ADR-0015: nunca se grava sobreposição NO FUTURO; sobrepor algo
+   * que já terminou não é sobreposição).
    */
-  private async existingFor(userId: string, ignoreId?: string) {
+  private conflictWindow(
+    userId: string,
+    candidate: { startsAt: Date; endsAt: Date },
+    ignoreId?: string,
+  ): Prisma.AppointmentWhereInput {
+    const now = this.now();
+    const horizon = new Date(
+      Math.max(candidate.endsAt.getTime(), now.getTime() + CONFLICT_HORIZON_MS),
+    );
+    const floor = new Date(Math.min(now.getTime(), candidate.startsAt.getTime()));
+    return {
+      userId,
+      status: { in: [AppointmentStatus.confirmed, AppointmentStatus.needs_review] },
+      startsAt: { lt: horizon },
+      endsAt: { gte: floor },
+      ...(ignoreId ? { id: { not: ignoreId } } : {}),
+    };
+  }
+
+  private async existingFor(
+    userId: string,
+    candidate: { startsAt: Date; endsAt: Date },
+    ignoreId?: string,
+  ) {
     const rows = await this.prisma.appointment.findMany({
-      where: {
-        userId,
-        status: { in: ['confirmed', 'needs_review'] },
-        endsAt: { gt: this.now() },
-      },
+      where: this.conflictWindow(userId, candidate, ignoreId),
       orderBy: { startsAt: 'asc' },
     });
-    return rows.filter((r) => r.id !== ignoreId);
+    return rows;
   }
 
   /**
@@ -584,14 +630,31 @@ export class AppointmentsService {
    * trava continua snapshot velho; é por isso que a ÚNICA checagem que vale é a
    * desta carga travada).
    */
-  private async existingForInTx(tx: Prisma.TransactionClient, userId: string, ignoreId?: string) {
+  private async existingForInTx(
+    tx: Prisma.TransactionClient,
+    userId: string,
+    candidate: { startsAt: Date; endsAt: Date },
+    ignoreId?: string,
+  ) {
+    // multi-dia (decisão D2): mesma janela do existingFor — interseção meia-aberta
+    // com o candidato expandido [min(now, cStart), max(cEnd, now+H)) — em vez do
+    // corte `endsAt > now` (mesmo buraco: multi-dia pré-now e candidato no passado
+    // sumiam da carga travada). A filtragem fina fica com findConflict/planRelocation.
+    // O ignoreId segue filtrado em memória (como sempre) para não introduzir
+    // interpolação de uuid no SQL cru.
+    const now = this.now();
+    const horizon = new Date(
+      Math.max(candidate.endsAt.getTime(), now.getTime() + CONFLICT_HORIZON_MS),
+    );
+    const floor = new Date(Math.min(now.getTime(), candidate.startsAt.getTime()));
     const rows = await tx.$queryRaw<RawAppointmentRow[]>`
       SELECT id, title, notes, "startsAt", "endsAt", status, origin, "rawText",
              "reviewReason", "createdAt", "updatedAt", "userId"
       FROM "appointments"
       WHERE "userId" = ${userId}::uuid
         AND status IN ('confirmed', 'needs_review')
-        AND "endsAt" > ${this.now()}
+        AND "startsAt" < ${horizon}
+        AND "endsAt" >= ${floor}
       ORDER BY "startsAt" ASC
       FOR UPDATE
     `;
@@ -612,7 +675,7 @@ export class AppointmentsService {
     candidate: { startsAt: Date; endsAt: Date },
     ignoreId?: string,
   ): Promise<void> {
-    const existing = await this.existingFor(userId, ignoreId);
+    const existing = await this.existingFor(userId, candidate, ignoreId);
     const result = findConflict(candidate, existing);
     if (result.conflict && result.with) {
       throw new AppointmentConflictError(result.with);

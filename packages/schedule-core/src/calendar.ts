@@ -45,6 +45,26 @@ export interface MonthDensity {
   dayKeys: string[];
 }
 
+/**
+ * Dia civil TOCADO por um item + o recorte do item nele (multi-dia nas visões —
+ * spec multi-dia-nas-visoes F.1). `start`/`end` são os meios half-open [start, end):
+ * no dia de início `start === startsAt`; num dia à frente, `start ===` meia-noite
+ * local (clamp). `continuesBefore`/`continuesAfter` dizem que o item veio/vai para
+ * OUTRO dia (a UI desenha "…↦ título" / "título ↤…").
+ */
+export interface DaySlice<T extends LocalizedItem = LocalizedItem> {
+  /** O COMPROMISSO ORIGINAL (intacto — o clique/aria/drag usam o intervalo integral). */
+  item: T;
+  /** Início do RECORTE no dia (meia-noite local quando o item já tinha começado). */
+  startsAt: Date;
+  /** Fim do RECORTE no dia (meia-noite local quando o item continua no próximo). */
+  endsAt: Date;
+  /** O item já tinha começado antes deste recorte (nasce em dia anterior). */
+  continuesBefore: boolean;
+  /** O item continua depois deste recorte (termina em dia posterior). */
+  continuesAfter: boolean;
+}
+
 /** 'YYYY-MM-DD' do dia civil de um instantâneo UTC no fuso offset. */
 function toLocalDateKey(instant: Date, offsetMinutes: number): string {
   const { year, month, day } = utcToZonedParts(instant, offsetMinutes);
@@ -113,21 +133,118 @@ export function weekRows(weekRange: DateRange, offsetMinutes: number, now?: Date
 }
 
 /**
- * Agrupa itens pelo dia civil do INÍCIO LOCAL (`startsAt`): o compromisso que cruza a
- * meia-noite pertence ao dia em que COMEÇA (critério da spec, Gherkin 23:50→00:10). Uma
- * linha por dia com item, Map em ordem cronológica, itens ordenados por `startsAt`.
- * Dias sem compromisso não criam chave (o calendário preenche o resto).
+ * date-keys locais TOCADOS por um item, em ordem cronológica (multi-dia — spec
+ * multi-dia-nas-visoes F.1). Half-open em tudo: `startsAt < fimDoDia && endsAt >
+ * inícioDoDia`; item terminando EXATAMENTE na meia-noite NÃO toca o dia seguinte,
+ * item começando EXATAMENTE na meia-noite toca só o novo dia; item degenerado
+ * [x, x) não toca dia nenhum. Meia-noites locais no MODELO de offset único (ADR-002
+ * /limitação E.6 da mãe): `floor` naive + passo de 24h exatas — o mesmo da grade.
  */
-export function groupByLocalDay<T extends LocalizedItem>(
+export function localDaysTouched<T extends LocalizedItem>(item: T, offsetMinutes: number): string[] {
+  const from = item.startsAt.getTime();
+  const to = item.endsAt.getTime();
+  if (!(from < to)) return [];
+  const offMs = offsetMinutes * 60_000;
+  const keys: string[] = [];
+  // meia-noite LOCAL do dia de início como instantâneo UTC (piso naive em dias)
+  let dayStart = Math.floor((from + offMs) / DAY) * DAY - offMs;
+  while (dayStart < to) {
+    const parts = utcToZonedParts(new Date(dayStart), offsetMinutes);
+    keys.push(
+      `${parts.year}-${String(parts.month).padStart(2, '0')}-${String(parts.day).padStart(2, '0')}`,
+    );
+    dayStart += DAY;
+  }
+  return keys;
+}
+
+/**
+ * Recorte half-open de um item a um range [range.start, range.end) — `null` quando o
+ * item não TOCA o range (meia-noite = `end` de UM dia e `start` do anterior: só
+ * `end === range.start` não toca; `end === range.end` TOCA: o item continua depois).
+ * É o corte por dia da Semana/Dia (decisão M3) e a primitiva de `sliceTimelineItems`.
+ * Os flags comparam os INSTANTÊES do item, não o bucket de dia: um item que morre
+ * exatamente na meia-noite seguinte continua no dia posterior ⇒ `continuesAfter`.
+ */
+export function sliceItemToRange<T extends LocalizedItem>(
+  item: T,
+  range: DateRange,
+): DaySlice<T> | null {
+  const from = range.start.getTime();
+  const to = range.end.getTime();
+  if (!(from < to)) return null;
+  const rawStart = item.startsAt.getTime();
+  const rawEnd = item.endsAt.getTime();
+  // toca = intersecção NÃO-VAZIA com o range half-open (meia-noite é `end` de UM dia e
+  // `start` do anterior): só `rawEnd === from` não toca (e não desenha nada: o recorte
+  // seria degenerado [x,x)). Item TERMINANDO exatamente em `to` (meia-noite) TOCA o dia:
+  // ele viveu até a fronteira — mas NÃO continua depois dela (half-open: nada existe em
+  // [to, to); "reunião 09:00→00:00" é um bloco do dia, não uma travessia).
+  const touches = rawStart < to && rawEnd > from;
+  if (!touches) return null;
+  const start = Math.max(rawStart, from);
+  const end = Math.min(rawEnd, to);
+  // recorte vazio não existe como slice (dia degenerado [x,x) encosta mas não desenha nada)
+  if (!(start < end)) return null;
+  return {
+    item,
+    startsAt: new Date(start),
+    endsAt: new Date(end),
+    // "veio de outro dia" = o recorte COMEÇA depois do início do item
+    continuesBefore: start > rawStart,
+    // "continua no próximo dia" = o item tem vida DEPOIS do recorte
+    continuesAfter: rawEnd > end,
+  };
+}
+
+/**
+ * Corte por dia PARA O LAYOUT da grade (Semana/Dia): cada item que toca `range` vira
+ * UM slice com o recorte do dia + flags; itens que não tocam saem fora. O `item` é o
+ * ORIGINAL (o layout posiciona pelo slice, a UI abre move e rotula pelo original).
+ * Ordem estável: `start` do slice, depois duração menor, depois `id` (mesma ordem do
+ * `layoutDayTimeline` — saída determinística independente da ordem de entrada).
+ */
+export function sliceTimelineItems<T extends LocalizedItem>(
+  items: readonly T[],
+  range: DateRange,
+): DaySlice<T>[] {
+  const dur = (s: DaySlice<T>) => s.endsAt.getTime() - s.startsAt.getTime();
+  return items
+    .map((item) => ({ item, slice: sliceItemToRange(item, range) }))
+    .filter((x): x is { item: T; slice: DaySlice<T> } => x.slice !== null)
+    .map((x) => x.slice)
+    .sort(
+      // mesma ordem do layoutDayTimeline: posição, depois duração MENOR primeiro, id
+      (a, b) =>
+        a.startsAt.getTime() - b.startsAt.getTime() || dur(b) - dur(a) || cmpId(a.item, b.item),
+    );
+}
+
+/** Ordem canônica por `id` quando existe (senão ordem estável 0). */
+function cmpId(a: LocalizedItem, b: LocalizedItem): number {
+  const ai = (a as { id?: string }).id ?? '';
+  const bi = (b as { id?: string }).id ?? '';
+  return ai < bi ? -1 : ai > bi ? 1 : 0;
+}
+
+/**
+ * Agrupa itens pelos DIAS CIVIS QUE ELES TOCAM (multi-dia — substitui o agrupamento
+ * por dia de início da Fase 7): o compromisso 10/10 23:00 → 12/10 17:00 aparece em
+ * 10, 11 E 12 (chips do Mês, colunas da Semana, densidade do Ano). Um item por bucket
+ * é o MESMO objeto. Map com dateKeys em ordem cronológica; itens ordenados por
+ * `startsAt` dentro do dia. Dias sem compromisso não criam chave.
+ */
+export function groupByLocalDayTouched<T extends LocalizedItem>(
   items: readonly T[],
   offsetMinutes: number,
 ): Map<string, T[]> {
   const byDay = new Map<string, T[]>();
   for (const item of items) {
-    const key = toLocalDateKey(item.startsAt, offsetMinutes);
-    const bucket = byDay.get(key);
-    if (bucket) bucket.push(item);
-    else byDay.set(key, [item]);
+    for (const key of localDaysTouched(item, offsetMinutes)) {
+      const bucket = byDay.get(key);
+      if (bucket) bucket.push(item);
+      else byDay.set(key, [item]);
+    }
   }
   const sortedDays = [...byDay.keys()].sort();
   const result = new Map<string, T[]>();
@@ -143,9 +260,10 @@ export function groupByLocalDay<T extends LocalizedItem>(
 /**
  * Densidade da visão Ano: para CADA mês civil coberto por `range` (ex.: `userYearRange`),
  * quantos DIAS CIVIS têm ≥1 compromisso e quais são — dois compromissos no mesmo dia
- * contam 1 (bolinha por dia, não por quantidade; Aberto #2 da spec). Item fora do
- * período não conta; item que cruza a meia-noite conta no dia de início (mesma regra de
- * `groupByLocalDay`). `dayKeys` em ordem cronológica.
+ * contam 1 (bolinha por dia, não por quantidade; Aberto #2 da spec). item multi-dia
+ * marca TODOS os dias que TOCA dentro do período (coerência com os chips do Mês —
+ * spec multi-dia-nas-visoes E.8); item inteiramente fora do período não conta.
+ * `dayKeys` em ordem cronológica.
  */
 export function dayDensity(
   items: readonly LocalizedItem[],
@@ -166,11 +284,14 @@ export function dayDensity(
     daysByMonth.set(month, new Set());
   }
   for (const item of items) {
-    const t = item.startsAt.getTime();
-    if (t < from || t >= to) continue;
-    const key = toLocalDateKey(item.startsAt, offsetMinutes);
-    const month = Number(key.slice(5, 7));
-    daysByMonth.get(month)?.add(key);
+    // dias tocados DENTRO do período: item que nasce antes do range (ex.: réveillon
+    // multi-dia) conta os dias que toca aqui dentro — `localDaysTouched` é half-open,
+    // o dia que só "encosta" em `range.end` (meia-noite em ponto) é excluído
+    if (!(item.startsAt.getTime() < to && item.endsAt.getTime() > from)) continue;
+    for (const key of localDaysTouched(item, offsetMinutes)) {
+      const month = Number(key.slice(5, 7));
+      daysByMonth.get(month)?.add(key);
+    }
   }
   const result = new Map<number, MonthDensity>();
   for (const [month, days] of daysByMonth) {

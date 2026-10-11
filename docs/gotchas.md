@@ -312,3 +312,27 @@ cabeca) -- NAO "conserta-lo" sem auditarem os call sites.
 **Se acontecer de novo:** em qualquer passo de texto-livre, "comeca com nao" NAO
 implica negativa; a borda entre negativa e conteudo e o NUMERO DE PALAVRAS, e a
 regra mora num puro exportado com teste proprio, nunca inline no handler.
+
+## 25. `list` continha, nao tocava (multi-dia invisivel em todas as visoes)
+
+**Problema:** producao 2026-10-11: viagem 10/10 23:00 -> 12/10 17:00 (America/Sao_Paulo)
+nao aparecia em Dia/Semana/Mes. A `list` da web filtrava por CONTENCAO
+(`startsAt >= from AND endsAt <= to`): um item comecado ANTES do periodo comecado
+ou terminando DEPOIS dele era sumido da carga — e as visoes so agrupavam pelo dia de
+`startsAt` (`groupByLocalDay`), entao mesmo o dia 10 dependia do item caber inteiro
+na query. As cargas de conflito (`existingFor`/`existingForInTx`/`existingConfirmedFuture`)
+tinham o MESMO genero de buraco com `endsAt > now`: multi-dia comecado antes de `now`
+nao era visto como obstaculo, e um candidato dentro dele passava sem conflito (o
+pre-check do bot so pegava na gravacao, ou nada).
+**Fix aplicado (spec web/multi-dia-nas-visoes):** `list` espelhou `listOverlapping`
+(intersecao meia-aberta `startsAt < to AND endsAt >= from`); cargas de conflito
+(`existingFor`/`existingForInTx` do service, `existingConfirmed` do review, e o
+pre-check do bot) passaram a janela de INTERSECAO com o candidato expandido
+`[min(now, cStart), max(cEnd, now+HORIZONTE))` — sem o corte de `endsAt` (a filtragem
+fina e do `findConflict`, puro); web recorta por dia com `sliceItemToRange`/
+`sliceTimelineItems` e agrupa por DIAS TOCADOS (`groupByLocalDayTouched`).
+**Se acontecer de novo:** qualquer query de "o que aparece/choxa no periodo" usa
+INTERSECAO meia-aberta, nunca contencao; e corte por `now` em carga de conflito so e
+seguro se o par de condicoes for `startsAt < limite AND endsAt >= now` (o contrario
+esconde quem comecou antes). O teste de WHERE (mock na fronteira) e obrigatorio nos
+dois sentidos: tocando pela esquerda E pela direita do periodo.

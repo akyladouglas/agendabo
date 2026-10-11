@@ -3,8 +3,9 @@ import { AppointmentsService } from './appointments.service';
 
 /**
  * listOverlapping (Fase 2, spec #8): o bot lista por INTERSECÇÃO half-open, não por
- * contenção (a `list` da web fica como está). O teste valida o WHERE que vai ao Prisma
- * (mock na fronteira — testing.md), não o SQL.
+ * contenção. multi-dia (spec web/multi-dia-nas-visoes §B.1): a `list` da web passou a
+ * ser a MESMA semântica ("um item que toca o período aparece"). O teste valida o WHERE
+ * que vai ao Prisma (mock na fronteira — testing.md), não o SQL.
  */
 
 function make() {
@@ -80,16 +81,58 @@ describe('AppointmentsService.listOverlapping', () => {
     );
   });
 
-  it('a `list` da web continua com contenção (não mudou — spec #8)', async () => {
+  // multi-dia (spec web/multi-dia-nas-visoes §B.1 / M1): a `list` da web abandonou a
+  // contenção e passou a ser a MESMA interseção meia-aberta do bot.
+  it('a `list` da web espelha listOverlapping: interseção half-open, nunca contenção', async () => {
     const { svc, findMany } = make();
 
     await svc.list('u1', { from: from.toISOString(), to: to.toISOString() });
 
     expect(findMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { userId: 'u1', startsAt: { gte: from }, endsAt: { lte: to } },
+        where: {
+          userId: 'u1',
+          startsAt: { lt: to },
+          endsAt: { gte: from },
+        },
       }),
     );
+    // contenção antiga não pode voltar: nada de gte em startsAt / lte em endsAt
+    const where = findMany.mock.calls[0][0]!.where as Record<string, unknown>;
+    expect((where.startsAt as Record<string, unknown>).gte).toBeUndefined();
+    expect((where.endsAt as Record<string, unknown>).lte).toBeUndefined();
+  });
+
+  it('list sem filtro de status: sem status no WHERE, interseção meia-aberta se mantém', async () => {
+    const { svc, findMany } = make();
+
+    await svc.list('u1', {
+      from: from.toISOString(),
+      to: to.toISOString(),
+    });
+
+    const where = findMany.mock.calls[0][0]!.where as Record<string, unknown>;
+    expect(where.status).toBeUndefined();
+    expect(where.startsAt).toEqual({ lt: to });
+    expect(where.endsAt).toEqual({ gte: from });
+  });
+
+  it('list: rows que tocam pelos dois lados voltam; encostados ficam fora (simula o banco com o WHERE)', async () => {
+    const { svc, findMany } = make();
+    const db = [
+      { id: 'esq', startsAt: new Date('2026-10-04T20:00:00Z'), endsAt: new Date('2026-10-05T06:00:00Z') }, // toca pela esquerda (pré-now multi-dia)
+      { id: 'dir', startsAt: new Date('2026-10-12T01:00:00Z'), endsAt: new Date('2026-10-13T02:00:00Z') }, // toca pela direita (termina depois do `to`)
+      { id: 'contido', startsAt: new Date('2026-10-08T12:00:00Z'), endsAt: new Date('2026-10-08T13:00:00Z') }, // contido: sempre voltou
+      { id: 'encostado_fim', startsAt: to, endsAt: new Date('2026-10-12T04:00:00Z') }, // startsAt == to → FORA (lt)
+      { id: 'encostado_ini', startsAt: new Date('2026-10-04T00:00:00Z'), endsAt: from }, // endsAt == from → DENTRO (gte — borda espelhada de listOverlapping)
+    ];
+    findMany.mockImplementation(async ({ where }: { where: Record<string, any> }) =>
+      db.filter((i) => i.startsAt < where.startsAt.lt && i.endsAt >= where.endsAt.gte),
+    );
+
+    const out = await svc.list('u1', { from: from.toISOString(), to: to.toISOString() });
+
+    expect(out.items.map((i) => i.id)).toEqual(['esq', 'dir', 'contido', 'encostado_ini']);
   });
 });
 

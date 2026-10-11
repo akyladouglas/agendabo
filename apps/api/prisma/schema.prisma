@@ -150,6 +150,7 @@ model Appointment {
   notificationOutbox NotificationOutbox[]
 
   @@index([userId, startsAt])
+  @@index([userId, endsAt])
   @@index([status])
   @@map("appointments")
 }

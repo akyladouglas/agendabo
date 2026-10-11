@@ -144,12 +144,12 @@
           @block-click="openDetails"
         />
         <ul
-          v-if="items.length > 0"
+          v-if="dayListItems.length > 0"
           class="flex flex-col gap-2"
           data-testid="day-list"
         >
           <li
-            v-for="item in items"
+            v-for="item in dayListItems"
             :key="item.id"
           >
             <button
@@ -380,9 +380,10 @@ import {
   firstConflictLabel,
   layoutDayTimeline,
   type CalendarDay,
+  type DaySlice,
 } from '@agendabo/schedule-core';
 import type { AppointmentDto } from '@agendabo/contracts';
-import { useAgendaPage } from '@/app/composables/useAgendaPage.composable';
+import { useAgendaPage, type SliceTimelineBlock, type SliceTimelineItem } from '@/app/composables/useAgendaPage.composable';
 import { useAgendaDrag, dropOriginKey } from '@/app/composables/useAgendaDrag.composable';
 import { useDeleteAppointmentMutation } from '@/app/composables/mutations/useDeleteAppointment.mutation';
 import {
@@ -419,6 +420,16 @@ if (import.meta.env.DEV) {
 const timezone = agenda.timezone;
 const appointmentsQuery = agenda.appointmentsQuery;
 const items = agenda.items;
+
+/** Lista da visão Dia (D.4): só os itens que TOCAM o dia focado, exibidos com o
+ *  período INTEGRAL. Na Semana/Mês a CARGA cobre um período maior — listar a carga
+ *  inteira mostraria na quinta um compromisso só de segunda. `daySlices` já é o
+ *  recorte (um item por slice); o clique/aria usam o `slice.item` integral. */
+const dayListItems = computed<AppointmentDto[]>(() =>
+  agenda.view.value === 'day'
+    ? agenda.daySlices.value.map((s) => s.item)
+    : items.value,
+);
 
 /** Âncora como dateKey local (p/ aria-selected e comparação com as células). */
 const anchorKey = computed(() => toLocalDateString(agenda.anchor.value, timezone.value));
@@ -470,17 +481,49 @@ const headingText = computed(() => {
   }
 });
 
-/** Chip B.9: "↦" quando COMEÇOU antes deste dia, "↤" quando TERMINA depois dele. */
+/** Chip B.9/D6: dia de início = hora de início; dias do meio/fim = "dia inteiro"
+ *  (sem hora) com o marcador da DIREÇÃO de onde o item VEIO: "↦" prefixado = veio do
+ *  dia anterior; "↤" prefixado = virá do dia seguinte (chip de prévia num dia antes do
+ *  início). O marcador fica SEMPRE do lado de onde o item atravessa a borda (review
+ *  2026-10-11 apontava o símbolo trocado no fim do intervalo). */
 function chipTime(item: AppointmentDto, day: CalendarDay): string {
-  const t = startHour(item);
-  if (item.startsAt < day.start) return `↦ ${t}`;
-  if (item.endsAt > day.end) return `${t} ↤`;
-  return t;
+  const startsHere = item.startsAt >= day.start && item.startsAt < day.end;
+  if (!startsHere) return item.startsAt < day.start ? '↦ dia inteiro' : '↤ dia inteiro';
+  return item.endsAt > day.end ? `${startHour(item)} ↦` : startHour(item);
+}
+
+/**
+ * MARCADORES DE CONTINUAÇÃO da decisão D4 (rótulo do recorte): "↦" quando o bloco
+ * CONTINUA para outro dia (continuaAfter), "↤" quando o bloco VEIO de outro dia
+ * (continuesBefore). Ex.: "23:00–23:59 ↦" no dia de início; "↤ 00:00–23:59 ↦"
+ * no meio; dia final com "↤" antes e nada depois do fim real.
+ */
+function continuationMarks(before: boolean, after: boolean): string {
+  return `${before ? '↤ ' : ''}${after ? ' ↦' : ''}`;
+}
+
+/**
+ * Rótulo do bloco de grade (Dia/Semana): recorte local entre os marcadores ↤/↦.
+ * O FIM do recorte que morre na meia-noite é rotulado 23:59 do MESMO dia
+ * local (nunca "00:00" do dia seguinte — meia-noite é exclusive; o ↦ já diz que
+ * continua). Início de recorte é sempre meia-noite em ponto → "00:00".
+ */
+function sliceTimeLabel(slice: {
+  startsAt: Date;
+  endsAt: Date;
+  continuesBefore: boolean;
+  continuesAfter: boolean;
+}): string {
+  const after = continuationMarks(false, slice.continuesAfter); // ↦ sufixado (D4)
+  const end = slice.continuesAfter
+    ? new Date(slice.endsAt.getTime() - 1) // 23:59:59.999 local → "23:59" no formatRangeInTz (nunca o dia seguinte)
+    : slice.endsAt;
+  return `${continuationMarks(slice.continuesBefore, false)}${formatRangeInTz(slice.startsAt, end, timezone.value)}${after}`;
 }
 
 // ---- Visão Dia (Etapa 1.3): linhas de hora + blocos prontos p/ o DayGrid burro ----
-// Os dados vêm do composable (`hourGrid`/`layoutDayTimeline` do schedule-core); aqui
-// só FORMATAÇÃO e classes — zero regra de data/conflito (E.4).
+// Os dados vêm do composable (`hourGrid`/slices recortados + `layoutDayTimeline` do
+// schedule-core); aqui só FORMATAÇÃO e classes — zero regra de data/conflito (E.4).
 const daySlots = computed<DaySlotView[]>(() =>
   agenda.hourCells.value.map((cell) => ({
     hour: cell.hourUtc,
@@ -491,25 +534,34 @@ const daySlots = computed<DaySlotView[]>(() =>
   })),
 );
 const dayBlocksView = computed<DayBlockView[]>(() =>
-  agenda.dayBlocks.value.map((b) => ({
-    item: b.item,
+  agenda.dayBlocks.value.map((b) => blockView(b.item, b)),
+);
+
+/**
+ * Vista de um bloco de GRADE a partir do SLICE do dia + bloco posicionado: o
+ * rótulo/aria-label trazem o RECORTE local + marcador de continuação; clique/drag
+ * usam o compromisso INTEGRAL (`slice.item`) — payloads não regredissem (D7).
+ */
+function blockView(slice: DaySlice<AppointmentDto>, b: SliceTimelineBlock): DayBlockView {
+  const item = slice.item;
+  const time = sliceTimeLabel(slice);
+  return {
+    item,
     top: b.top,
     height: b.height,
     left: b.column * b.width,
     width: b.width,
-    time: formatRangeInTz(b.item.startsAt, b.item.endsAt, timezone.value),
-    review: b.item.status === 'needs_review',
-    conflictTitle: conflictTitle(b.item),
-    ariaLabel: `${b.item.title}, ${formatRangeInTz(b.item.startsAt, b.item.endsAt, timezone.value)}${
-      b.isPast ? ' (passado)' : ''
-    }`,
+    time,
+    review: item.status === 'needs_review',
+    conflictTitle: conflictTitle(item),
+    ariaLabel: `${item.title}, ${time}${b.isPast ? ' (passado)' : ''}`,
     class: [
-      b.item.status === 'needs_review' ? 'border-l-2 border-l-warning' : 'border-border',
-      conflictTitle(b.item) ? 'border-danger/70 bg-danger/5' : 'hover:border-primary/50',
+      item.status === 'needs_review' ? 'border-l-2 border-l-warning' : 'border-border',
+      conflictTitle(item) ? 'border-danger/70 bg-danger/5' : 'hover:border-primary/50',
       b.isPast ? 'opacity-60' : '',
     ].join(' '),
-  })),
-);
+  };
+}
 
 /** Clique na célula vazia da grade: criar NAQUELE dia+hora (melhora o `openCreate('')`). */
 function onDaySlotClick(slot: DaySlotView): void {
@@ -524,12 +576,14 @@ function onWeekCellClick(dateKey: string, hour: string): void {
 }
 
 // ---- Semana: colunas dom..sáb COM grade de horas (weekGridRows) + blocos ----
-// Os dados vêm do composable (`weekGridRows`/`layoutDayTimeline` do schedule-core);
-// aqui só FORMATAÇÃO e classes — zero regra de data/conflito (E.4).
+// Cada coluna recebe os SLICES do recorte do dia (D7 — `agenda.slicesByRowDate`,
+// cortado no composable via schedule-core); aqui o layout posiciona e só FORMATA
+// (E.4). O clique/drag abrem/movem o compromisso INTEGRAL (`slice.item`).
 const weekDays = computed<WeekDayView[]>(() =>
   agenda.rows.value.map((row) => {
+    const slices = agenda.slicesByRowDate.value.get(row.date) ?? [];
     const blocks = layoutDayTimeline(
-      agenda.byDay.value.get(row.date) ?? [],
+      slices.map((slice): SliceTimelineItem => ({ ...slice, id: slice.item.id })),
       { start: row.start, end: row.end },
       row.offsetMinutes,
       agenda.now.value,
@@ -543,24 +597,7 @@ const weekDays = computed<WeekDayView[]>(() =>
       date: row.date,
       key: row.start.toISOString(),
       heading: formatDayHeading(row.start, timezone.value, agenda.now.value),
-      blocks: blocks.map((b) => ({
-        item: b.item,
-        top: b.top,
-        height: b.height,
-        left: b.column * b.width,
-        width: b.width,
-        time: formatRangeInTz(b.item.startsAt, b.item.endsAt, timezone.value),
-        review: b.item.status === 'needs_review',
-        conflictTitle: conflictTitle(b.item),
-        ariaLabel: `${b.item.title}, ${formatRangeInTz(b.item.startsAt, b.item.endsAt, timezone.value)}${
-          b.isPast ? ' (passado)' : ''
-        }`,
-        class: [
-          b.item.status === 'needs_review' ? 'border-l-2 border-l-warning' : 'border-border',
-          conflictTitle(b.item) ? 'border-danger/70 bg-danger/5' : 'hover:border-primary/50',
-          b.isPast ? 'opacity-60' : '',
-        ].join(' '),
-      })),
+      blocks: blocks.map((b) => blockView(b.item as DaySlice<AppointmentDto>, b)),
       rulerHour: nowCell >= 0 ? row.cells[nowCell]!.hourUtc : null,
       nowCell: nowCell >= 0 ? nowCell : null,
     };

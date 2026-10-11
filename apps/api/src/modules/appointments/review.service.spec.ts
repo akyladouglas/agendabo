@@ -157,6 +157,18 @@ describe('ReviewService (fila needs_review — Fase 4)', () => {
     expect(m.enqueueJobs).not.toHaveBeenCalled();
   });
 
+  it('confirm: carga = interseção meia-aberta com o candidato expandido (multi-dia, D2; gotcha 25)', async () => {
+    const m = make();
+    m.findMany.mockResolvedValue([]);
+    await m.svc.confirm('u1', 'r1', CONFIRM_BODY);
+    const where = m.findMany.mock.calls[0]![0]!.where as Record<string, any>;
+    expect(where.status.in).toEqual(expect.arrayContaining(['confirmed', 'needs_review']));
+    expect(where.endsAt.gte).toBeInstanceOf(Date); // floor = min(now, cStart)
+    expect(where.startsAt.lt).toBeInstanceOf(Date); // teto = max(cEnd, now+H)
+    expect(where.endsAt.gt).toBeUndefined(); // o corte antigo { gt: new Date() } morreu
+    expect(where.startsAt.gte).toBeUndefined(); // sem contenção
+  });
+
   it('confirm com conflito (spec E16): AppointmentConflictError e NENHUMA escrita', async () => {
     // Datas RELATIVAS a `new Date()` (o service chama o relógio real na carga e
     // no findConflict — compromissos passados são ignorados pela regra). Um

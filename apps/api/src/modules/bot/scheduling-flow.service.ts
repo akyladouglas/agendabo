@@ -1125,7 +1125,7 @@ export class SchedulingFlowService {
   }
 
   /**
-   * Carga p/ findConflict: endsAt>now, janela futura de 90 dias (spec) e
+   * Carga p/ findConflict: horizonte [now, now + 90 dias) (spec) e
    * `confirmed + needs_review` — review multi-agente 2026-10-09/R1: a carga
    * PRECISA bater com a das fronteiras de escrita (ADR-0015/D6;
    * `appointments.service.existingFor`). Se o bot só visse `confirmed`, um
@@ -1133,6 +1133,12 @@ export class SchedulingFlowService {
    * (que valida com a carga nova) devolveria conflito TARDE — mensagem sem
    * botões de remarcar/abortar e sessão encerrada. Pré-check alinhado = o
    * conflito é descoberto na hora certa, com o fluxo de resposta certo.
+   *
+   * multi-dia (spec §B.2 / decisão D3): o corte antigo `endsAt > now` escondia
+   * um multi-dia começado antes de now — o pré-check do bot não via o obstáculo
+   * e só a gravação pegava o conflito. Agora vale a interseção meia-aberta
+   * `startsAt < horizon AND endsAt >= now` (espelho `listOverlapping`); a
+   * interseção fina com o candidato é do findConflict.
    */
   private async existingConfirmedFuture(
     userId: string,
@@ -1143,7 +1149,8 @@ export class SchedulingFlowService {
       where: {
         userId,
         status: { in: ["confirmed", "needs_review"] },
-        endsAt: { gt: now, lte: horizon },
+        startsAt: { lt: horizon },
+        endsAt: { gte: now },
       },
       orderBy: { startsAt: "asc" },
       select: { id: true, title: true, startsAt: true, endsAt: true },

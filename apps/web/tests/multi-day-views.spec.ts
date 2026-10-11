@@ -10,12 +10,21 @@ import { useAuthStore } from '../src/app/store/authStore';
 import AgendaPage from '../src/view/pages/agenda/AgendaPage.vue';
 
 /**
- * Spec notas-e-fim-na-web, critérios C (Gherkin): bloco sáb 23:00 → seg 17:00
- * (multi-dia, criado pelo bot) aparece na visão Dia de SEGUNDA com altura do
- * `layoutDayTimeline` (clamp por dia — comportamento vigente) e RÓTULO/aria-label
- * com o fim visível; na Semana cada coluna dia mostra o segmento com rótulo
- * coerente de `formatRangeInTz`; o painel de detalhes traz o dia do início junto.
- * Harness igual ao day-grid.spec (service na borda, âncora fixa, agora fixo).
+ * Spec multi-dia-nas-visoes (Gherkin "Web"): a viagem sáb 10/10 23:00 → seg
+ * 12/10 17:00 (America/Sao_Paulo, 11/10 02:00Z → 12/10 20:00Z) aparece RECORTADA
+ * em cada dia que TOCA:
+ * - Semana: blocos nas colunas 10 ("23:00–24:00 ↦"), 11 ("↤ 00:00–24:00 ↦") e
+ *   12 ("↤ 00:00–17:00") — `week-item-<id>` repete por coluna (D7) e o clique
+ *   abre o MESMO compromisso;
+ * - Mês: chip nos 3 dias, só o dia de início COM hora, meio/fim "dia inteiro";
+ * - Dia: 10/10 = faixa 23:00→fim-do-dia (top 23/24, altura 1/24) com ↦; 11/10 =
+ *   dia inteiro com ↤ e ↦; 12/10 = 00:00→17:00 só com ↤; a lista do dia traz o
+ *   período INTEGRAL (D.4/M8);
+ * - densidade do Ano: bolinha em cada dia TOCADO (E.8).
+ * Marcadores da decisão D4: "↤" quando o recorte VEIO de outro dia
+ * (continuesBefore), "↦" quando ele CONTINUA depois (continuesAfter).
+ * Harness igual ao day-grid.spec (service na borda, âncora fixa, agora fixo,
+ * stubs de FocusScope/FocusGuards e unmount no afterEach — gotchas 10/19).
  */
 
 vi.mock('vue-sonner', () => ({
@@ -26,8 +35,8 @@ vi.mock('../src/app/composables/queries/useReview.query', () => ({
 }));
 
 const TZ = 'America/Sao_Paulo';
-/** agora fixo: seg 12/10/2026 09:00 SP (12:00Z) — dentro do compromisso multi-dia. */
-const NOW = new Date('2026-10-12T12:00:00.000Z');
+/** agora fixo: dom 11/10/2026 09:00 SP (12:00Z) — no meio da viagem. */
+const NOW = new Date('2026-10-11T12:00:00.000Z');
 const TRIP_ID = '33333333-3333-4333-8333-333333333333';
 
 function appt(
@@ -43,7 +52,7 @@ function appt(
   };
 }
 
-/** Viagem: sáb 10/10 23:00 SP → seg 12/10 17:00 SP (02:00Z→20:00Z). */
+/** Viagem: sáb 10/10 23:00 SP → seg 12/10 17:00 SP (11/10 02:00Z → 12/10 20:00Z). */
 const TRIP = appt({
   id: TRIP_ID,
   title: 'Viagem',
@@ -54,7 +63,7 @@ const TRIP = appt({
 const list = vi.fn();
 vi.spyOn(appointmentsService.appointmentsApi, 'list').mockImplementation(list);
 
-function mountAgenda(_items: AppointmentDto[]) {
+function mountAgenda() {
   vi.stubGlobal('matchMedia', (query: string) => ({
     matches: false,
     media: query,
@@ -79,7 +88,7 @@ function mountAgenda(_items: AppointmentDto[]) {
   const qc = new QueryClient({
     defaultOptions: { queries: { retry: false, gcTime: Infinity, refetchOnWindowFocus: false } },
   });
-  localStorage.setItem('agenda:anchor', '2026-10-12');
+  localStorage.setItem('agenda:anchor', '2026-10-11');
   delete (window as unknown as { __agenda?: unknown }).__agenda;
   const w = mount(AgendaPage, {
     attachTo: document.body,
@@ -95,8 +104,7 @@ function mountAgenda(_items: AppointmentDto[]) {
     },
   });
   const mounteds = globalThis as unknown as { __mounteds?: Array<{ unmount(): void }> };
-  if (mounteds.__mounteds) mounteds.__mounteds.push(w);
-  else mounteds.__mounteds = [w];
+  (mounteds.__mounteds ??= []).push(w);
   const q = (sel: string): HTMLElement | null => document.querySelector(sel);
   const wrap = (el: HTMLElement | null) => ({
     exists: () => el !== null,
@@ -113,7 +121,7 @@ function mountAgenda(_items: AppointmentDto[]) {
     w: {
       find: (sel: string) => wrap(q(sel)),
       findAll: (sel: string) =>
-      Array.from(document.querySelectorAll(sel)).map((el) => wrap(el as HTMLElement)),
+        Array.from(document.querySelectorAll(sel)).map((el) => wrap(el as HTMLElement)),
       text: () => document.body.textContent ?? '',
     },
     get agenda(): UseAgendaPage {
@@ -131,17 +139,24 @@ const settle = async () => {
   await flushPromises();
 };
 
+async function tab(h: ReturnType<typeof mountAgenda>, view: 'day' | 'week' | 'month' | 'year') {
+  h.agenda.setView(view);
+  await settle();
+}
+
+/** Posições em % do estilo bruto do bloco (left/width vêm como calc() — só top/height). */
+const pct = (raw: string, prop: string): number =>
+  Number(new RegExp(`${prop}:\\s*([\\d.]+)%`).exec(raw)?.[1] ?? '-1');
+
 beforeEach(() => {
   document.body.innerHTML = '';
   localStorage.clear();
   list.mockReset();
   vi.restoreAllMocks();
   vi.spyOn(appointmentsService.appointmentsApi, 'list').mockImplementation(list);
-  list.mockImplementation(async () => ({ items: listItems }));
+  list.mockImplementation(async () => ({ items: [TRIP] }));
   vi.useFakeTimers({ toFake: ['setInterval'], now: NOW.getTime() });
 });
-
-let listItems: AppointmentDto[];
 
 afterEach(() => {
   (globalThis as unknown as { __mounteds?: Array<{ unmount(): void }> }).__mounteds?.forEach((m) =>
@@ -152,105 +167,210 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-describe('C — agenda mostra o fim multi-dia (spec notas-e-fim-na-web)', () => {
-  it('visão Dia de SEGUNDA: bloco da viagem com clamp do layoutDayTimeline e rótulo/aria-label trazendo o fim 17:00', async () => {
-    listItems = [TRIP];
-    const h = mountAgenda(listItems);
+describe('multi-dia nas visões (spec multi-dia-nas-visoes)', () => {
+  /** Viagem NASCENDO na semana da cena: seg 12 14:00 → qua 14 17:00 SP. */
+  const BORN = () =>
+    appt({
+      id: TRIP_ID,
+      title: 'Viagem',
+      startsAt: new Date('2026-10-12T17:00:00.000Z'), // seg 12 14:00 SP
+      endsAt: new Date('2026-10-14T20:00:00.000Z'), // qua 14 17:00 SP
+    });
+
+  it('Semana: a viagem aparece nas 3 colunas tocadas, cada bloco rotulado pelo RECORTE do dia com os marcadores ↤/↦', async () => {
+    list.mockImplementation(async () => ({ items: [BORN()] }));
+    const h = mountAgenda();
+    await settle();
+    await tab(h, 'week');
+    const blocks = h.w.findAll(`[data-testid="week-item-${TRIP_ID}"]`);
+    // `week-item-<id>` PODE repetir (decisão D7: um bloco por (item, dia tocado))
+    expect(blocks.length).toBe(3);
+    const inCol = (date: string) =>
+      document.querySelector(`[data-testid="week-day-${date}"] [data-testid="week-item-${TRIP_ID}"]`);
+    // dia de início: recorte 14:00→fim-do-dia com ↦ (o fim meia-noite é rotulado
+    // 23:59 — half-open, nunca "00:00" com dia deslizante)
+    expect(inCol('2026-10-12')?.textContent).toContain('14:00–23:59 ↦');
+    // dia do meio: dia inteiro com ↤ (veio de antes) e ↦ (continua depois)
+    expect(inCol('2026-10-13')?.textContent).toContain('↤ 00:00–23:59 ↦');
+    // dia final: recorte 00:00→17:00 com ↤ e o fim REAL visível
+    expect(inCol('2026-10-14')?.textContent).toContain('↤ 00:00–17:00');
+    h.unmount();
+  });
+
+  it('Semana: a viagem da cena (âncora 11/10) aparece em TODO dia tocado da grade — inclusive nascendo fora da semana da query', async () => {
+    // TRIP nasce sáb 10/10 23:00 (fora da grade dom 11..sáb 17); a carga por
+    // intersecção a traz pelo FIM e a coluna da segunda a recebe recortada (D7)
+    const h = mountAgenda();
+    await settle();
+    await tab(h, 'week');
+    const inCol = (date: string) =>
+      document.querySelector(`[data-testid="week-day-${date}"] [data-testid="week-item-${TRIP_ID}"]`);
+    expect(inCol('2026-10-11')?.textContent).toContain('↤ 00:00–23:59 ↦');
+    expect(inCol('2026-10-12')?.textContent).toContain('↤ 00:00–17:00');
+    h.unmount();
+  });
+
+  it('Semana: o recorte do dia de início não vira "23:00–00:00" e as alturas são do RECORTE (meio = dia inteiro)', async () => {
+    // viagem NASCENDO na semana da cena (seg 12 14:00 → qua 14 17:00 SP): o slice
+    // do dia de início existe na grade com o recorte 14:00→fim-do-dia
+    list.mockImplementation(async () => ({
+      items: [
+        appt({
+          id: TRIP_ID,
+          title: 'Viagem',
+          startsAt: new Date('2026-10-12T17:00:00.000Z'), // seg 12 14:00 SP
+          endsAt: new Date('2026-10-14T20:00:00.000Z'), // qua 14 17:00 SP
+        }),
+      ],
+    }));
+    const h = mountAgenda();
+    await settle();
+    await tab(h, 'week');
+    const seg = h.w
+      .find(`[data-testid="week-day-2026-10-12"] [data-testid="week-item-${TRIP_ID}"]`)
+      .element;
+    // o fim meia-noite do recorte é rotulado 23:59 (half-open) — NUNCA "00:00"
+    // com dia deslizante ("14:00–ter 13/10 00:00", o bug antigo do fim falso)
+    expect(seg.textContent).toContain('14:00–23:59 ↦');
+    expect(seg.textContent).not.toMatch(/14:00–(ter )?00:00/);
+    const ter = h.w
+      .find(`[data-testid="week-day-2026-10-13"] [data-testid="week-item-${TRIP_ID}"]`)
+      .element;
+    expect(pct(ter.getAttribute('style') ?? '', 'top')).toBeCloseTo(0, 1);
+    expect(pct(ter.getAttribute('style') ?? '', 'height')).toBeCloseTo(100, 1);
+    const qua = h.w
+      .find(`[data-testid="week-day-2026-10-14"] [data-testid="week-item-${TRIP_ID}"]`)
+      .element;
+    expect(pct(qua.getAttribute('style') ?? '', 'top')).toBeCloseTo(0, 1);
+    expect(pct(qua.getAttribute('style') ?? '', 'height')).toBeCloseTo((17 / 24) * 100, 1);
+    h.unmount();
+  });
+
+  it('Semana: os 3 blocos recortados abrem o MESMO compromisso (clique → detalhes com o período integral)', async () => {
+    list.mockImplementation(async () => ({ items: [BORN()] }));
+    const h = mountAgenda();
+    await settle();
+    await tab(h, 'week');
+    const blocks = h.w.findAll(`[data-testid="week-item-${TRIP_ID}"]`);
+    expect(blocks.length).toBe(3);
+    await blocks[1]!.trigger('click');
+    await settle();
+    expect(document.body.textContent).toContain('Viagem');
+    // painel C2: início E fim integrais — o clique no RECORTE abre o item todo
+    expect(document.body.textContent).toMatch(/seg 12\/10 14:00/);
+    expect(document.body.textContent).toMatch(/→ qua 14\/10 17:00/);
+    h.unmount();
+  });
+
+  it('Mês: chip nos 3 dias tocados — só o dia de início COM hora; meio/fim "dia inteiro" sem hora', async () => {
+    const h = mountAgenda();
+    await settle();
+    await tab(h, 'month');
+    const chip = (date: string) =>
+      document.querySelector(`[data-testid="cell-${date}"] [data-testid="chip-open-${TRIP_ID}"]`);
+    expect(chip('2026-10-10')).not.toBeNull();
+    expect(chip('2026-10-11')).not.toBeNull();
+    expect(chip('2026-10-12')).not.toBeNull();
+    // O chip inteiro é o <span> pai do botão "Abrir"; o tempo vive no PRIMEIRO <span>
+    const chipTime = (date: string) =>
+      chip(date)?.closest('span')?.querySelector('span')?.textContent ?? '';
+    // dia de início: hora de início + marcador de continuação (23:00 ↦)
+    expect(chipTime('2026-10-10')).toBe('23:00 ↦');
+    // dias do meio/fim: SEM hora, "dia inteiro" com o marcador da DIREÇÃO de onde o
+    // item VEIO (review 2026-10-11): ↦ prefixado = veio do dia anterior (meio e fim).
+    expect(chipTime('2026-10-11')).toBe('↦ dia inteiro');
+    expect(chipTime('2026-10-12')).toBe('↦ dia inteiro');
+    h.unmount();
+  });
+
+  it('Mês: o chip de dia tocado abre os detalhes do MESMO compromisso', async () => {
+    const h = mountAgenda();
+    await settle();
+    await tab(h, 'month');
+    expect(h.w.find('[data-testid="cell-2026-10-11"]').exists()).toBe(true);
+    const open = document.querySelector(
+      `[data-testid="cell-2026-10-11"] [data-testid="chip-open-${TRIP_ID}"]`,
+    ) as HTMLElement;
+    open.dispatchEvent(new window.Event('click', { bubbles: true, cancelable: true }));
+    await settle();
+    expect(document.body.textContent).toContain('Viagem');
+    expect(document.body.textContent).toContain('Excluir');
+    // navegar pelos detalhes NÃO troca a visão
+    expect(h.w.find('[data-testid="month-grid"]').exists()).toBe(true);
+    h.unmount();
+  });
+
+  it('Dia 10/10 (começa aqui, termina depois): faixa 23:00→fim-do-dia (top 23/24, altura 1/24) com ↦ e lista com o período COMPLETO', async () => {
+    const h = mountAgenda();
+    await settle();
+    h.agenda.setDate('2026-10-10');
     await settle();
     const block = h.w.find(`[data-testid="day-block-${TRIP_ID}"]`);
     expect(block.exists()).toBe(true);
-    // clamp por dia (layoutDayTimeline): começa 00:00 local (top 0%) e vai até 17:00
-    // (17/24*100 ≈ 70.83%) — a altura vem do endsAt, nunca de "3960 minutos"
-    const style = block.styleRaw();
-    expect(parseFloat(/top:\s*([\d.]+)%/.exec(style)?.[1] ?? '-1')).toBeCloseTo(0, 1);
-    expect(parseFloat(/height:\s*([\d.]+)%/.exec(style)?.[1] ?? '-1')).toBeCloseTo(
-      (17 / 24) * 100,
-      1,
-    );
-    // rótulo do período com o fim visível no dia em que o bloco termina
-    expect(block.text()).toContain('17:00');
-    expect(block.attributes('aria-label')).toContain('17:00');
+    expect(pct(block.styleRaw(), 'top')).toBeCloseTo((23 / 24) * 100, 1);
+    expect(pct(block.styleRaw(), 'height')).toBeCloseTo((1 / 24) * 100, 1);
+    // rótulo do recorte com marcador de continuação (vai para outro dia; fim
+    // meia-noite rotulado 23:59 — half-open)
+    expect(block.text()).toContain('23:00–23:59 ↦');
+    expect(block.attributes('aria-label')).toContain('↦');
+    // D.4: a lista do dia mostra o item "de fora" com o período INTEGRAL
+    const listText = h.w.find('[data-testid="day-list"]').text();
+    expect(listText).toContain('Viagem');
+    expect(listText).toContain('23:00–seg 12/10 17:00');
     h.unmount();
   });
 
-  it('aria-label na SEGUNDA usa formatRangeInTz: fim no MESMO dia local (17:00) e hora do início deslizadas', async () => {
-    listItems = [TRIP];
-    const h = mountAgenda(listItems);
+  it('Dia 11/10 (começa antes e termina depois): bloco de dia inteiro (0% a 100%) com ↤ e ↦ nos dois lados', async () => {
+    const h = mountAgenda();
     await settle();
-    const label = h.w
-      .find(`[data-testid="day-block-${TRIP_ID}"]`)
-      .attributes('aria-label') as string;
-    // formato vigente do formatRangeInTz quando o clamp faz o trecho ser do mesmo dia
-    expect(label).toContain('Viagem');
-    expect(label).toMatch(/\d{2}:\d{2}/);
-    expect(label).toContain('17:00');
+    h.agenda.setDate('2026-10-11');
+    await settle();
+    const block = h.w.find(`[data-testid="day-block-${TRIP_ID}"]`);
+    expect(block.exists()).toBe(true);
+    expect(pct(block.styleRaw(), 'top')).toBeCloseTo(0, 1);
+    expect(pct(block.styleRaw(), 'height')).toBeCloseTo(100, 1);
+    expect(block.text()).toContain('↤ 00:00–23:59 ↦');
+    expect(block.attributes('aria-label')).toContain('↤');
+    expect(block.attributes('aria-label')).toContain('↦');
     h.unmount();
   });
 
-  it('visão Semana: um multi-dia que NASCE na semana da query aparece na grade com rótulo coerente', async () => {
-    // grade dom 18..sáb 24/10 (âncora 12 não alterada aqui: a semana civil da
-    // âncora seg 12 é 12..18; o item abaixo nasce DENTRO dela: seg 12 14:00 →
-    // qua 14 17:00 SP) — a coluna da segunda mostra o trecho com fim visível
-    const weekTrip = appt({
-      id: TRIP_ID,
-      title: 'Viagem',
-      startsAt: new Date('2026-10-12T17:00:00.000Z'), // seg 12/10 14:00 SP
-      endsAt: new Date('2026-10-14T20:00:00.000Z'), // qua 14/10 17:00 SP
-    });
-    listItems = [weekTrip];
-    const h = mountAgenda(listItems);
+  it('Dia 12/10 (dia final): bloco 00:00→17:00 (altura 17/24) com o fim real no rótulo e só ↤', async () => {
+    const h = mountAgenda();
     await settle();
-    h.agenda.setView('week');
+    h.agenda.setDate('2026-10-12');
     await settle();
-    const blocks = h.w.findAll(`[data-testid="week-item-${TRIP_ID}"]`);
-    expect(blocks.length).toBeGreaterThanOrEqual(1);
-    // coluna da segunda (dia da âncora): o trecho começa 14:00 e o rótulo é
-    // coerente com o formatRangeInTz (rótulo do período integral)
-    const weekDaySegunda = h.w.find('[data-testid="week-day-2026-10-12"]');
-    expect(weekDaySegunda.exists()).toBe(true);
-    expect(weekDaySegunda.text()).toContain('Viagem');
-    expect(blocks[0]!.attributes('aria-label')).toContain('Viagem');
-    expect(blocks[0]!.attributes('aria-label')).toContain('17:00');
+    const block = h.w.find(`[data-testid="day-block-${TRIP_ID}"]`);
+    expect(block.exists()).toBe(true);
+    expect(pct(block.styleRaw(), 'top')).toBeCloseTo(0, 1);
+    expect(pct(block.styleRaw(), 'height')).toBeCloseTo((17 / 24) * 100, 1);
+    expect(block.text()).toContain('↤ 00:00–17:00');
+    expect(block.text()).not.toContain('00:00–24:00');
+    expect(block.attributes('aria-label')).toContain('↤');
     h.unmount();
   });
 
-  it('visão Semana: segment multi-dia mostra o fim real com dia (não "23:00–02:00")', async () => {
-    // Espelho do bug do 08/10: item multi-dia desenhado na grade que rotulava o
-    // fim como "23:00–02:00". O segmento da grade usa formatRangeInTz e mostra o
-    // fim com dia ("14:00–qua 14/10 17:00", regras C1/B9). O bucketing por dia de
-    // início é o existente (schedule-core intocado): o segmento nasce na coluna
-    // do dia de início e carrega o fim completo.
-    const weekTrip = appt({
-      id: TRIP_ID,
-      title: 'Viagem',
-      startsAt: new Date('2026-10-12T17:00:00.000Z'), // seg 12/10 14:00 SP
-      endsAt: new Date('2026-10-14T20:00:00.000Z'), // qua 14/10 17:00 SP
-    });
-    listItems = [weekTrip];
-    const h = mountAgenda(listItems);
+  it('Ano: a densidade marca os 3 dias TOCADOS (E.8) — bolinhas em 10, 11 e 12/10', async () => {
+    const h = mountAgenda();
     await settle();
-    h.agenda.setView('week');
-    await settle();
-    const blocks = h.w.findAll(`[data-testid="week-item-${TRIP_ID}"]`);
-    expect(blocks.length).toBe(1);
-    const block = blocks[0]!;
-    expect(block.text()).toContain('qua 14/10 17:00');
-    expect(block.text()).not.toMatch(/14:00–02:00/);
-    expect(block.attributes('aria-label')).toContain('14:00–qua 14/10 17:00');
+    await tab(h, 'year');
+    expect(h.w.find('[data-testid="year-dot-2026-10-10"]').exists()).toBe(true);
+    expect(h.w.find('[data-testid="year-dot-2026-10-11"]').exists()).toBe(true);
+    expect(h.w.find('[data-testid="year-dot-2026-10-12"]').exists()).toBe(true);
     h.unmount();
   });
 
-  it('painel de detalhes: período multi-dia com o dia do INÍCIO junto do traço ("sáb … · 23:00–seg 12/10 17:00")', async () => {
-    listItems = [TRIP];
-    const h = mountAgenda(listItems);
+  it('painel de detalhes: período multi-dia com o INÍCIO junto do fim ("sáb 10/10 23:00 → seg 12/10 17:00")', async () => {
+    const h = mountAgenda();
     await settle();
+    // a âncora é 11/10: o bloco da grade é o RECORTE do dia (dia inteiro) — o
+    // clique abre o compromisso INTEGRAL com o período completo no painel (C2)
     await h.w.find(`[data-testid="day-block-${TRIP_ID}"]`).trigger('click');
     await settle();
     const text = h.w.text();
     expect(text).toContain('Viagem');
-    // C2: painel de detalhe com o FIM completo — "... → seg 12/10 17:00"
-    expect(text).toMatch(/→ seg 12\/10 17:00/);
     expect(text).toMatch(/sáb 10\/10 23:00/);
+    expect(text).toMatch(/→ seg 12\/10 17:00/);
     h.unmount();
   });
 });
