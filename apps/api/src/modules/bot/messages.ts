@@ -201,6 +201,39 @@ export const BOT_MESSAGES = {
     "Para eu funcionar, primeiro passa no site e cria sua conta para que eu possa funcionar." +
     " Depois de criar a conta, volta aqui que a gente começa a organizar sua agenda. 😉",
 
+  /**
+   * Spec saudacao-e-start-bot A4 — menu de boas-vindas do `/start` (determinístico,
+   * zero LLM). `comNome`: com nome "Oi, {nome}! 👋 ..."; sem nome o texto vigente
+   * (helper nunca inventa tratamento — decisão 7 da Fase 5).
+   */
+  saudacaoStart: (nome: string) =>
+    `Oi, ${nome}! 👋 Eu sou o Agendabô, seu assistente de agenda. Posso:\n\n` +
+    `📌 Marcar compromissos — é só me contar (ex.: "marca consulta quinta 14h")\n` +
+    `📖 Consultar sua agenda ("o que tenho amanhã?")\n` +
+    `⏰ Te lembrar dos seus compromissos\n` +
+    `✏️ Editar ou cancelar pelo chat\n\n` +
+    `Manda aí o que você precisa 🙂`,
+
+  /** Sem nome (comNome): menu do /start sem tratamento — texto vigente. */
+  saudacaoStartSemNome:
+    `Oi! 👋 Eu sou o Agendabô, seu assistente de agenda. Posso:\n\n` +
+    `📌 Marcar compromissos — é só me contar (ex.: "marca consulta quinta 14h")\n` +
+    `📖 Consultar sua agenda ("o que tenho amanhã?")\n` +
+    `⏰ Te lembrar dos seus compromissos\n` +
+    `✏️ Editar ou cancelar pelo chat\n\n` +
+    `Manda aí o que você precisa 🙂`,
+
+  /**
+   * Spec saudacao-e-start-bot B1 — frase de abertura acolhedora no turno em que o criar
+   * ABRE por fala (guiado ou atalho). Mensagem separada enviada ANTES da pergunta do
+   * título / eco do extraído (decisão D3 do plano); máquina intocada.
+   */
+  aberturaCriar: (nome: string) =>
+    `Olá, ${nome}! Entendi, vamos registrar esse compromisso 🙂`,
+
+  /** Sem nome (comNome): frase de abertura do criar sem tratamento. */
+  aberturaCriarSemNome: "Olá! Entendi, vamos registrar esse compromisso 🙂",
+
   /** Regra 2 — intencao fora do escopo / duvidosa: resposta padrao, nada e criado. */
   fallback:
     "Hmm, acho que isso eu ainda não sei resolver 😅\n\n" +

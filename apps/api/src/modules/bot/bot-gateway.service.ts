@@ -13,6 +13,18 @@ import { SchedulingFlowService } from './scheduling-flow.service';
 import { TelegramClientService } from '../../shared/telegram/telegram-client.service';
 
 /**
+ * Spec saudacao-e-start-bot A1 — reconhecedor determinístico de comando de barra da
+ * borda do bot (webhook e polling compartilham; fonte única, testável sem Telegraf).
+ * Só `/start` (com o alias `/start@NomeDoBot`, case-insensitive, whitespace tolerado)
+ * é comando; QUALQUER outra mensagem continua fala (regra 2 da spec mãe: nenhum texto
+ * de usuário é interpretado como comando de barra).
+ */
+export function parseBotCommand(text: string): { command: "start" } | null {
+  const match = /^\/start(?:@\w+)?$/i.exec(text.trim());
+  return match ? { command: "start" } : null;
+}
+
+/**
  * Bootstrap do bot: DONO do gateway do Telegram, em um de dois modos (env):
  * - TELEGRAM_WEBHOOK_URL presente -> WEBHOOK: o Telegram POSTa updates na rota
  *   /telegram/webhook da API (HTTPS de entrada; sem conexao longa de saida, que
@@ -79,13 +91,19 @@ export class BotGatewayService
     }
   };
 
-  /** Handler fino compartilhado webhook/polling: text + callback_query. */
+  /** Handler fino compartilhado webhook/polling: comando + text + callback_query. */
   async handleUpdate(update: unknown): Promise<void> {
     const u = update as {
       message?: { text?: string; chat?: { id?: number } };
       callback_query?: { data?: string | unknown; from?: { id?: number } };
     };
     if (u.message?.text && u.message.chat?.id != null) {
+      // spec saudacao-e-start-bot A1/A2: /start é determinístico — roteia ANTES de
+      // qualquer fala (zero LLM). O gate de conta fica no handleStart (service).
+      if (parseBotCommand(u.message.text)?.command === "start") {
+        await this.flow.handleStart(String(u.message.chat.id));
+        return;
+      }
       await this.flow.handleText(String(u.message.chat.id), u.message.text);
       return;
     }
@@ -154,6 +172,11 @@ export class BotGatewayService
       const id = ctx.from?.id;
       const text = 'text' in ctx.message ? ctx.message.text : undefined;
       if (!id || !text) return;
+      // mesmo roteamento determinístico do webhook (spec saudacao-e-start-bot A1)
+      if (parseBotCommand(text)?.command === 'start') {
+        await this.safe(`start ${id}`, () => this.flow.handleStart(String(id)), ctx);
+        return;
+      }
       await this.safe(`text ${id}`, () => this.flow.handleText(String(id), text), ctx);
     });
 

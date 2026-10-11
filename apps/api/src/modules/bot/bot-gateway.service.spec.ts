@@ -78,6 +78,7 @@ describe('BotGatewayService — modo webhook', () => {
     const flow = {
       handleText: jest.fn(),
       handleCallback: jest.fn(),
+      handleStart: jest.fn(),
     } as unknown as SchedulingFlowService;
     const get = jest.fn((key: string) => {
       if (key === 'TELEGRAM_WEBHOOK_URL') return 'https://api.example.com/telegram/webhook';
@@ -115,6 +116,47 @@ describe('BotGatewayService — modo webhook', () => {
     expect(flow.handleText).toHaveBeenCalledWith('42', 'oi');
     await svc.handleUpdate({ callback_query: { data: 'dia:1', from: { id: 42 } } });
     expect(flow.handleCallback).toHaveBeenCalledWith('42', 'dia:1');
+  });
+
+  // spec saudacao-e-start-bot A1/A2: /start é comando determinístico da borda —
+  // nunca vira fala (zero LLM), nos dois modos (handleUpdate é compartilhado).
+  it('handleUpdate: /start (e /start@agendabo_bot) vira handleStart, NUNCA handleText', async () => {
+    const { svc, flow } = buildWebhook();
+    await svc.handleUpdate({ message: { text: '/start', chat: { id: 42 } } });
+    expect(flow.handleStart).toHaveBeenCalledWith('42');
+    await svc.handleUpdate({ message: { text: '/start@agendabo_bot', chat: { id: 42 } } });
+    expect(flow.handleStart).toHaveBeenLastCalledWith('42');
+    await svc.handleUpdate({ message: { text: '  /START@AgendaBot_Bot ', chat: { id: 42 } } });
+    expect(flow.handleStart).toHaveBeenCalledTimes(3);
+    expect(flow.handleText).not.toHaveBeenCalled();
+  });
+
+  it('handleUpdate: texto que só PARECE comando continua fala (regra 2 da mãe)', async () => {
+    const { svc, flow } = buildWebhook();
+    await svc.handleUpdate({ message: { text: '/start do zero?', chat: { id: 42 } } });
+    expect(flow.handleStart).not.toHaveBeenCalled();
+    expect(flow.handleText).toHaveBeenCalledWith('42', '/start do zero?');
+  });
+
+  it('webhookHandler: update /start processado pelo caminho handleStart', async () => {
+    const { svc, flow } = buildWebhook();
+    const body = Buffer.from(JSON.stringify({ message: { text: '/start', chat: { id: 9 } } }));
+    const req = {
+      url: '/telegram/webhook',
+      headers: { 'x-telegram-bot-api-secret-token': 'segredo-de-teste-1234' },
+      [Symbol.asyncIterator]: () => {
+        let sent = false;
+        return {
+          next: async () =>
+            sent ? { done: true, value: undefined } : ((sent = true), { done: false, value: body }),
+        };
+      },
+    } as never;
+    const writeHead = jest.fn().mockReturnThis();
+    await svc.webhookHandler(req, { writeHead, end: jest.fn() } as never);
+    expect(writeHead).toHaveBeenCalledWith(200);
+    expect(flow.handleStart).toHaveBeenCalledWith('9');
+    expect(flow.handleText).not.toHaveBeenCalled();
   });
 
   it('webhookHandler: segredo errado = 404 sem processar', async () => {

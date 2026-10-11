@@ -206,6 +206,39 @@ export class SchedulingFlowService {
     await this.turn(user, { text });
   }
 
+  /**
+   * Spec saudacao-e-start-bot A2–A5 — `/start` (comando roteado na borda do gateway).
+   * Determinístico: ZERO LLM, zero sessão. Gate de conta preserved (regra 1 da mãe):
+   * sem cadastro → só `cadastroNecessario`; confirmado → menu com o nome (`comNome`).
+   * Não abre nem zera fluxo em andamento (A5).
+   */
+  async handleStart(telegramId: string): Promise<void> {
+    let user: BotUser;
+    try {
+      user = await this.access.requireConfirmedUser(telegramId);
+    } catch (err) {
+      if (err instanceof ForbiddenException) {
+        this.logger.log(
+          `bot: /start de telegramId ${telegramId} sem cadastro — orientacao de cadastro enviada`,
+        );
+        await this.telegram.sendMessage(
+          telegramId,
+          BOT_MESSAGES.cadastroNecessario,
+        );
+        return;
+      }
+      throw err;
+    }
+    await this.telegram.sendMessage(
+      telegramId,
+      BOT_MESSAGES.comNome(
+        user.name,
+        BOT_MESSAGES.saudacaoStartSemNome,
+        (n) => BOT_MESSAGES.saudacaoStart(n),
+      ),
+    );
+  }
+
   /** Botao de dia do teclado guiado (passo deterministico, sem LLM). */
   async handleDayPick(telegramId: string, raw: unknown): Promise<void> {
     const day = dayChoiceSchema.parse(raw);
@@ -287,6 +320,23 @@ export class SchedulingFlowService {
   /** Relógio da borda (testes substituem este método p/ determinismo). */
   private now(): Date {
     return new Date();
+  }
+
+  /**
+   * Spec saudacao-e-start-bot B1 — frase de abertura acolhedora do turno em que o criar
+   * ABRE por fala (guiado ou atalho). Mensagem SEPARADA enviada antes das replies da
+   * máquina (decisão D3 do plano): máquina e eco "Entendi:" intocados; turnos seguintes
+   * do fluxo nunca passam por aqui (B2). Nome via `comNome` (B4).
+   */
+  private saudarAberturaCriar(user: BotUser): Promise<void> {
+    return this.telegram.sendMessage(
+      user.telegramId,
+      BOT_MESSAGES.comNome(
+        user.name,
+        BOT_MESSAGES.aberturaCriarSemNome,
+        (n) => BOT_MESSAGES.aberturaCriar(n),
+      ),
+    );
   }
 
   /**
@@ -1268,11 +1318,20 @@ export class SchedulingFlowService {
               `bot: extracao falhou em fala de abertura longa (${words} palavras) p/ ` +
                 `${user.id} — titulo NAO preenchido (B1)`,
             );
+            await this.saudarAberturaCriar(user);
             await this.openFlow(user, now);
             return;
           }
+          await this.saudarAberturaCriar(user);
           await this.openFlow(user, now, text);
           return;
+        }
+        if (extracted.kind !== "fraco" && extracted.kind !== "suspeito") {
+          // spec saudacao-e-start-bot B1/D5: atalho UTILIZÁVEL (aceito/sem_titulo/
+          // fim_invalido/quando_parcial) ⇒ o criar acabou de abrir por fala: "Olá …"
+          // ANTES do eco (mensagem separada, decisão D3). Needs_review (fraco/suspeito)
+          // NÃO saúda: nada foi aceito — o aviso E16 é a resposta em si.
+          await this.saudarAberturaCriar(user);
         }
         const fresh = this.machine.newSession(now);
         fresh.step = "criar_aberto";

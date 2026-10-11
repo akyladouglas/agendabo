@@ -170,6 +170,9 @@ describe("SchedulingFlowService (bordas)", () => {
     };
     expect(internals.sessions.get("111")).toBeDefined();
     expect(m.sent.length).toBeGreaterThan(0);
+    // spec saudacao-e-start-bot B1: turno de abertura por fala = saudação + resposta do passo
+    expect(m.sent[0]).toContain("vamos registrar esse compromisso");
+    expect(m.sent.length).toBeGreaterThanOrEqual(2);
   });
 
   it('fora do fluxo: "fora_do_escopo" => fallback sem criar nada; duvida => pergunta (spec 2)', async () => {
@@ -191,6 +194,167 @@ describe("SchedulingFlowService (bordas)", () => {
     await m2.svc.handleText("111", "hmmm");
     expect(m2.sent.at(-1)).toContain("não tenho certeza");
     expect(m2.appointments.create).not.toHaveBeenCalled();
+  });
+
+  // ---------- spec saudacao-e-start-bot: /start determinístico + abertura acolhedora ----------
+
+  describe("spec saudacao-e-start-bot — handleStart (/start zero LLM)", () => {
+    it("/start sem conta => só orientação de cadastro, zero LLM", async () => {
+      const { svc, sent, access, classifier, prisma } = make();
+      access.requireConfirmedUser.mockRejectedValue(
+        new ForbiddenException("cadastro_necessario"),
+      );
+
+      await svc.handleStart("999");
+
+      expect(sent[0]).toContain("cria sua conta");
+      expect(classifier.classify).not.toHaveBeenCalled();
+      expect(prisma.appointment.findMany).not.toHaveBeenCalled();
+    });
+
+    it("/start com conta => menu de boas-vindas COM o nome; nenhuma mensagem de registro", async () => {
+      const m = make();
+      m.access.requireConfirmedUser.mockResolvedValue({
+        ...USER,
+        name: "Ana",
+      });
+
+      await m.svc.handleStart("111");
+
+      expect(m.sent).toHaveLength(1);
+      expect(m.sent[0]).toContain("Oi, Ana!");
+      expect(m.sent[0]).toContain("Marcar compromissos");
+      expect(m.sent[0]).toContain("Consultar sua agenda");
+      expect(m.sent[0]).toContain("lembrar");
+      expect(m.sent[0]).toContain("Editar ou cancelar");
+      // sem sobreposição com a frase do criar (spec B3)
+      expect(m.sent[0]).not.toContain("vamos registrar");
+      expect(m.classifier.classify).not.toHaveBeenCalled();
+    });
+
+    it("/start conta sem nome => fallback sem tratamento (comNome)", async () => {
+      const { svc, sent } = make(); // USER.name === null
+      await svc.handleStart("111");
+      expect(sent[0]).toContain("Oi! 👋");
+      expect(sent[0]).not.toMatch(/Oi, /);
+    });
+
+    it("/start não abre nem zera sessão em andamento (spec A5)", async () => {
+      const m = make();
+      m.classifier.classify.mockResolvedValue({
+        ok: true,
+        intent: "criar",
+        confidence: 0.9,
+      });
+      await m.svc.handleText("111", "Consulta"); // abre o fluxo
+      const internals = m.svc as unknown as {
+        sessions: Map<string, { step: string }>;
+      };
+      const before = internals.sessions.get("111");
+      expect(before).toBeDefined();
+      const stepAntes = before!.step;
+
+      m.classifier.classify.mockResolvedValue({ ok: false, reason: "no_tool_use" });
+      const nLlm = m.classifier.classify.mock.calls.length;
+      await m.svc.handleStart("111");
+
+      // A2: zero LLM no comando; A5: mesma sessão (mesmo objeto), mesmo passo
+      expect(m.classifier.classify.mock.calls.length).toBe(nLlm);
+      expect(internals.sessions.get("111")).toBe(before);
+      expect(internals.sessions.get("111")!.step).toBe(stepAntes);
+      await m.svc.handleText("111", "Reunião de manhã");
+      expect(m.classifier.classify.mock.calls.length).toBe(nLlm + 1);
+      expect(internals.sessions.get("111")).toBeDefined(); // sessão segue viva
+    });
+  });
+
+  describe("spec saudacao-e-start-bot — frase de abertura do criar (regra B)", () => {
+    it('guiado abre por fala de intenção => "Olá … vamos registrar" ANTES da pergunta do título', async () => {
+      const m = make();
+      m.access.requireConfirmedUser.mockResolvedValue({
+        ...USER,
+        name: "Ana",
+      });
+      m.classifier.classify.mockResolvedValue({
+        ok: true,
+        intent: "criar",
+        confidence: 0.9,
+      });
+
+      await m.svc.handleText("111", "quero marcar uma consulta");
+
+      expect(m.sent[0]).toContain("Olá, Ana!");
+      expect(m.sent[0]).toContain("vamos registrar esse compromisso");
+      expect(m.sent.length).toBeGreaterThan(1);
+      // a fala de intenção vira o passo título (spec mãe); o que importa é a SAUDAÇÃO
+      // ser a 1ª mensagem e a resposta do passo vir em seguida (nada de sobreposição)
+      expect(m.sent[1]).toMatch(/Como eu chamo|Em que dia/);
+    });
+
+    it('atalho aceito => "Olá …" chega ANTES do eco "Entendi: …" (spec B1, decisão D3)', async () => {
+      const m = make();
+      m.access.requireConfirmedUser.mockResolvedValue({ ...USER, name: "Ana" });
+      m.classifier.classify.mockResolvedValue({
+        ok: true,
+        intent: "criar",
+        confidence: 0.9,
+      });
+      m.schedulingInterpreter.interpretar.mockResolvedValue({
+        ok: true,
+        rawText: "consulta dia 08/10 às 14h",
+        data: {
+          title: "consulta",
+          startsAt: "2026-10-08T14:00:00-03:00",
+          confidence: 0.95,
+          dateEvidence: "dia 08/10 às 14h",
+        },
+      });
+
+      await m.svc.handleText("111", "consulta dia 08/10 às 14h");
+
+      expect(m.sent[0]).toContain("Olá, Ana!");
+      expect(m.sent[0]).toContain("Entendi, vamos registrar esse compromisso");
+      expect(m.sent[1]).toContain("Entendi:");
+    });
+
+    it("turno seguinte do fluxo NÃO repete o Olá (spec B2)", async () => {
+      const m = make();
+      m.classifier.classify.mockResolvedValue({
+        ok: true,
+        intent: "criar",
+        confidence: 0.9,
+      });
+      await m.svc.handleText("111", "quero marcar uma consulta");
+      const nAposAbrir = m.sent.length;
+      m.classifier.classify.mockResolvedValue({ ok: false, reason: "no_tool_use" });
+
+      await m.svc.handleText("111", "Reunião de manhã");
+
+      expect(m.sent.slice(nAposAbrir).join("\n")).not.toContain("Olá");
+    });
+
+    it("needs_review (fraco/suspeito) NÃO recebe a frase — aviso E16 é a resposta (D5)", async () => {
+      const m = make();
+      m.classifier.classify.mockResolvedValue({
+        ok: true,
+        intent: "criar",
+        confidence: 0.9,
+      });
+      m.schedulingInterpreter.interpretar.mockResolvedValue({
+        ok: true,
+        rawText: "consulta qualquer dia",
+        data: {
+          title: "consulta",
+          startsAt: "2026-10-08T14:00:00Z", // offset Z ≠ tz da conta => régua `fraco`
+          confidence: 0.95,
+        },
+      });
+
+      await m.svc.handleText("111", "consulta qualquer dia");
+
+      expect(m.sent[m.sent.length - 1]).toContain("PENDENTE DE REVISÃO");
+      expect(m.sent.join("\n")).not.toContain("vamos registrar");
+    });
   });
 
   // ---------- Fase 4: bordas do atalho, needs_review e editar/cancelar pelo chat ----------
