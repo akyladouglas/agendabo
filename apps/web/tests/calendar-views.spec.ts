@@ -304,16 +304,19 @@ describe('Agenda — 4 visões (Fase 7)', () => {
     await tab(h, 'year');
     expect(h.w.find('[data-testid="agenda-heading"]').text()).toContain('2026');
     expect(h.w.findAll('[data-testid^="year-mini-"]').length).toBe(12);
-    // densidade por dia com compromisso (dayDensity): 08/10 e 15/10
-    expect(h.w.find('[data-testid="year-dot-2026-10-08"]').exists()).toBe(true);
-    expect(h.w.find('[data-testid="year-dot-2026-10-15"]').exists()).toBe(true);
+    // densidade por dia com compromisso (dayDensity): 08/10 e 15/10 — no heatmap novo
+    // a bolinha clicável do desktop é `year-dot-<mes>-<date>` (spec visao-ano-heatmap)
+    expect(h.w.find('[data-testid="year-dot-10-2026-10-08"]').exists()).toBe(true);
+    expect(h.w.find('[data-testid="year-dot-10-2026-10-15"]').exists()).toBe(true);
   });
 
   it('Ano → clique no mini-mês de julho → visão Mês de julho', async () => {
     const h = mountAgenda();
     await settle();
     await tab(h, 'year');
-    await h.w.find('[data-testid="year-mini-7"]').trigger('click');
+    // desktop (heatmap): o botão do MÊS é `year-month-7`; no mobile a linha inteira
+    // (`year-mini-7` continua no card) leva ao mesmo lugar — coberto em year-heatmap
+    await h.w.find('[data-testid="year-month-7"]').trigger('click');
     await settle();
     expect(h.w.find('[data-testid="month-grid"]').exists()).toBe(true);
     expect(h.w.find('[data-testid="agenda-heading"]').text()).toContain('julho');

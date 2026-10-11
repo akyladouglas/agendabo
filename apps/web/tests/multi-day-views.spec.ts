@@ -354,9 +354,10 @@ describe('multi-dia nas visões (spec multi-dia-nas-visoes)', () => {
     const h = mountAgenda();
     await settle();
     await tab(h, 'year');
-    expect(h.w.find('[data-testid="year-dot-2026-10-10"]').exists()).toBe(true);
-    expect(h.w.find('[data-testid="year-dot-2026-10-11"]').exists()).toBe(true);
-    expect(h.w.find('[data-testid="year-dot-2026-10-12"]').exists()).toBe(true);
+    // desktop: bolinha clicável `year-dot-<mes>-<date>` (spec visao-ano-heatmap)
+    expect(h.w.find('[data-testid="year-dot-10-2026-10-10"]').exists()).toBe(true);
+    expect(h.w.find('[data-testid="year-dot-10-2026-10-11"]').exists()).toBe(true);
+    expect(h.w.find('[data-testid="year-dot-10-2026-10-12"]').exists()).toBe(true);
     h.unmount();
   });
 

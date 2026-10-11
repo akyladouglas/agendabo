@@ -1,4 +1,4 @@
-import { userDayRange, utcToZonedParts, zonedTimeToUtc } from './dates';
+import { monthGridRange, userDayRange, userMonthRange, utcToZonedParts, zonedTimeToUtc } from './dates';
 
 const DAY = 24 * 60 * 60_000;
 
@@ -299,4 +299,47 @@ export function dayDensity(
     result.set(month, { month, daysWithAppointments: dayKeys.length, dayKeys });
   }
   return result;
+}
+
+/** Um mês do heatmap da visão Ano: grade 7×6 fixa (42 células) do mês calendário. */
+export interface YearHeatMonth {
+  /** 1-12 (mês CALENDARIO da grade). */
+  month: number;
+  /** 42 células (6 linhas × 7 colunas, domingo a sábado), `inMonth`/`isToday` resolvidos. */
+  cells: CalendarDay[];
+}
+
+/**
+ * Heatmap da visão Ano (spec visao-ano-heatmap D1): as 12 grades 7×6 FIXAS do ano
+ * civil de `yearRange` (ex.: `userYearRange`), cada uma com o leading alinhado no
+ * DOMINGO 00:00 local ≤ dia 1 e o mês da grade definido pelo DIA DO MEIO (índice 21)
+ * — exatamente a técnica de `monthGridRange` + `monthCells`. 6 linhas sempre: meses
+ * de 5 linhas ganham a 6ª linha de espaçadores (`inMonth: false`), o que dá a TODOS
+ * os cards a mesma altura (decisão humana D-1 — o layout fixo é da web, a grade é
+ * daqui). Dias tocados fora do ano exibido nunca entram (não há célula deles).
+ * Pura: `now`/`offsetMinutes` injetados (modelo de offset único por período —
+ * ADR-002/limitação E.6 da mãe), zero I/O.
+ */
+export function yearHeatmap(
+  yearRange: DateRange,
+  offsetMinutes: number,
+  now?: Date,
+): YearHeatMonth[] {
+  const firstOfMonth = userMonthRange(yearRange.start, offsetMinutes).start;
+  return Array.from({ length: 12 }, (_, i) => {
+    // 1º dia local do mês i (passo de 24h sobre dias locais de offset fixo); o probe
+    // Date.UTC transborda mês/ano naturalmente (mesma técnica de `addLocalMonths`)
+    const parts = utcToZonedParts(firstOfMonth, offsetMinutes);
+    const probe = Date.UTC(parts.year, parts.month - 1 + i, 1);
+    const monthStart = zonedTimeToUtc(
+      {
+        year: new Date(probe).getUTCFullYear(),
+        month: new Date(probe).getUTCMonth() + 1,
+        day: 1,
+      },
+      offsetMinutes,
+    );
+    const grid = monthGridRange(monthStart, offsetMinutes);
+    return { month: i + 1, cells: monthCells(grid, offsetMinutes, now) };
+  });
 }

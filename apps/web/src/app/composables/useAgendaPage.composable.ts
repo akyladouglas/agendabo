@@ -16,6 +16,7 @@ import {
   userMonthRange,
   userYearRange,
   weekGridRows,
+  yearHeatmap,
   utcToZonedParts,
   type CalendarDay,
   type DateRange,
@@ -25,6 +26,7 @@ import {
   type MonthDensity,
   type TimelineBlock,
   type TimelineItem,
+  type YearHeatMonth,
 } from '@agendabo/schedule-core';
 import type { AppointmentDto } from '@agendabo/contracts';
 import { useAuthStore } from '../store/authStore';
@@ -122,8 +124,8 @@ export interface UseAgendaPage {
   monthLabel: ComputedRef<{ name: string; short: string }>;
   /** 42 células da grade do Mês (B.6/B.8). */
   cells: ComputedRef<CalendarDay[]>;
-  /** Células da grade do Mês M (visão Ano) e do M+1 (a da âncora — hoje correto). */
-  yearMonthCells: ComputedRef<CalendarDay[][]>;
+  /** Heatmap da visão Ano: 12 grades 7×6 fixas do ano civil da âncora (spec visao-ano-heatmap). */
+  yearHeat: ComputedRef<YearHeatMonth[]>;
   /** 7 linhas da semana (dom..sáb, semana da âncora). */
   rows: ComputedRef<DayHourRow[]>;
   /**
@@ -403,15 +405,16 @@ export function useAgendaPage(): UseAgendaPage {
     ).map((b) => ({ ...b, item: b.item as DaySlice<AppointmentDto> })),
   );
 
-  /** Visão Ano: grade do mês da ÂNCORA + a do mês seguinte (âncora em trailing →
-   * hoje na grade certa, que é o mês M+1). Dias do MEIO determinam o mês da grade. */
-  const yearMonthCells = computed<CalendarDay[][]>(() => {
-    const mGrid = monthGridRange(displayedMonthStart.value, offset.value);
-    const nextMonth = new Date(userMonthRange(displayedMonthStart.value, offset.value).end.getTime() + 1);
-    const m1Grid = monthGridRange(nextMonth, offset.value);
-    const same = mGrid.start.getTime() === m1Grid.start.getTime();
-    return [monthCells(mGrid, offset.value, now.value), ...(same ? [] : [monthCells(m1Grid, offset.value, now.value)])];
-  });
+  /**
+   * Visão Ano (spec visao-ano-heatmap): as 12 grades 7×6 fixas do ANO CIVIL da âncora
+   * (`yearHeatmap` do schedule-core). O offset é medido no INÍCIO do range do ano —
+   * modelo de offset único por período (ADR-002/E.6), o mesmo que a `density` usa para
+   * os dias; `range` da visão Ano é exatamente `userYearRange`, então query e heat
+   * cobrem o mesmo período (12 meses com dados — nunca só o mês da âncora).
+   */
+  const yearHeat = computed<YearHeatMonth[]>(() =>
+    yearHeatmap(range.value, rangeOffsetMin.value, now.value),
+  );
   const density = computed(() => dayDensity(items.value, range.value, offset.value));
   /** "Hoje" relativo ao AGORA real da borda (as grades comparam dateKey === hoje). */
   const todayKey = computed(() => dateKeyOf(now.value));
@@ -488,7 +491,7 @@ export function useAgendaPage(): UseAgendaPage {
     year,
     monthLabel,
     cells,
-    yearMonthCells,
+    yearHeat,
     rows,
     byDay,
     slicesByRowDate,

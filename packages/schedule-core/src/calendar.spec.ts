@@ -8,6 +8,7 @@ import {
   sliceItemToRange,
   sliceTimelineItems,
   weekRows,
+  yearHeatmap,
   type LocalizedItem,
 } from './calendar';
 
@@ -490,5 +491,70 @@ describe('dayDensity — dias civis com ≥1 compromisso por mês (4.4)', () => 
   it('sem itens: todos os meses do período com 0 dias (visão Ano vazia)', () => {
     const byMonth = dayDensity([], year, sp);
     expect([...byMonth.values()].every((m) => m.daysWithAppointments === 0)).toBe(true);
+  });
+});
+
+describe('yearHeatmap — 12 grades 7×6 fixas do ano civil (spec visao-ano-heatmap D1)', () => {
+  const year = userYearRange(new Date('2026-10-08T11:00:00Z'), sp); // 2026
+
+  it('12 meses × 42 células, mês da grade = célula do meio (índice 21), leading no domingo', () => {
+    const heat = yearHeatmap(year, sp);
+    expect(heat.map((m) => m.month)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+    for (const m of heat) {
+      expect(m.cells).toHaveLength(42);
+      // mês da grade é o do DIA DO MEIO (definição `monthCells`), nunca o do `start`
+      expect(m.cells[21]!.date.slice(5, 7)).toBe(String(m.month).padStart(2, '0'));
+      // grade começa no DOMINGO ≤ dia 1 (célula 0 nunca é posterior ao dia do meio);
+      // meses que NASCEM no domingo (2026: jan e out) têm célula 0 inMonth=true — o
+      // leading exato é aferido em outubro, abaixo
+      expect(m.cells[0]!.date <= m.cells[21]!.date).toBe(true);
+      expect(m.cells[41]!.date > m.cells[0]!.date).toBe(true);
+    }
+    // outubro/2026 em detalhe: leading 27/09..30/09 fora, 01/10..31/10 dentro
+    const oct = heat[9]!;
+    expect(oct.cells[0]!.date).toBe('2026-09-27');
+    expect(oct.cells[4]!.date).toBe('2026-10-01');
+    expect(oct.cells[4]!.inMonth).toBe(true);
+    expect(oct.cells[3]!.inMonth).toBe(false);
+    expect(oct.cells.filter((c) => c.inMonth)).toHaveLength(31);
+  });
+
+  it('anos ímpares de leading: a soma de dias inMonth cobre o ano INTEIRO (365/366) sem buraco', () => {
+    for (const [dateKey, days] of [
+      ['2026-06-01T12:00:00Z', 365],
+      ['2028-06-01T12:00:00Z', 366], // bissexto
+    ] as const) {
+      const range = userYearRange(new Date(dateKey), sp);
+      const inMonthKeys = yearHeatmap(range, sp)
+        .flatMap((m) => m.cells.filter((c) => c.inMonth).map((c) => c.date))
+        .sort();
+      expect(inMonthKeys).toHaveLength(days);
+      expect(new Set(inMonthKeys).size).toBe(days); // únicos — grade alguma "engole" dia
+      expect(inMonthKeys[0]).toBe(`${dateKey.slice(0, 4)}-01-01`);
+      expect(inMonthKeys.at(-1)!.slice(0, 4)).toBe(dateKey.slice(0, 4));
+    }
+  });
+
+  it('isToday só na célula do dia civil do `now` injetado (dentro do heatmap inteiro)', () => {
+    const now = new Date('2026-02-11T12:00:00Z'); // qua 11/02 09:00 SP
+    const heat = yearHeatmap(year, sp, now);
+    const todayCells = heat
+      .flatMap((m) => m.cells)
+      .filter((c) => c.isToday === true);
+    expect(todayCells).toHaveLength(1);
+    expect(todayCells[0]!.date).toBe('2026-02-11');
+    // sem `now`: nada é hoje
+    expect(yearHeatmap(year, sp).some((m) => m.cells.some((c) => c.isToday))).toBe(false);
+  });
+
+  it('offset positivo (+60) e negativo: meia-noites locais consistentes (roundtrip ADR-002)', () => {
+    for (const off of [-180, 0, 60]) {
+      const range = userYearRange(new Date('2026-10-08T11:00:00Z'), off);
+      for (const c of yearHeatmap(range, off)[9]!.cells) {
+        // `start` é a meia-noite LOCAL do dateKey: as partes locais dele reproduzem o key
+        expect(c.date).toBe(localKey(c.start, off));
+        expect(c.end.getTime() - c.start.getTime()).toBe(86_400_000);
+      }
+    }
   });
 });

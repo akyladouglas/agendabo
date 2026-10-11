@@ -659,44 +659,40 @@ function onMonthDayClick(cell: MonthCellView): void {
   openDayFrom(cell.date);
 }
 
-// ---- Ano: 12 mini-meses com densidade por DIA (C.13, dayDensity) ----
+// ---- Ano: 12 mini-meses com densidade por DIA (spec visao-ano-heatmap, refina C.13) ----
+// As grades 7×6 vêm do schedule-core (`agenda.yearHeat` — ano civil da âncora), a
+// densidade de `dayDensity` sobre o range do ANO inteiro (query C1) e o conflito do
+// par determinístico (`conflictedIds`). Aqui só COMPOSIÇÃO (E.4): a página decide se a
+// célula tem bolinha, se é hoje/conflito/esmaecida; o YearGrid é burro.
 const yearMinis = computed<YearMiniView[]>(() => {
-  const minis: YearMiniView[] = [];
-  const year = agenda.year.value;
-  for (let m = 1; m <= 12; m++) {
-  // grade do mini-mês: a grade do Ano que tem o mês m como mês PRINCIPAL (dia do meio
-  // — índice 21, mesma definição de `monthCells`). Procurar por QUALQUER célula
-  // inMonth achava o trailing de m na grade de m−1 e dava leading errado.
-  const own = agenda.yearMonthCells.value.find(
-    (g) => Number(g[21]!.date.slice(5, 7)) === m,
-  );
-    const inMonth = own?.filter((c) => c.inMonth) ?? [];
-    const lead = own ? own.indexOf(inMonth[0]!) : 0;
-    const dens = agenda.density.value.get(m);
+  const ids = conflictIds.value;
+  return agenda.yearHeat.value.map((heat) => {
+    const dens = agenda.density.value.get(heat.month);
     const daySet = new Set(dens?.dayKeys ?? []);
-    const orderedKeys = [...daySet].sort();
-    const days: YearDayView[] = [];
-    for (let i = 0; i < lead; i++) days.push({ index: i, hasAppointment: false, isToday: false, dimmed: false });
-    inMonth.forEach((c, idx) => {
+    let dots = 0;
+    const days: YearDayView[] = heat.cells.map((c, index) => {
+      if (!c.inMonth) return { index, hasAppointment: false, isToday: false, hasConflict: false, dimmed: false };
       const has = daySet.has(c.date);
-      days.push({
-        index: lead + idx,
+      const hasConflict = has && (agenda.byDay.value.get(c.date) ?? []).some((i) => ids.has(i.id));
+      if (has) dots += 1;
+      return {
+        index,
         date: c.date,
         dayNumber: Number(c.date.slice(8, 10)),
         hasAppointment: has,
         isToday: c.isToday === true,
-        dimmed: has && orderedKeys.indexOf(c.date) >= 7, // esmaecimento além da 7ª bolinha
-      });
+        hasConflict,
+        dimmed: has && dots > 7, // esmaecimento além da 7ª bolinha do mês (C.13)
+      };
     });
-    minis.push({
-      month: m,
-      name: monthName(new Date(Date.UTC(year, m - 1, 15)), timezone.value, 'short'),
-      isCurrent: m === agenda.monthIndex.value,
+    return {
+      month: heat.month,
+      name: monthName(new Date(Date.UTC(agenda.year.value, heat.month - 1, 15)), timezone.value, 'short'),
+      isCurrent: heat.month === agenda.monthIndex.value,
       daysWithAppointments: dens?.daysWithAppointments ?? 0,
       days,
-    });
-  }
-  return minis;
+    };
+  });
 });
 
 // ---- menus ir-para (A.5) ----
