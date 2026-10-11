@@ -52,7 +52,7 @@
         v-for="block in props.blocks"
         :key="`${block.item.id}-${block.top}`"
         type="button"
-        class="od-move pointer-events-auto absolute flex flex-col gap-0.5 overflow-hidden rounded-md border bg-card p-1 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        class="od-move pointer-events-auto absolute flex flex-col gap-0.5 overflow-hidden rounded-md border border-l-[3px] bg-card/80 p-1 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         :class="[
           block.class,
           drag && drag.draggingId.value === block.item.id ? 'opacity-40' : '',

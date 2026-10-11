@@ -85,7 +85,7 @@
               v-for="block in day.blocks"
               :key="`${block.item.id}-${block.top}`"
               type="button"
-              class="od-move pointer-events-auto absolute flex flex-col gap-0.5 overflow-hidden rounded border bg-card p-0.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              class="od-move pointer-events-auto absolute flex flex-col gap-0.5 overflow-hidden rounded border border-l-[3px] bg-card/80 p-0.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               :class="[
                 block.class,
                 drag && drag.draggingId.value === block.item.id ? 'opacity-40' : '',

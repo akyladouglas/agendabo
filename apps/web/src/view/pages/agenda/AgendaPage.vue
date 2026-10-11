@@ -556,8 +556,12 @@ function blockView(slice: DaySlice<AppointmentDto>, b: SliceTimelineBlock): DayB
     conflictTitle: conflictTitle(item),
     ariaLabel: `${item.title}, ${time}${b.isPast ? ' (passado)' : ''}`,
     class: [
-      item.status === 'needs_review' ? 'border-l-2 border-l-warning' : 'border-border',
-      conflictTitle(item) ? 'border-danger/70 bg-danger/5' : 'hover:border-primary/50',
+      // faixa do dia: leve tingimento da cor primária (legível com o tema escuro);
+      // revisão marca pela BARRA ESQUERDA (não pelo fundo, pra não brigar com conflito)
+      item.status === 'needs_review' ? 'border-l-warning' : 'border-l-primary',
+      conflictTitle(item)
+        ? 'border-danger/70 bg-danger/10'
+        : 'hover:border-primary/60 hover:bg-primary/10',
       b.isPast ? 'opacity-60' : '',
     ].join(' '),
   };
