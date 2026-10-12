@@ -546,4 +546,45 @@ export const BOT_MESSAGES = {
 
   /** Spec B12 — limite de candidatas listadas no chat. */
   maxCandidatas: 5,
+
+  // ---------- Compartilhamento de agenda (spec compartilhamento-agenda-par E.24/E.25/A.9) ----------
+
+  /**
+   * E.25 — negação educada de escrita na agenda emprestada (determinística, o
+   * bot NUNCA abre a máquina de criar para agenda alheia). O `{nome}` é o nome
+   * dito pelo usuário; HTML escape fica com o caller (gotcha 6).
+   */
+  sharedWriteDenied: (nome: string) =>
+    `Só consigo marcar na sua própria agenda — a de ${nome} é somente leitura.`,
+
+  /**
+   * E.24 — cabeçalho da consulta compartilhada: mesma função do `consultaCabecalho`
+   * próprio, com a FONTE citada (o usuário tem que poder conferir de qual agenda é
+   * a lista). O `{periodo}` já vem formatado ("em 08/10"); o nome fica fora do
+   * parêntese para o escape ficar com o caller (gotcha 6).
+   */
+  consultaCabecalhoCompartilhada: (nome: string, periodo: string) =>
+    `Isto é o que ${nome} tem ${periodo}:`,
+
+  /** E.24 — alvo da consulta duvidoso (confiança baixa/parse falho do alvo): pergunta, nunca chuta. */
+  sharedQueryTargetQuestion:
+    'De qual agenda? (a sua ou qual compartilhada) 📅',
+
+  /** E.24 — régua 0: nome dito não casa com nenhum vínculo ativo recebido. */
+  sharedQueryNoAccess: "Você não tem essa agenda compartilhada.",
+
+  /**
+   * E.24 — régua N: lista numerada dos vínculos que casam com o nome dito
+   * ("1. X\n2. Y"). O caller monta as linhas; HTML escape fica com o caller.
+   */
+  sharedQueryTargetAmbiguous: (nomes: string) =>
+    `Encontrei mais de uma agenda compartilhada. De qual você quer falar? Responda com o número:\n${nomes}`,
+
+  /** A.9/A.3 — dono revogou: aviso leve SÓ para quem perdeu o acesso (sem conteúdo de compromisso). */
+  sharedAccessEnded: (ownerName: string) =>
+    `O acesso à agenda de ${ownerName} foi encerrado.`,
+
+  /** A.9/A.3 — convidado saiu: aviso leve SÓ para o dono. */
+  sharedGuestLeft: (guestName: string) =>
+    `${guestName} saiu do compartilhamento da sua agenda.`,
 } as const;

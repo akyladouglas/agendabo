@@ -95,6 +95,24 @@ function make() {
       .mockResolvedValue({ ok: false, reason: "unparseable" }),
   };
 
+  // gate E.25 (escrita emprestada): por padrão INJETADO com interpretador que NUNCA
+  // vê alvo compartilhado — os testes do gate sobrescrevem `consultaInterpreter` /
+  // `sharedAgendas`. O construtor aceita as deps novas opcionais no fim.
+  const consultaInterpreter = {
+    interpret: jest
+      .fn()
+      .mockResolvedValue({ ok: false, reason: "no_tool_use" }),
+  };
+  const sharedAgendas = {
+    activeIncomingLinks: jest.fn().mockResolvedValue([]),
+  };
+  const sharedAuditEvents: Record<string, unknown>[] = [];
+  const sharedAudit = {
+    registrar: jest.fn(async (actorId: string | null, kind: string, ctx: Record<string, unknown>) => {
+      sharedAuditEvents.push({ actorId, kind, ...ctx });
+    }),
+  };
+
   const svc = new SchedulingFlowService(
     access as never,
     classifier as never,
@@ -109,6 +127,10 @@ function make() {
     // bot_events (Fase 9): mock plano — este spec cobre o FLUXO, o registro e
     // assertado em scheduling-flow-events.spec.ts.
     { registrar: jest.fn().mockResolvedValue(undefined) } as never,
+    // gate de escrita emprestada (spec compartilhamento E.25/D7)
+    consultaInterpreter as never,
+    sharedAgendas as never,
+    sharedAudit as never,
   );
   // relogio do servico congelado (determinismo do atalho "hoje"/datas UTC)
   (svc as unknown as { now: () => Date }).now = () =>
@@ -124,6 +146,10 @@ function make() {
     schedulingInterpreter,
     editInterpreter,
     reminderInterpreter,
+    consultaInterpreter,
+    sharedAgendas,
+    sharedAudit,
+    sharedAuditEvents,
   };
 }
 
@@ -1685,5 +1711,194 @@ describe("SchedulingFlowService (bordas)", () => {
       "flow:lembrete:none",
       "flow:lembrete:custom",
     ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// gate E.25/D7 — negação determinística de escrita na agenda emprestada
+// ---------------------------------------------------------------------------
+
+const ANA_LINK = { id: "link-ana", ownerId: "dono-ana", ownerName: "Ana Souza" };
+
+/** Cria um harness cujo gate NEGA: interpret ler o alvo compartilhado + vnculo ativo. */
+function makeDeniedGate() {
+  const m = make();
+  m.classifier.classify.mockResolvedValue({ ok: true, intent: "criar", confidence: 0.9 });
+  m.consultaInterpreter.interpret.mockResolvedValue({
+    ok: true,
+    simbolo: "amanha",
+    confidence: 0.9,
+    alvo: "compartilhada",
+    alvo_nome: "Ana Souza",
+  });
+  m.sharedAgendas.activeIncomingLinks.mockResolvedValue([ANA_LINK]);
+  return m;
+}
+
+describe("SchedulingFlowService — gate de escrita emprestada (E.25/D7)", () => {
+  it('"Marca X na agenda da Ana Souza amanh": negao fixa, audit write_denied, e a MAQUINA NAO ABRE', async () => {
+    const m = makeDeniedGate();
+    await m.svc.handleText("111", "marca dentista na agenda da Ana Souza amanh");
+
+    // negao com o nome dito, escapada (aqui sem markup)
+    expect(m.sent).toContain("Só consigo marcar na sua própria agenda — a de Ana Souza é somente leitura.");
+    // a maquina NAO abriu
+    const internals = m.svc as unknown as { sessions: Map<string, unknown> };
+    expect(internals.sessions.get("111")).toBeUndefined();
+    // nenhuma criacao, nenhuma EXTRACAO do criar (o gate retorna antes do
+    // runExtraction). Obs.: `existingConfirmedFuture` roda em todo turno no
+    // `turn()` ANTES do roteamento — a carga de conflito em si nao e sinal do
+    // criar, entao nao a assertamos aqui.
+    expect(m.appointments.create).not.toHaveBeenCalled();
+    expect(m.schedulingInterpreter.interpretar).not.toHaveBeenCalled();
+    // F.4: write_denied (metadata vazia por contrato — o nome dito no vira audita)
+    expect(m.sharedAuditEvents).toHaveLength(1);
+    expect(m.sharedAuditEvents[0]).toMatchObject({
+      kind: "write_denied",
+      actorId: "u1",
+      ownerId: "dono-ana",
+      guestId: "u1",
+    });
+  });
+
+  it("nome dito que NAO casa vnculo ativo: criar abre normalmente (nada a negar)", async () => {
+    const m = makeDeniedGate();
+    m.sharedAgendas.activeIncomingLinks.mockResolvedValue([]);
+    await m.svc.handleText("111", "marca dentista na agenda da Carla amanh");
+    expect(m.sent.some((t) => t.includes("somente leitura"))).toBe(false);
+    const internals = m.svc as unknown as { sessions: Map<string, unknown> };
+    expect(internals.sessions.get("111")).toBeDefined(); // o criar abriu como hoje
+  });
+
+  it("0 vnculos recebidos (usuario sem compartilhamento): criar abre sem nem casar", async () => {
+    const m = make(); // sharedAgendas padro: links []
+    m.classifier.classify.mockResolvedValue({ ok: true, intent: "criar", confidence: 0.9 });
+    m.consultaInterpreter.interpret.mockResolvedValue({
+      ok: true,
+      simbolo: "amanha",
+      confidence: 0.9,
+      alvo: "compartilhada",
+      alvo_nome: "Ana",
+    });
+    await m.svc.handleText("111", "marca consulta na agenda da Ana amanh");
+    const internals = m.svc as unknown as { sessions: Map<string, unknown> };
+    expect(internals.sessions.get("111")).toBeDefined();
+    expect(m.sent.some((t) => t.includes("somente leitura"))).toBe(false);
+  });
+
+  it("fala SEM alvo ('marca consulta amanh'): criar abre normalmente — interpret chamado mas inerte", async () => {
+    const m = make();
+    m.classifier.classify.mockResolvedValue({ ok: true, intent: "criar", confidence: 0.9 });
+    m.consultaInterpreter.interpret.mockResolvedValue({
+      ok: true,
+      simbolo: "amanha",
+      confidence: 0.9,
+    });
+    m.sharedAgendas.activeIncomingLinks.mockResolvedValue([ANA_LINK]); // vnculo existe, mas a fala no o mira
+    await m.svc.handleText("111", "marca consulta amanh");
+    expect(m.sent.some((t) => t.includes("somente leitura"))).toBe(false);
+    expect(m.sharedAgendas.activeIncomingLinks).not.toHaveBeenCalled(); // nem le vinculo sem alvo
+    const internals = m.svc as unknown as { sessions: Map<string, unknown> };
+    expect(internals.sessions.get("111")).toBeDefined();
+  });
+
+  it("alvo compartilhado SEM nome na fala: duvidoso na escrita => criar abre (o gate NUNCA pergunta)", async () => {
+    const m = make();
+    m.classifier.classify.mockResolvedValue({ ok: true, intent: "criar", confidence: 0.9 });
+    m.consultaInterpreter.interpret.mockResolvedValue({
+      ok: true,
+      simbolo: "amanha",
+      confidence: 0.9,
+      alvo: "compartilhada",
+    });
+    m.sharedAgendas.activeIncomingLinks.mockResolvedValue([ANA_LINK]);
+    await m.svc.handleText("111", "marca consulta na agenda compartilhada amanh");
+    expect(m.sent.some((t) => t.includes("somente leitura"))).toBe(false);
+    expect(m.sent.some((t) => t.includes("De qual agenda?"))).toBe(false);
+    const internals = m.svc as unknown as { sessions: Map<string, unknown> };
+    expect(internals.sessions.get("111")).toBeDefined();
+  });
+
+  it("interpret falho (LLM fora do ar / confianca baixa): criar abre — falha de infra NUNCA nega", async () => {
+    const m = make();
+    m.classifier.classify.mockResolvedValue({ ok: true, intent: "criar", confidence: 0.9 });
+    m.consultaInterpreter.interpret.mockRejectedValue(new Error("timeout"));
+    m.sharedAgendas.activeIncomingLinks.mockResolvedValue([ANA_LINK]);
+    await m.svc.handleText("111", "marca dentista na agenda da Ana Souza amanh");
+    expect(m.sent.some((t) => t.includes("somente leitura"))).toBe(false);
+    expect(m.sharedAuditEvents).toHaveLength(0);
+    const internals = m.svc as unknown as { sessions: Map<string, unknown> };
+    expect(internals.sessions.get("111")).toBeDefined();
+  });
+
+  it("N matches ambiguo na escrita: abrir o criar (so 1 match nega — nunca pergunta qual)", async () => {
+    const m = make();
+    m.classifier.classify.mockResolvedValue({ ok: true, intent: "criar", confidence: 0.9 });
+    m.consultaInterpreter.interpret.mockResolvedValue({
+      ok: true,
+      simbolo: "amanha",
+      confidence: 0.9,
+      alvo: "compartilhada",
+      alvo_nome: "Ana Souza",
+    });
+    m.sharedAgendas.activeIncomingLinks.mockResolvedValue([
+      ANA_LINK,
+      { id: "link-ana2", ownerId: "dono-ana2", ownerName: "Ana Souza" },
+    ]);
+    await m.svc.handleText("111", "marca dentista na agenda da Ana Souza amanh");
+    expect(m.sent.some((t) => t.includes("somente leitura"))).toBe(false);
+    const internals = m.svc as unknown as { sessions: Map<string, unknown> };
+    expect(internals.sessions.get("111")).toBeDefined();
+  });
+
+  it("nome dito escapado no HTML (gotcha 6): `Ana <x>` nao vira markup", async () => {
+    const m = makeDeniedGate();
+    m.consultaInterpreter.interpret.mockResolvedValue({
+      ok: true,
+      simbolo: "amanha",
+      confidence: 0.9,
+      alvo: "compartilhada",
+      alvo_nome: "Ana <x>",
+    });
+    m.sharedAgendas.activeIncomingLinks.mockResolvedValue([
+      { id: "link-x", ownerId: "dono-x", ownerName: "Ana <x>" },
+    ]);
+    await m.svc.handleText("111", "marca X na agenda da Ana <x> amanh");
+    const denial = m.sent.find((t) => t.includes("somente leitura"));
+    expect(denial).toContain("Ana &lt;x&gt;");
+    expect(denial).not.toContain("<x>");
+  });
+
+  it("substituir_atual com alvo compartilhado: tbm negado antes de abrir", async () => {
+    const m = makeDeniedGate();
+    m.classifier.classify.mockResolvedValue({ ok: true, intent: "substituir_atual", confidence: 0.9 });
+    await m.svc.handleText("111", "marca dentista na agenda da Ana Souza amanh");
+    expect(m.sent.some((t) => t.includes("somente leitura"))).toBe(true);
+    const internals = m.svc as unknown as { sessions: Map<string, unknown> };
+    expect(internals.sessions.get("111")).toBeUndefined();
+  });
+
+  it("gate INERTE sem as deps (construtor antigo): criar abre — regresso zero estrutural", async () => {
+    const sent: string[] = [];
+    const legacy = new SchedulingFlowService(
+      { requireConfirmedUser: jest.fn().mockResolvedValue(USER) } as never,
+      { classify: jest.fn().mockResolvedValue({ ok: true, intent: "criar", confidence: 0.9 }) } as never,
+      { create: jest.fn().mockResolvedValue({ id: "a1" }) } as never,
+      { sendMessage: jest.fn(async (_id: string, text: string) => { sent.push(text); }) } as never,
+      { appointment: { findMany: jest.fn().mockResolvedValue([]), create: jest.fn().mockResolvedValue({ id: "nr" }) } } as never,
+      {
+        get: (key: keyof Env) =>
+          (({ MIN_CONFIDENCE_TO_ACCEPT: 0.7, BOT_SESSION_TTL_MINUTES: 30 }) as Partial<Record<keyof Env, unknown>>)[key],
+      } as unknown as ConfigService<Env, true>,
+      { run: jest.fn(), closePolitely: jest.fn(() => "") } as never,
+      { interpretar: jest.fn().mockResolvedValue({ ok: false, reason: "unparseable" }) } as never,
+      { interpretar: jest.fn().mockResolvedValue({ ok: false, reason: "no_tool_use" }) } as never,
+      { interpretar: jest.fn().mockResolvedValue({ ok: false, reason: "no_tool_use" }) } as never,
+      { registrar: jest.fn().mockResolvedValue(undefined) } as never,
+      // sem consultaInterpreter/sharedAgendas/sharedAudit
+    );
+    await legacy.handleText("111", "marca dentista na agenda da Ana amanh");
+    expect(sent.some((t) => t.includes("somente leitura"))).toBe(false);
+    expect(sent.length).toBeGreaterThan(0); // o criar respondeu normal
   });
 });

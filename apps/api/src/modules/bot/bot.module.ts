@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { AiModule } from '../ai/ai.module';
 import { AppointmentsModule } from '../appointments/appointments.module';
+import { SharedAgendasModule } from '../shared-agendas/shared-agendas.module';
 import { AgendaQueryService } from './agenda-query.service';
 import { BotAccessService } from './bot-access.service';
 import { BotGatewayService } from './bot-gateway.service';
@@ -16,7 +17,7 @@ import { SchedulingFlowService } from './scheduling-flow.service';
  * Fase 2: consulta de agenda sob demanda (AgendaQueryService, somente leitura).
  */
 @Module({
-  imports: [AiModule, AppointmentsModule, ObservabilidadeModule],
+  imports: [AiModule, AppointmentsModule, ObservabilidadeModule, SharedAgendasModule],
   providers: [
     BotAccessService,
     SchedulingFlowService,

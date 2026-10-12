@@ -33,6 +33,13 @@ import {
 } from "../ai/reminder-interpreter.service";
 import { SchedulingInterpreterService } from "../ai/scheduling-interpreter.service";
 import { AppointmentEditInterpreterService } from "../ai/appointment-edit-interpreter.service";
+import { ConsultaInterpreterService } from "../ai/consulta-interpreter.service";
+import {
+  SharedAgendasService,
+} from "../shared-agendas/shared-agendas.service";
+import {
+  SharedAgendaAuditService,
+} from "../shared-agendas/shared-agenda-audit.service";
 import {
   AgendaQueryService,
   AGENDA_QUERY_MAX_PERIOD_PROMPTS,
@@ -43,6 +50,7 @@ import {
   resolveSimboloRange,
   type SimboloConsulta,
 } from "./agenda-query";
+import { resolveSharedTarget } from "./resolve-shared-target";
 import {
   SchedulingFlowMachine,
   type BotReply,
@@ -176,6 +184,16 @@ export class SchedulingFlowService {
      * proprio registrador e best-effort (jamais lanca).
      */
     private readonly botEvents: BotEventsService,
+    /**
+     * Gate de escrita emprestada (spec compartilhamento E.25, decisao D7): o
+     * interpretador de consulta reusado so para LER o alvo na intent `criar`;
+     * os vinculos e a auditoria `write_denied` vem do shared-agendas. Todos
+     * opcionais defensivamente (mocks antigos): sem eles o gate e inerte —
+     * regressao zero, o criar abre como sempre.
+     */
+    private readonly consultaInterpreter?: ConsultaInterpreterService,
+    private readonly sharedAgendas?: SharedAgendasService,
+    private readonly sharedAudit?: SharedAgendaAuditService,
   ) {
     this.ttlMs =
       this.config.get("BOT_SESSION_TTL_MINUTES", { infer: true }) * 60_000; // decisao D2 do plano (30 min)
@@ -1282,6 +1300,14 @@ export class SchedulingFlowService {
       }
       case "criar":
       case "substituir_atual": {
+        // E.25/D7 — gate de escrita na agenda EMPRESTADA, ANTES de qualquer carga
+        // de conflito/extração/openFlow: "Marca X na agenda da Fulano" ⇒ negação
+        // fixa + audit `write_denied`, SEM abrir a máquina. A decisão de negar é
+        // determinística (vínculo ativo casa o nome dito); o LLM só extraiu o
+        // candidato. Sem alvo / alvo 'minha' / sem nome / falha do interpret ⇒
+        // o criar segue o caminho exato de hoje (regressão zero — o gate nega,
+        // nunca adiciona passo nem pergunta "de qual agenda?").
+        if (await this.deniesSharedWrite(user, text, now)) return;
         // Fase 4 (spec regra 8): o criar abre no portão do atalho SOMENTE se a fala solta
         // trouxer um candidato (extração livre + régua). Sem candidato, o criar abre no
         // guiado clássico perguntando o título (spec A5/Fase 1: a fala de intenção que
@@ -1364,6 +1390,71 @@ export class SchedulingFlowService {
       default: {
         await this.telegram.sendMessage(telegramId, BOT_MESSAGES.fallback);
       }
+    }
+  }
+
+  /**
+   * Gate E.25/D7 (negação de escrita na agenda emprestada). Retorna `true` quando
+   * a fala foi NEGOUDA (mensagem fixa enviada + audit `write_denied`) — o criar
+   * NÃO abre. Negar exige TUDO (AND determinístico):
+   *  1. o interpretador (reusado, 1 chamada haiku, só na intent JÁ classificada
+   *     `criar`) trouxe interpretação BEM-SUCEDIDA com `alvo === 'compartilhada'`
+   *     E `alvo_nome` extraído (confiança global ok — low_confidence cai em `ok:false`);
+   *  2. o nome dito casa com UM vínculo recebido ATIVO do usuário (mesma pura
+   *     `resolveSharedTarget` da consulta — régua 1/N: só 1 match nega; N é
+   *     exótico na escrita e abre o criar como hoje; 0 = o usuário citou alguém
+   *     sem vínculo, nada a negar — a agenda "da Fulano" nem existe p/ ele).
+   * Qualquer falha (sem deps injetadas, LLM fora do ar, parse, sem alvo) ⇒
+   * `false`: o criar abre normalmente. Falha de infraestrutura NUNCA nega.
+   */
+  private async deniesSharedWrite(
+    user: BotUser,
+    text: string,
+    now: Date,
+  ): Promise<boolean> {
+    if (!this.consultaInterpreter || !this.sharedAgendas) return false;
+    try {
+      const todayLocal = new Intl.DateTimeFormat("pt-BR", {
+        timeZone: user.timezone,
+        weekday: "long",
+        day: "numeric",
+        month: "long",
+        year: "numeric",
+      }).format(now);
+      const interpreted = await this.consultaInterpreter.interpret(
+        text,
+        { todayLocal },
+        { userId: user.id },
+      );
+      if (!interpreted.ok) return false;
+      if (interpreted.alvo !== "compartilhada") return false;
+      const alvoNome = interpreted.alvo_nome?.trim();
+      if (!alvoNome) return false; // duvidoso na escrita: abre o criar (o gate não pergunta)
+
+      const links = await this.sharedAgendas.activeIncomingLinks(user.id, now);
+      const target = resolveSharedTarget("compartilhada", alvoNome, links);
+      if (target.kind !== "single") return false;
+
+      await this.telegram.sendMessage(
+        user.telegramId,
+        escapeHtml(BOT_MESSAGES.sharedWriteDenied(alvoNome)),
+      );
+      this.logger.log(
+        `bot: escrita em agenda emprestada negada p/ ${user.id} (gate E.25)`,
+      );
+      // F.4: `write_denied` — metadata {} (zod strict): o nome DITO nunca vira
+      // conteúdo de auditoria; o par dono/convidado basta.
+      await this.sharedAudit?.registrar(user.id, "write_denied", {
+        ownerId: target.link.ownerId,
+        guestId: user.id,
+      });
+      return true;
+    } catch (err) {
+      // belt-and-suspenders: o gate é aditivo — nunca pode quebrar o criar.
+      this.logger.warn(
+        `bot: gate de escrita emprestada falhou p/ ${user.id} (seguindo o criar): ${String(err)}`,
+      );
+      return false;
     }
   }
 
