@@ -9,8 +9,15 @@ import {
 import { BOT_MESSAGES, escapeHtml } from '../bot/messages';
 import { TelegramClientService } from '../../shared/telegram/telegram-client.service';
 import { PrismaService } from '../../shared/prisma/prisma.service';
+import { SharedAgendasService } from '../shared-agendas/shared-agendas.service';
+import { SharedAgendaAuditService } from '../shared-agendas/shared-agenda-audit.service';
 import type { Env } from '../../config/env.validation';
-import { buildDigestBody, digestHeaderPtBr, greetingPtBr } from './digest';
+import {
+  buildDigestBody,
+  digestHeaderPtBr,
+  greetingPtBr,
+  type DigestSharedSection,
+} from './digest';
 import type { DispatchJobData } from './outbox.service';
 
 /**
@@ -103,6 +110,14 @@ export class DispatchService {
     private readonly prisma: PrismaService,
     private readonly telegram: TelegramClientService,
     private readonly config: ConfigService<Env, true>,
+    /**
+     * Digest com seções compartilhadas (spec E.23, decisão D8): vínculos recebidos
+     * ativos + auditoria best-effort `shared_section_built`. Opcional defensivamente
+     * (o mock do worker-entry de testes pode não passar): sem ele, o corpo é o de
+     * hoje (zero regressão — nunca se consulta vínculo nenhum).
+     */
+    private readonly sharedAgendas?: SharedAgendasService,
+    private readonly sharedAudit?: SharedAgendaAuditService,
   ) {}
 
   /** Relógio da borda (testes congelam — testing.md; dispatch recebe `now` do caller). */
@@ -245,6 +260,15 @@ export class DispatchService {
    * (linhas `pending`/`reminder` com `firesAt` no dia civil, de compromisso de qualquer
    * data — decisão #6). `needs_review` não aparece; dia vazio dos dois
    * = "☀️ Hoje você está livre!" (decisão #5).
+   *
+   * E.23/D8: com vínculos recebidos ATIVOS, o corpo ganha uma seção "🤝 Agenda de
+   * ‹dono›:" por vínculo — os `confirmed` do dono que TOCAM o DIA CIVIL DO
+   * CONVIDADO (interseção half-open, mesma semântica da agenda emprestada
+   * C.19/B.19; o dono pode estar em outro fuso). A
+   * materialização/idempotência do outbox NÃO muda (1 linha usuário/dia — ADR-009),
+   * só o corpo. `needs_review` do dono nunca entra (where status confirmed).
+   * Audit `shared_section_built` best-effort SOMENTE quando há seção (metadata =
+   * apenas a QUANTIDADE de itens da seção — F.4, nunca conteúdo).
    */
   private async buildDigestText(
     userId: string,
@@ -270,6 +294,7 @@ export class DispatchService {
       }),
     ]);
     const today = appointmentsOnUserDay(appointments, timezone, now, () => offset * 60_000);
+    const sharedSections = await this.buildSharedSections(userId, timezone, now, offset);
     return escapeHtml(
       buildDigestBody({
         now,
@@ -283,8 +308,92 @@ export class DispatchService {
         greeting: greetingPtBr(now, offset, name),
         dueHeader: BOT_MESSAGES.resumoVencendoHoje,
         diaLivreText: BOT_MESSAGES.resumoDiaLivre,
+        ...(sharedSections.length > 0 ? { sharedSections } : {}),
       }),
     );
+  }
+
+  /**
+   * Seções compartilhadas do digest (E.23): um bloco por vínculo recebido ATIVO,
+   * com os `confirmed` do dono cujo período TOCA o dia civil do CONVIDADO —
+   * INTERSEÇÃO half-open (`startsAt < day.end AND endsAt >= day.start`, mesma
+   * semântica da agenda emprestada B.19/listOverlapping). O dia civil do
+   * convidado nasce da borda `userDayRange(now, offset)` do próprio convidado
+   * (E.23 + C.19/B.19 — o dono pode estar em outro fuso; conteúdo do dia civil
+   * do CONVIDADO, consulta interseccional). Compromisso do dono 23:00→01:00
+   * APARECE na seção do dia que ele toca, não só no da largada. Dono sem nome
+   * não gera seção (o cabeçalho "Agenda de ‹nome›" não tem como existir e o
+   * e-mail do dono não vaza para o bot). Falha da carga compartilhada NUNCA
+   * derruba o digest próprio: log + corpo sem seções (a seção é enfeite, o
+   * resumo é o compromisso do dono da conta).
+   * M6: uma ÚNICA consulta `userId in (donos)` + agrupamento em memória e as
+   * auditorias depois do loop (Promise.all) — sem N+1 sequencial por vínculo.
+   */
+  private async buildSharedSections(
+    userId: string,
+    timezone: string,
+    now: Date,
+    offset: number,
+  ): Promise<DigestSharedSection[]> {
+    void timezone; // o corte fino é a interseção no `day` da borda (E.23) — sem segunda régua
+    if (!this.sharedAgendas) return [];
+    try {
+      const links = await this.sharedAgendas.activeIncomingLinks(userId, now);
+      const named = links.filter((l) => l.ownerName !== null); // sem rótulo: pula (nunca e-mail)
+      if (named.length === 0) return [];
+      const day = userDayRange(now, offset);
+      // M6: uma consulta para TODOS os donos (mesmo WHERE da leitura emprestada
+      // B.13: status confirmed fixo + interseção com o dia do convidado).
+      const ownerIds = [...new Set(named.map((l) => l.ownerId))];
+      type SharedRow = { id: string; title: string; startsAt: Date; endsAt: Date };
+      const rows = (await this.prisma.appointment.findMany({
+        where: {
+          userId: { in: ownerIds },
+          status: 'confirmed',
+          // INTERSEÇÃO half-open com o dia civil do CONVIDADO (M5/B.19): um
+          // compromisso 23:00→01:00 TOCA os dois dias e deve aparecer em ambos.
+          startsAt: { lt: day.end },
+          endsAt: { gte: day.start },
+        },
+        orderBy: { startsAt: 'asc' },
+        select: { id: true, title: true, startsAt: true, endsAt: true, userId: true },
+      })) as (SharedRow & { userId: string })[];
+      const byOwner = new Map<string, SharedRow[]>();
+      for (const r of rows) {
+        // M6: o `userId` só existe para o agrupamento — a seção carrega o
+        // subconjunto do digest (id/título/início/fim), nada além.
+        const item: SharedRow = { id: r.id, title: r.title, startsAt: r.startsAt, endsAt: r.endsAt };
+        const bucket = byOwner.get(r.userId);
+        if (bucket) bucket.push(item);
+        else byOwner.set(r.userId, [item]);
+      }
+      const sections: DigestSharedSection[] = [];
+      const builtLinks: { ownerId: string }[] = [];
+      for (const link of named) {
+        const items = byOwner.get(link.ownerId) ?? [];
+        if (items.length === 0) continue; // dia do dono vazio no dia do convidado: sem seção
+        sections.push({ ownerName: link.ownerName as string, items });
+        builtLinks.push({ ownerId: link.ownerId });
+      }
+      // F.4: `shared_section_built` só quando há seção; metadata = contagem da
+      // seção. M6: fora do loop, em paralelo (o auditor é nunca-lança — a ordem
+      // de chegada não é contrato; a pareia por índice mantém os donos certos).
+      if (sections.length > 0 && this.sharedAudit) {
+        await Promise.all(
+          sections.map((section, i) =>
+            this.sharedAudit!.registrar(userId, 'shared_section_built', {
+              ownerId: builtLinks[i]!.ownerId,
+              guestId: userId,
+              metadata: { count: section.items.length },
+            }),
+          ),
+        );
+      }
+      return sections;
+    } catch (err) {
+      this.logger.warn(`digest: seção compartilhada falhou p/ ${userId}: ${String(err)}`);
+      return [];
+    }
   }
 
   private noop(job: DispatchJobData, reason: 'not_pending' | 'not_found'): DispatchResult {

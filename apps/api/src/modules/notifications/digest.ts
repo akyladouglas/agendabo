@@ -64,11 +64,32 @@ export function digestHeaderPtBr(now: Date, offsetMinutes: number): string {
   return `📋 Resumo de ${weekday}, ${pad(p.day)}/${pad(p.month)}`;
 }
 
+/** Seção compartilhada do digest (spec compartilhamento E.23, decisão D8): os
+ *  `confirmed` de UM dono já filtrados no dia civil do CONVIDADO por quem chama;
+ *  o formato reusa o `formatTimeRange` com o offsetMinutes do convidado. */
+export interface DigestSharedSection {
+  ownerName: string;
+  items: DigestAppointment[];
+}
+
+/**
+ * Cabeçalho da seção compartilhada ("🤝 Agenda de Fulano:") — pura, para o dispatch
+ * e o teste usarem a MESMA string que o corpo monta (zero divergência).
+ */
+export function digestSharedHeaderPtBr(ownerName: string): string {
+  return `🤝 Agenda de ${ownerName}:`;
+}
+
 /**
  * Mensagem do resumo diário (decisões #5 e #6 da spec): compromissos do dia civil
  * do usuário (`appointmentsOnUserDay` — filtrado acontece ANTES, aqui só formata),
  * seção de lembretes que vencem hoje (firesAt no dia civil, de compromisso de
  * qualquer data) e o "dia livre" quando não há nada.
+ *
+ * `sharedSections` (E.23): uma seção "🤝 Agenda de ‹dono›:" por agenda compartilhada
+ * recebida ativa, com os horários no fuso LOCAL DO CONVIDADO (o mesmo `offsetMinutes`
+ * do input). AUSENTE/vazia = corpo byte a byte como hoje (zero regressão); com seções,
+ * o dia é livre apenas quando também não há nenhuma seção com itens.
  *
  * Retorna `null` quando `digestDueToday` vieram pré-filtrados? Não: quem chama filtra
  * com `userDayRange`; aqui o dia vazio dos DOIS listas => `diaLivreText`.
@@ -83,9 +104,14 @@ export function buildDigestBody(input: {
   diaLivreText: string;
   /** Saudação opcional antes do cabeçalho ("Bom dia, Ana!" — decisão 7, Fase 5). */
   greeting?: string;
+  /** Seções por agenda compartilhada recebida ativa (E.23; ausente = corpo de hoje). */
+  sharedSections?: DigestSharedSection[];
 }): string {
   const { now, offsetMinutes, today, dueReminders } = input;
-  if (today.length === 0 && dueReminders.length === 0) return input.diaLivreText;
+  const shared = (input.sharedSections ?? []).filter((s) => s.items.length > 0);
+  if (today.length === 0 && dueReminders.length === 0 && shared.length === 0) {
+    return input.diaLivreText;
+  }
 
   const day = userDayRange(now, offsetMinutes);
   const lines: string[] = [];
@@ -96,8 +122,19 @@ export function buildDigestBody(input: {
       `• ${dmy(a.startsAt, offsetMinutes)} ${formatTimeRange(a.startsAt, a.endsAt, offsetMinutes)} — ${a.title}`,
     );
   }
+  // seções compartilhadas (E.23): depois dos itens próprios, na ordem recebida;
+  // horário no fuso do convidado (offsetMinutes do input — ADR-002).
+  for (const section of shared) {
+    if (lines[lines.length - 1] !== '') lines.push('');
+    lines.push(`🤝 Agenda de ${section.ownerName}:`);
+    for (const a of section.items) {
+      lines.push(
+        `• ${dmy(a.startsAt, offsetMinutes)} ${formatTimeRange(a.startsAt, a.endsAt, offsetMinutes)} — ${a.title}`,
+      );
+    }
+  }
   if (dueReminders.length > 0) {
-    if (today.length > 0) lines.push('');
+    if (lines[lines.length - 1] !== '') lines.push('');
     lines.push(input.dueHeader);
     for (const r of dueReminders) {
       const firesToday =
