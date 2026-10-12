@@ -183,6 +183,13 @@ const onSubmit = handleSubmit(async (vals) => {
       await router.push({ name: 'confirm' });
       return;
     }
+    // 5xx = pane do SERVIDOR: mostrar a mensagem crua do Prisma/Nest ("Internal
+    // server error") assusta e mente sobre credencial. Mensal genérica + logged.
+    const status = ax.response?.status;
+    if (status && status >= 500) {
+      toast.error('Não foi possível entrar agora. Tente novamente em instantes.');
+      return;
+    }
     toast.error(ax.response?.data?.message ?? 'E-mail ou senha inválidos.');
   } finally {
     submitting.value = false;

@@ -35,6 +35,9 @@ ENV NODE_ENV=production
 COPY --from=build /app /app
 RUN pnpm prune --prod
 EXPOSE 3001
-# O Coolify 4.4.1 nao permite override de comando por servico — o processo e
-# escolhido pela env PROCESS_TYPE (api = default | bot | worker).
-CMD ["sh", "-c", "case \"${PROCESS_TYPE:-api}\" in bot) exec node apps/api/dist/bot-main.js ;; worker) exec node apps/api/dist/workers/notifications-worker.js ;; *) exec node apps/api/dist/main.js ;; esac"]
+# A api roda `prisma migrate deploy` no boot: o Coolify 4.4.1 nao tem Start
+# Command por servico (o CMD abaixo nao roda migrate), e migration esquecida
+# quebra login/refresh em producao (cols novas). Idempotente e barato; a plan
+# (lock) protege de corrida api+worker subindo juntos. `|| true` NAO: se a
+# migration falhar, melhor o container reiniciar e o log gritar.
+CMD ["sh", "-c", "case \"${PROCESS_TYPE:-api}\" in bot) exec node apps/api/dist/bot-main.js ;; worker) exec node apps/api/dist/workers/notifications-worker.js ;; *) cd apps/api && npx prisma migrate deploy && cd /app && exec node apps/api/dist/main.js ;; esac"]
