@@ -53,12 +53,13 @@
             class="relative border-b border-border/60 last:border-b-0"
             :data-testid="`week-cell-${day.date}-${hour}`"
           >
-            <button
-              type="button"
+            <component
+              :is="props.readOnly ? 'div' : 'button'"
+              :type="props.readOnly ? undefined : 'button'"
               class="od-move relative block h-8 w-full text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
               :class="(day.nowCell ?? 24) > Number(hour) ? 'opacity-60' : ''"
-              :aria-label="`Criar ${hour}:00 de ${day.heading.weekday} ${day.heading.label}`"
-              @click="emit('cellClick', day.date, hour)"
+              :aria-label="day.createHint ? day.createHint(hour) : `${hour}:00 de ${day.heading.weekday} ${day.heading.label}`"
+              @click="props.readOnly ? undefined : emit('cellClick', day.date, hour)"
             >
               <span
                 v-if="hour === day.rulerHour"
@@ -71,7 +72,7 @@
               >
                 {{ hour }}
               </span>
-            </button>
+            </component>
           </div>
 
           <!-- OVERLAY dos blocos posicionados em % (top/height/left/width prontos
@@ -99,7 +100,7 @@
               :title="block.conflictTitle ?? block.item.title"
               :aria-label="block.ariaLabel"
               :data-testid="`week-item-${block.item.id}`"
-              :data-conflicted="block.conflictTitle ? 'true' : undefined"
+              :data-conflicted="!props.readOnly && block.conflictTitle ? 'true' : undefined"
               v-bind="drag ? drag.bind(block.item) : {}"
               @click.stop="emit('itemClick', block.item)"
             >
@@ -135,8 +136,8 @@
  * abrir o compromisso. <md: as colunas rolam na horizontal (scroll contido, R.16).
  */
 import { AlertTriangle } from 'lucide-vue-next';
-import type { AppointmentDto } from '@agendabo/contracts';
 import type { DragBindApi } from '@/app/composables/useDragAppointment';
+import type { AgendaItem } from '@/app/composables/useAgendaPage.composable';
 import type { DayBlockView } from './DayGrid.vue';
 
 /** Linhas fixas da grade (uma por hora local — 00..23). */
@@ -156,18 +157,26 @@ export interface WeekDayView {
   rulerHour: string | null;
   /** Índice da célula-hora que contém o AGORA (linhas antes dele = esmaecidas). */
   nowCell: number | null;
+  /**
+   * aria-label de criação da célula-vazia (hora "HH" → texto), pronto. Nulo =
+   * célula NÃO é convite a criar (agenda emprestada — C.18). A view é burra:
+   * só usa o texto; a página decide quando existe.
+   */
+  createHint?: ((hour: string) => string) | null;
 }
 
 const props = defineProps<{
   days: WeekDayView[];
   /** Mecânica de drag da página (bind + primitivos) — ausente = grade sem drag. */
-  drag?: DragBindApi<AppointmentDto> | null;
+  drag?: DragBindApi<AgendaItem> | null;
+  /** C.18: agenda emprestada — célula vazia não cria (ver `createHint`). */
+  readOnly?: boolean;
 }>();
 
 const emit = defineEmits<{
   dayClick: [dateKey: string];
   /** Célula vazia (dia, hora "HH") → criar NAQUELE dia+hora. */
   cellClick: [dateKey: string, hour: string];
-  itemClick: [item: AppointmentDto];
+  itemClick: [item: AgendaItem];
 }>();
 </script>

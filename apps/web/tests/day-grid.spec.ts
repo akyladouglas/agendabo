@@ -24,6 +24,20 @@ vi.mock('vue-sonner', () => ({
 vi.mock('../src/app/composables/queries/useReview.query', () => ({
   useReviewQuery: () => ({ data: { value: undefined } }),
 }));
+// compartilhamento (etapa 5): o AgendaPage consulta AGENDAS RECEBIDAS sempre
+// (selector só aparece com ≥1 ativa). Cena padrão: zero links → comportamento
+// idêntico ao pré-feature (A5). Lista/audit/convite têm cena própria por teste.
+const sharedList = vi.fn(async () => ({ sent: [], received: [] }));
+vi.mock('../src/app/services/shared-agendas', () => ({
+  sharedAgendasApi: {
+    list: () => sharedList(),
+    invite: vi.fn(async () => undefined),
+    revoke: vi.fn(async () => undefined),
+    accept: vi.fn(async () => undefined),
+    decline: vi.fn(async () => undefined),
+    audit: vi.fn(async () => ({ items: [], nextCursor: null })),
+  },
+}));
 
 const TZ = 'America/Sao_Paulo';
 /** agora fixo: qui 08/10/2026 09:00 SP (testing.md — datas fixas). */

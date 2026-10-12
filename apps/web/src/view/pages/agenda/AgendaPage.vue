@@ -1,12 +1,27 @@
 <template>
   <AppLayout>
     <div class="flex flex-col gap-4">
-      <!-- cabeçalho: título + novo -->
+      <!-- cabeçalho: título + subtítulo da fonte + novo -->
       <div class="flex flex-wrap items-center justify-between gap-3">
-        <h1 class="title-page">
-          Agenda
-        </h1>
-        <AppButton @click="openForm">
+        <div class="min-w-0">
+          <h1 class="title-page">
+            Agenda
+          </h1>
+          <!-- F.7/C.18: indicador TEXTUAL da fonte emprestada (nunca só cor) -->
+          <p
+            v-if="agenda.readonly.value"
+            class="text-sm text-muted-foreground"
+            data-testid="agenda-source-subtitle"
+          >
+            Vendo a agenda de {{ agendaOwnerLabel }} · somente leitura
+          </p>
+        </div>
+        <!-- C.18: na emprestada o "Novo" NÃO existe (read-only estrutural) -->
+        <AppButton
+          v-if="!agenda.readonly.value"
+          data-testid="agenda-new"
+          @click="openForm"
+        >
           <Plus
             class="h-4 w-4"
             aria-hidden="true"
@@ -15,7 +30,8 @@
         </AppButton>
       </div>
 
-      <!-- navegação: abas (Dia|Semana|Mês|Ano) + ← hoje → + ir-para (A.1–A.5) -->
+      <!-- navegação: abas (Dia|Semana|Mês|Ano) + ← hoje → + ir-para (A.1–A.5) +
+           seletor de FONTE (só com vínculo recebido ativo — A5) -->
       <AgendaNav
         :view="agenda.view.value"
         :year="agenda.year.value"
@@ -23,7 +39,11 @@
         :year-options="yearOptions"
         :month-options="monthOptions"
         :is-today="anchorKey === agenda.todayKey.value"
+        :source="sourceValue"
+        :source-options="sourceOptions"
+        :show-source="showSourceSelector"
         @update:view="agenda.setView($event)"
+        @update:source="onSourceChange"
         @shift="agenda.shift($event)"
         @today="agenda.goToday()"
         @jump-year="agenda.goToYear($event)"
@@ -128,10 +148,12 @@
         class="flex flex-col gap-4"
         data-testid="day-body"
       >
+        <!-- F.7/C.18: estado vazio da agenda emprestada (nunca "crie aqui") -->
         <p
           v-if="isEmpty"
           class="text-sm text-muted-foreground"
           role="status"
+          data-testid="shared-empty"
         >
           {{ emptyText }}
         </p>
@@ -139,7 +161,8 @@
           :slots="daySlots"
           :blocks="dayBlocksView"
           :day-label="headingText"
-          :drag="agendaDrag.drag"
+          :drag="agenda.readonly.value ? null : agendaDrag.drag"
+          :read-only="agenda.readonly.value"
           @slot-click="onDaySlotClick"
           @block-click="openDetails"
         />
@@ -160,7 +183,7 @@
                 conflictTitle(item) ? 'border-danger/70' : '',
               ]"
               :title="conflictTitle(item) ?? undefined"
-              :data-conflicted="conflictTitle(item) ? 'true' : undefined"
+              :data-conflicted="ownAgenda && conflictTitle(item) ? 'true' : undefined"
               @click="openDetails(item)"
             >
               <span
@@ -176,21 +199,32 @@
                   {{ item.title }}
                 </span>
                 <span class="mt-1 flex flex-wrap items-center gap-1.5">
+                  <!-- A2/C.20: na emprestada o marcador é TEXTUAL ("de ‹dono›");
+                       os badges de revisão/conflito só pintam na agenda própria
+                       (ownAgenda fecha o tipo: item emprestado nem TEM `origin`) -->
                   <AppBadge
-                    v-if="item.status === 'needs_review'"
-                    tone="warning"
+                    v-if="!ownAgenda"
+                    tone="info"
                   >
-                    pendente de revisão
+                    de {{ agendaOwnerLabel }}
                   </AppBadge>
-                  <AppBadge
-                    v-if="conflictTitle(item)"
-                    tone="danger"
-                  >
-                    ⚠ {{ conflictTitle(item) }}
-                  </AppBadge>
-                  <AppBadge :tone="item.origin === 'bot' ? 'info' : 'success'">
-                    via {{ item.origin }}
-                  </AppBadge>
+                  <template v-if="ownAgenda">
+                    <AppBadge
+                      v-if="asOwn(item).status === 'needs_review'"
+                      tone="warning"
+                    >
+                      pendente de revisão
+                    </AppBadge>
+                    <AppBadge
+                      v-if="conflictTitle(item)"
+                      tone="danger"
+                    >
+                      ⚠ {{ conflictTitle(item) }}
+                    </AppBadge>
+                    <AppBadge :tone="asOwn(item).origin === 'bot' ? 'info' : 'success'">
+                      via {{ asOwn(item).origin }}
+                    </AppBadge>
+                  </template>
                   <span class="text-xs text-muted-foreground">{{ formatRange(item) }}</span>
                 </span>
               </span>
@@ -212,7 +246,8 @@
         </p>
         <WeekGrid
           :days="weekDays"
-          :drag="agendaDrag.drag"
+          :drag="agenda.readonly.value ? null : agendaDrag.drag"
+          :read-only="agenda.readonly.value"
           @day-click="openDayFrom"
           @cell-click="onWeekCellClick"
           @item-click="openDetails"
@@ -234,7 +269,8 @@
           :cells="monthCellsView"
           :month-name="agenda.monthLabel.value.name"
           :anchor-key="anchorKey"
-          :drag="agendaDrag.drag"
+          :drag="agenda.readonly.value ? null : agendaDrag.drag"
+          :read-only="agenda.readonly.value"
           @day-click="onMonthDayClick"
           @item-click="openDetails"
         />
@@ -273,14 +309,31 @@
       @saved="onModalSaved"
     />
 
-    <!-- detalhes + excluir em 2 passos (A.6/A.7) -->
+    <!-- detalhes + excluir em 2 passos (A.6/A.7); na emprestada o painel é
+         SOMENTE-LEITURA (C.18): sem Excluir/Editar, com marcador textual do dono -->
     <AppDialog
       :open="detailsItem !== null"
-      :title="confirmDelete ? 'Excluir compromisso?' : (detailsItem?.title ?? '')"
+      :title="
+        confirmDelete
+          ? 'Excluir compromisso?'
+          : (detailsItem ? detailsTitle(detailsItem) : '')
+      "
       @update:open="detailsItem = $event ? detailsItem : null"
     >
       <template v-if="detailsItem && !confirmDelete">
         <dl class="flex flex-col gap-3 text-sm">
+          <!-- C.20: quem é o dono do que se vê (marcação textual, não só cor) -->
+          <div v-if="!ownAgenda">
+            <dt class="text-muted-foreground">
+              Dono
+            </dt>
+            <dd
+              class="font-medium text-foreground"
+              data-testid="details-owner"
+            >
+              de {{ agendaOwnerLabel }}
+            </dd>
+          </div>
           <div>
             <dt class="text-muted-foreground">
               Quando
@@ -289,8 +342,8 @@
                  12/10 17:00" vira "qui 08/10 14:00 → seg 12/10 17:00" (formato do
                  bug: o usuário precisa LER "termina segunda 17:00"). -->
             <dd class="font-medium text-foreground">
-              {{ formatDateTimeInTz(detailsItem.startsAt, timezone) }} →
-              {{ formatDateTimeInTz(detailsItem.endsAt, timezone) }}
+              {{ formatDateTimeInTz(detailsStart(detailsItem), timezone) }} →
+              {{ formatDateTimeInTz(detailsEnd(detailsItem), timezone) }}
             </dd>
           </div>
           <div v-if="detailsItem.notes">
@@ -301,29 +354,51 @@
               {{ detailsItem.notes }}
             </dd>
           </div>
-          <div class="flex flex-wrap gap-1.5">
+          <div
+            v-if="ownAgenda"
+            class="flex flex-wrap gap-1.5"
+          >
             <AppBadge
-              v-if="detailsItem.status === 'needs_review'"
+              v-if="detailsOwn(detailsItem).status === 'needs_review'"
               tone="warning"
             >
               pendente de revisão
             </AppBadge>
-            <AppBadge :tone="detailsItem.origin === 'bot' ? 'info' : 'success'">
-              via {{ detailsItem.origin }}
+            <AppBadge :tone="detailsOwn(detailsItem).origin === 'bot' ? 'info' : 'success'">
+              via {{ detailsOwn(detailsItem).origin }}
             </AppBadge>
           </div>
+          <p
+            v-else
+            class="text-xs text-muted-foreground"
+            data-testid="details-readonly-note"
+          >
+            Somente leitura — esta agenda pertence a {{ agendaOwnerLabel }}.
+          </p>
         </dl>
       </template>
       <p
-        v-else-if="detailsItem"
+        v-else-if="detailsItem && ownAgenda"
         class="text-sm text-foreground"
       >
-        Excluir “{{ detailsItem.title }}”? Os lembretes dele somem junto.
+        Excluir “{{ detailsOwn(detailsItem).title }}”? Os lembretes dele somem junto.
       </p>
 
       <template #footer>
+        <!-- emprestada: painel somente-leitura — só "Fechar" (C.18) -->
         <div
-          v-if="!confirmDelete"
+          v-if="agenda.readonly.value"
+          class="flex flex-wrap justify-end gap-2"
+        >
+          <AppButton
+            variant="outline"
+            @click="closeDetails"
+          >
+            Fechar
+          </AppButton>
+        </div>
+        <div
+          v-else-if="!confirmDelete"
           class="flex flex-wrap justify-end gap-2"
         >
           <AppButton
@@ -373,7 +448,7 @@
  * ZERO cálculo de data/conflito neste arquivo (spec calendario-visoes E.4/E.5).
  * Dia = lista vigente (C.11); Revisão intocada.
  */
-import { computed, ref } from 'vue';
+import { computed, ref, watch } from 'vue';
 import { Plus } from 'lucide-vue-next';
 import {
   conflictedIds,
@@ -382,10 +457,17 @@ import {
   type CalendarDay,
   type DaySlice,
 } from '@agendabo/schedule-core';
-import type { AppointmentDto } from '@agendabo/contracts';
-import { useAgendaPage, type SliceTimelineBlock, type SliceTimelineItem } from '@/app/composables/useAgendaPage.composable';
+import type { AppointmentDto, SharedAgendaListItem } from '@agendabo/contracts';
+import {
+  useAgendaPage,
+  type AgendaItem,
+  type SliceTimelineBlock,
+  type SliceTimelineItem,
+} from '@/app/composables/useAgendaPage.composable';
 import { useAgendaDrag, dropOriginKey } from '@/app/composables/useAgendaDrag.composable';
 import { useDeleteAppointmentMutation } from '@/app/composables/mutations/useDeleteAppointment.mutation';
+import { useSharedAgendasQuery } from '@/app/composables/queries/useSharedAgendas.query';
+import { sharedOwnerName } from '@/app/utils/sharedAgendas';
 import {
   formatDateTimeInTz,
   formatDayHeading,
@@ -421,11 +503,88 @@ const timezone = agenda.timezone;
 const appointmentsQuery = agenda.appointmentsQuery;
 const items = agenda.items;
 
-/** Lista da visão Dia (D.4): só os itens que TOCAM o dia focado, exibidos com o
- *  período INTEGRAL. Na Semana/Mês a CARGA cobre um período maior — listar a carga
- *  inteira mostraria na quinta um compromisso só de segunda. `daySlices` já é o
- *  recorte (um item por slice); o clique/aria usam o `slice.item` integral. */
-const dayListItems = computed<AppointmentDto[]>(() =>
+// ---- FONTE da agenda (spec C.17–C.20, decisão D9) ----
+/**
+ * Vínculos (enviados+recebidos) — a query é a mesma do card do perfil. Ela é
+ * ATIVADA só quando há um `owner` na URL (aceite recém-chegado vindo de
+ * /convite-agenda): assim a agenda própria não paga um GET extra a cada visita
+ * (requisito de regressão zero), e o invariante de fonte abaixo só roda quando
+ * precisa validar um dono emprestado.
+ */
+const sharedAgendasQuery = useSharedAgendasQuery();
+/**
+ * RECEBIDOS com `ownerId` = uuid do DONO da agenda. BUG corrigido: o seletor
+ * carregava o `id` do VÍNCULO como valor e a query saía `owner=<id do vínculo>`
+ * — mas a API espera o **ownerId** em `owner=` (spec B.12:
+ * `activeLinkBetween(owner, sessão)`) ⇒ a leitura emprestada daria 403 sempre.
+ * Fonte do uuid: `ownerId` no item CRU da resposta (`rawData`, mesmo fetch,
+ * antes do strip do contrato). Item SEM `ownerId` no payload cru é DESCARTADO do
+ * seletor — nunca usar o id do vínculo como owner (gotcha 27). `sourceOwner`, o
+ * valor do seletor, o `owner=` da query e a dimensão da chave
+ * `qk.appointments(from, to, owner)` passam a ser a MESMA coisa: o dono.
+ */
+type ReceivedLinkRaw = SharedAgendaListItem & { ownerId?: string };
+const incomingActive = computed<Array<SharedAgendaListItem & { ownerId: string }>>(() => {
+  // rawData: o payload cru ANTES do strip do contrato (fonte do uuid do dono);
+  // data.value (validado) manda na lista/estados. Cast de leitura só.
+  const raw = sharedAgendasQuery.rawData.value as { received?: ReceivedLinkRaw[] } | undefined;
+  const rawById = new Map((raw?.received ?? []).map((l) => [l.id, l]));
+  return (sharedAgendasQuery.data.value?.received ?? [])
+    .filter((l) => l.status === 'active')
+    .map((l) => ({ ...l, rawOwnerId: rawById.get(l.id)?.ownerId }))
+    // sem ownerId não pode virar fonte — nunca usar id do vínculo como owner,
+    // gotcha 27 (o fallback id do vínculo era um 403 adormecido em `owner=`).
+    .filter((l) => l.rawOwnerId !== undefined)
+    .map((l) => ({ ...l, ownerId: l.rawOwnerId as string }));
+});
+/** A5: sem vínculo recebido ativo o seletor NÃO aparece (nem desabilitado). */
+const showSourceSelector = computed(() => incomingActive.value.length > 0);
+const sourceOptions = computed(() => [
+  { value: 'me', label: 'Minha agenda' },
+  // VALUE = ownerId do dono (NUNCA o id do vínculo) — cai direto em `owner=`
+  ...incomingActive.value.map((l) => ({
+    value: l.ownerId,
+    label: `Agenda de ${sharedOwnerName(l)}`,
+  })),
+]);
+/** ownerId da fonte atual ('me' quando própria) — o valor do AppSelect. */
+const sourceValue = computed(() => agenda.sourceOwner.value ?? 'me');
+/** Nome do dono da fonte (vazio na própria) — subtítulo e marcadores textuais. */
+const agendaOwnerLabel = computed(() => {
+  const link = incomingActive.value.find((l) => l.ownerId === agenda.sourceOwner.value);
+  return link ? sharedOwnerName(link) : '';
+});
+/** Estreita tipada da FONTE (nunca cast): própria ⇒ `origin`/badges existem. */
+const ownAgenda = computed(() => !agenda.readonly.value);
+function asOwn(item: AgendaItem): AppointmentDto {
+  return item as AppointmentDto;
+}
+const detailsTitle = (item: AgendaItem): string => item.title;
+const detailsStart = (item: AgendaItem): Date => item.startsAt;
+const detailsEnd = (item: AgendaItem): Date => item.endsAt;
+const detailsOwn = (item: AgendaItem): AppointmentDto => asOwn(item);
+
+/** Troca de fonte (D9): só muda `sourceOwner` — visão/âncora/período intactos. */
+function onSourceChange(value: string): void {
+  agenda.sourceOwner.value = value === 'me' ? null : value;
+}
+
+/**
+ * Invariante de fonte: se o vínculo ativo da fonte sumiu da lista (revogado pelo
+ * dono, saí, reconvite), a fonte volta para a MINHA — evita deixar o usuário
+ * olhando um 403 `shared_access_invalid`. Só roda com a lista carregada.
+ */
+watch(incomingActive, (links) => {
+  const owner = agenda.sourceOwner.value;
+  if (owner && !links.some((l) => l.ownerId === owner)) agenda.sourceOwner.value = null;
+});
+
+/**
+ * Lista da visão Dia (D.4): só os itens que TOCAM o dia focado, exibidos com o
+ * período INTEGRAL. Na Semana/Mês a CARGA cobre um período maior — listar a carga
+ * inteira mostraria na quinta um compromisso só de segunda. `daySlices` já é o
+ * recorte (um item por slice); o clique/aria usam o `slice.item` integral. */
+const dayListItems = computed<AgendaItem[]>(() =>
   agenda.view.value === 'day'
     ? agenda.daySlices.value.map((s) => s.item)
     : items.value,
@@ -438,19 +597,26 @@ const anchorKey = computed(() => toLocalDateString(agenda.anchor.value, timezone
 // `conflictedIds`/`firstConflictLabel` são schedule-core (regra zero). Limitação
 // declarada: a contenção da API pode esconder um par que termina fora do período;
 // o badge é informativo — a checagem que vale é check-conflict/409 do form.
-const conflictIds = computed(() => conflictedIds(items.value));
+// A4/B.14: na agenda EMPRESTADA o conflito não existe (a query só devolve
+// `confirmed` crua do dono e o marcador fica restrito à agenda própria — o
+// `ownAgenda` fecha a porta EM TODOS os pintores: chips, blocos, bolinhas,
+// dia-lista e a própria fonte de ids fica vazia).
+const conflictIds = computed(() =>
+  ownAgenda.value ? conflictedIds(items.value.map(asOwn)) : new Set<string>(),
+);
 
-function conflictTitle(item: AppointmentDto): string | null {
+function conflictTitle(item: AgendaItem): string | null {
+  if (!ownAgenda.value) return null;
   if (!conflictIds.value.has(item.id)) return null;
-  return firstConflictLabel(item, items.value, (s, e) => formatRangeInTz(s, e, timezone.value));
+  return firstConflictLabel(asOwn(item), items.value.map(asOwn), (s, e) => formatRangeInTz(s, e, timezone.value));
 }
 
 // ---- derivados de exibição por visão (formatação apenas — tz.ts) ----
-function startHour(item: AppointmentDto): string {
+function startHour(item: AgendaItem): string {
   return toLocalTimeString(item.startsAt, timezone.value);
 }
 
-function isPast(item: AppointmentDto): boolean {
+function isPast(item: AgendaItem): boolean {
   return item.endsAt < agenda.now.value;
 }
 
@@ -486,7 +652,7 @@ const headingText = computed(() => {
  *  dia anterior; "↤" prefixado = virá do dia seguinte (chip de prévia num dia antes do
  *  início). O marcador fica SEMPRE do lado de onde o item atravessa a borda (review
  *  2026-10-11 apontava o símbolo trocado no fim do intervalo). */
-function chipTime(item: AppointmentDto, day: CalendarDay): string {
+function chipTime(item: AgendaItem, day: CalendarDay): string {
   const startsHere = item.startsAt >= day.start && item.startsAt < day.end;
   if (!startsHere) return item.startsAt < day.start ? '↦ dia inteiro' : '↤ dia inteiro';
   return item.endsAt > day.end ? `${startHour(item)} ↦` : startHour(item);
@@ -524,13 +690,18 @@ function sliceTimeLabel(slice: {
 // ---- Visão Dia (Etapa 1.3): linhas de hora + blocos prontos p/ o DayGrid burro ----
 // Os dados vêm do composable (`hourGrid`/slices recortados + `layoutDayTimeline` do
 // schedule-core); aqui só FORMATAÇÃO e classes — zero regra de data/conflito (E.4).
+// C.18: na emprestada o aria das células de hora NÃO promete "criar" (os slots
+// continuam renderizados — a grade é a leitura; `readOnly` no DayGrid desliga o
+// botão e o click de criação morre na página de qualquer forma).
 const daySlots = computed<DaySlotView[]>(() =>
   agenda.hourCells.value.map((cell) => ({
     hour: cell.hourUtc,
     label: cell.label,
     key: cell.start.toISOString(),
     isPast: cell.isPast,
-    ariaLabel: `Criar compromisso às ${cell.label} de ${headingText.value}`,
+    ariaLabel: agenda.readonly.value
+      ? `${cell.label} de ${headingText.value}`
+      : `Criar compromisso às ${cell.label} de ${headingText.value}`,
   })),
 );
 const dayBlocksView = computed<DayBlockView[]>(() =>
@@ -541,10 +712,13 @@ const dayBlocksView = computed<DayBlockView[]>(() =>
  * Vista de um bloco de GRADE a partir do SLICE do dia + bloco posicionado: o
  * rótulo/aria-label trazem o RECORTE local + marcador de continuação; clique/drag
  * usam o compromisso INTEGRAL (`slice.item`) — payloads não regredissem (D7).
+ * C.20: na emprestada o acento é `border-l-info` + o aria-label diz "de ‹dono›"
+ * (marcação textual, não só cor); A4: sem classe/borda de conflito.
  */
-function blockView(slice: DaySlice<AppointmentDto>, b: SliceTimelineBlock): DayBlockView {
+function blockView(slice: DaySlice<AgendaItem>, b: SliceTimelineBlock): DayBlockView {
   const item = slice.item;
   const time = sliceTimeLabel(slice);
+  const shared = agenda.readonly.value;
   return {
     item,
     top: b.top,
@@ -552,31 +726,20 @@ function blockView(slice: DaySlice<AppointmentDto>, b: SliceTimelineBlock): DayB
     left: b.column * b.width,
     width: b.width,
     time,
-    review: item.status === 'needs_review',
+    review: !shared && item.status === 'needs_review',
     conflictTitle: conflictTitle(item),
-    ariaLabel: `${item.title}, ${time}${b.isPast ? ' (passado)' : ''}`,
+    ariaLabel: `${item.title}${shared ? ` — de ${agendaOwnerLabel.value}` : ''}, ${time}${b.isPast ? ' (passado)' : ''}`,
     class: [
       // faixa do dia: leve tingimento da cor primária (legível com o tema escuro);
-      // revisão marca pela BARRA ESQUERDA (não pelo fundo, pra não brigar com conflito)
-      item.status === 'needs_review' ? 'border-l-warning' : 'border-l-primary',
-      conflictTitle(item)
+      // revisão marca pela BARRA ESQUERDA (não pelo fundo, pra não brigar com
+      // conflito); emprestada usa o ACENTO do marcador de dono (C.20).
+      shared ? 'border-l-info' : item.status === 'needs_review' ? 'border-l-warning' : 'border-l-primary',
+      !shared && conflictTitle(item)
         ? 'border-danger/70 bg-danger/10'
         : 'hover:border-primary/60 hover:bg-primary/10',
       b.isPast ? 'opacity-60' : '',
     ].join(' '),
   };
-}
-
-/** Clique na célula vazia da grade: criar NAQUELE dia+hora (melhora o `openCreate('')`). */
-function onDaySlotClick(slot: DaySlotView): void {
-  const date = toLocalDateString(agenda.range.value.start, timezone.value);
-  // a célula é uma HORA cheia; o form quer "HH:mm"
-  openCreateOn(date, `${slot.hour}:00`);
-}
-
-/** Clique na célula vazia da coluna da Semana: criar NAQUELE dia+hora. */
-function onWeekCellClick(dateKey: string, hour: string): void {
-  openCreateOn(dateKey, `${hour}:00`);
 }
 
 // ---- Semana: colunas dom..sáb COM grade de horas (weekGridRows) + blocos ----
@@ -601,7 +764,11 @@ const weekDays = computed<WeekDayView[]>(() =>
       date: row.date,
       key: row.start.toISOString(),
       heading: formatDayHeading(row.start, timezone.value, agenda.now.value),
-      blocks: blocks.map((b) => blockView(b.item as DaySlice<AppointmentDto>, b)),
+      // C.18: emprestada → hora vazia da grade NÃO é convite a criar
+      createHint: agenda.readonly.value
+        ? null
+        : (hour: string) => `Criar compromisso às ${hour} de ${formatDayHeading(row.start, timezone.value, agenda.now.value).label}`,
+      blocks: blocks.map((b) => blockView(b.item as DaySlice<AgendaItem>, b)),
       rulerHour: nowCell >= 0 ? row.cells[nowCell]!.hourUtc : null,
       nowCell: nowCell >= 0 ? nowCell : null,
     };
@@ -615,7 +782,7 @@ const monthCellsView = computed<MonthCellView[]>(() =>
     const chips: MonthChip[] = dayItems.slice(0, 3).map((item) => ({
       item,
       time: chipTime(item, cell),
-      review: item.status === 'needs_review',
+      review: ownAgenda.value && item.status === 'needs_review',
       conflictTitle: conflictTitle(item),
       class: [
         'border-border',
@@ -626,7 +793,7 @@ const monthCellsView = computed<MonthCellView[]>(() =>
       id: item.id,
       kind: conflictTitle(item)
         ? ('conflict' as const)
-        : item.status === 'needs_review'
+        : ownAgenda.value && item.status === 'needs_review'
           ? ('review' as const)
           : ('normal' as const),
     }));
@@ -650,9 +817,14 @@ const monthCellsView = computed<MonthCellView[]>(() =>
 /**
  * Clique na célula do Mês (B.7/D.16): vazia → criar com a data da célula;
  * com compromissos → visão Dia daquele dia (o "+N" também cai aqui).
+ * C.18: na emprestada célula vazia é NAVEGAÇÃO para o Dia (nunca criação).
  */
 function onMonthDayClick(cell: MonthCellView): void {
   if (cell.chips.length === 0 && cell.overflow === 0 && cell.dots.length === 0) {
+    if (agenda.readonly.value) {
+      openDayFrom(cell.date);
+      return;
+    }
     openCreateOn(cell.date);
     return;
   }
@@ -741,7 +913,7 @@ const emptyText = computed(() => {
   }
 });
 
-function formatRange(item: AppointmentDto): string {
+function formatRange(item: AgendaItem): string {
   return formatRangeInTz(item.startsAt, item.endsAt, timezone.value);
 }
 
@@ -763,7 +935,7 @@ const editing = ref<AppointmentDto | undefined>(undefined);
  */
 const preset = ref<{ date: Date; hour?: string; endsAt?: Date; autoRelocate?: boolean } | undefined>(undefined);
 
-const detailsItem = ref<AppointmentDto | null>(null);
+const detailsItem = ref<AgendaItem | null>(null);
 const confirmDelete = ref(false);
 const deleting = useDeleteAppointmentMutation();
 
@@ -793,7 +965,26 @@ function openCreateOn(dateKey: string, hour?: string): void {
   formOpen.value = true;
 }
 
-function openDetails(item: AppointmentDto): void {
+/** Clique na célula vazia da grade do Dia: criar NAQUELE dia+hora (melhora o
+ *  `openCreate('')`). C.18: na emprestada o click NUNCA chega aqui — o DayGrid
+ *  burra vira `div` sem handler (`readOnly`); gate duplo por defesa em profundidade. */
+function onDaySlotClick(slot: DaySlotView): void {
+  if (agenda.readonly.value) return;
+  const date = toLocalDateString(agenda.range.value.start, timezone.value);
+  // a célula é uma HORA cheia; o form quer "HH:mm"
+  openCreateOn(date, `${slot.hour}:00`);
+}
+
+/** Clique na célula vazia da coluna da Semana: criar NAQUELE dia+hora
+ *  (mesmo gate C.18 do Dia). */
+function onWeekCellClick(dateKey: string, hour: string): void {
+  if (agenda.readonly.value) return;
+  openCreateOn(dateKey, `${hour}:00`);
+}
+
+/** Abre os detalhes (própria OU emprestada): o painel se apresenta conforme a
+ *  fonte — na emprestada é somente-leitura com o marcador "de ‹dono›" (C.18/C.20). */
+function openDetails(item: AgendaItem): void {
   detailsItem.value = item;
   confirmDelete.value = false;
 }
@@ -804,9 +995,11 @@ function closeDetails(): void {
 }
 
 function editFromDetails(): void {
-  if (!detailsItem.value) return;
+  // defensivo: o botão Editar nem existe na fonte emprestada (C.18)
+  if (!detailsItem.value || agenda.readonly.value) return;
   formMode.value = 'edit';
-  editing.value = detailsItem.value;
+  // seguro: o gate acima garante fonte própria ⇒ o item é `AppointmentDto`
+  editing.value = asOwn(detailsItem.value);
   preset.value = undefined;
   formSession.value += 1;
   formOpen.value = true;
@@ -828,6 +1021,8 @@ const agendaDrag = useAgendaDrag({
         : agenda.cells.value,
   originOf: (item) => dropOriginKey(agenda.view.value === 'year' ? 'month' : agenda.view.value, item, timezone.value),
   onConflict: openRelocationFromDrop,
+  // C.18/D9: gate do gesto — fonte emprestada ⇒ pointerdown no-op na origem
+  readonly: () => agenda.readonly.value,
 });
 
 /** Drop com conflito: modal de EDIÇÃO do item no horário candidato + jogadas. */

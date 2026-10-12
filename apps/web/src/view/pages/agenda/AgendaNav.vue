@@ -13,9 +13,29 @@
       @update:model-value="emit('update:view', $event as AgendaView)"
     />
     <div
-      class="flex items-center gap-2"
+      class="flex flex-wrap items-center gap-2"
       data-testid="agenda-nav-actions"
     >
+      <!-- FONTE da agenda (spec C.17/A5): aparece SOMENTE com ≥1 vínculo recebido
+           ativo (v-if na lista de fontes — sem vínculos o seletor NEM aparece,
+           nem desabilitado). O rotulo sr-only + `for` e o aria-label do AppSelect
+           (atributo cai no gatilho radix) anunciam a fonte atual; troca por
+           teclado e foco visivel sao do primitivo; alvo >=44px (h-11). -->
+      <label
+        v-if="props.showSource"
+        class="sr-only"
+        for="agenda-source"
+      >Agenda exibida</label>
+      <AppSelect
+        v-if="props.showSource"
+        id="agenda-source"
+        :model-value="props.source ?? MY_SOURCE"
+        :options="props.sourceOptions ?? []"
+        aria-label="Agenda exibida"
+        class="h-11 w-auto min-w-44"
+        :test-id="props.sourceTestId ?? 'agenda-source'"
+        @update:model-value="emit('update:source', $event)"
+      />
       <AppButton
         variant="ghost"
         size="icon"
@@ -118,6 +138,17 @@ const props = defineProps<{
   monthOptions: { value: string; label: string }[];
   /** A âncora JÁ é hoje (R7/a11y: o botão comunica o estado, não só não-faz-nada). */
   isToday?: boolean;
+  /**
+   * Fonte atual: `MY_SOURCE` ('me') ou uuid do dono (spec C.17). Só tem efeito
+   * visual quando `showSource` — sem vínculos o seletor não existe (A5).
+   */
+  source?: string;
+  /** 'me' + um item por vínculo recebido ATIVO ("Agenda de ‹nome›"). */
+  sourceOptions?: { value: string; label: string }[];
+  /** true quando existe ≥1 vínculo recebido ativo (a página deriva da query). */
+  showSource?: boolean;
+  /** data-testid no gatilho do seletor de fonte (testes estruturais — gotcha 19). */
+  sourceTestId?: string;
 }>();
 
 const emit = defineEmits<{
@@ -126,5 +157,9 @@ const emit = defineEmits<{
   today: [];
   jumpYear: [number];
   jumpMonth: [number];
+  'update:source': [string];
 }>();
+
+/** Sentinela da agenda própria (espelha `qk.appointments(…, owner=null)`). */
+const MY_SOURCE = 'me';
 </script>

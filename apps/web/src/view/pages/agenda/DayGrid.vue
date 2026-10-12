@@ -22,12 +22,14 @@
         :data-testid="`day-slot-${slot.hour}`"
         class="flex min-h-11 w-full items-start gap-2 p-1 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
       >
-        <button
-          type="button"
-          class="od-move flex min-h-10 w-full items-start gap-2 rounded-md px-1 text-left hover:bg-primary/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          :aria-label="`Criar compromisso às ${slot.hour}:00 de ${props.dayLabel}`"
+        <component
+          :is="props.readOnly ? 'div' : 'button'"
+          :type="props.readOnly ? undefined : 'button'"
+          class="od-move flex min-h-10 w-full items-start gap-2 rounded-md px-1 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          :class="props.readOnly ? '' : 'hover:bg-primary/5'"
+          :aria-label="slot.ariaLabel"
           :data-testid="`day-slot-button-${slot.hour}`"
-          @click="emit('slotClick', slot)"
+          @click="props.readOnly ? undefined : emit('slotClick', slot)"
         >
           <span
             class="w-12 shrink-0 pt-0.5 text-xs font-semibold tabular-nums text-muted-foreground"
@@ -35,7 +37,7 @@
           >
             {{ slot.hour }}:00
           </span>
-        </button>
+        </component>
       </div>
     </div>
 
@@ -66,7 +68,7 @@
         :title="block.conflictTitle ?? block.item.title"
         :aria-label="block.ariaLabel"
         :data-testid="`day-block-${block.item.id}`"
-        :data-conflicted="block.conflictTitle ? 'true' : undefined"
+        :data-conflicted="!props.readOnly && block.conflictTitle ? 'true' : undefined"
         v-bind="drag ? drag.bind(block.item) : {}"
         @click.stop="emit('blockClick', block.item)"
       >
@@ -100,8 +102,8 @@
  * no bloco e pinta `data-drop-target` na linha a partir de `dropKey` (primitivo).
  */
 import { AlertTriangle } from 'lucide-vue-next';
-import type { AppointmentDto } from '@agendabo/contracts';
 import type { DragBindApi } from '@/app/composables/useDragAppointment';
+import type { AgendaItem } from '@/app/composables/useAgendaPage.composable';
 
 export interface DaySlotView {
   /** Hora local da linha, "00".."23" (testid `day-slot-HH`). */
@@ -117,7 +119,7 @@ export interface DaySlotView {
 }
 
 export interface DayBlockView {
-  item: AppointmentDto;
+  item: AgendaItem;
   /** Posições em % vindas do `layoutDayTimeline` (a web não calcula). */
   top: number;
   height: number;
@@ -140,11 +142,18 @@ const props = defineProps<{
   /** "Hoje · 8 out" etc. — só para aria-labels (formatado na página). */
   dayLabel: string;
   /** Mecânica de drag da página (bind + primitivos) — ausente = grade sem drag. */
-  drag?: DragBindApi<AppointmentDto> | null;
+  drag?: DragBindApi<AgendaItem> | null;
+  /**
+   * C.18 (agenda emprestada): células de hora param de ser convite a CRIAR — o
+   * botão perde o click de criação e o aria-label deixa de prometer "criar"
+   * (o texto chega pronto em `slot.ariaLabel`). Os blocos continuam clicáveis
+   * (detalhes somente-leitura). Burra: é apresentação, a página decide.
+   */
+  readOnly?: boolean;
 }>();
 
 const emit = defineEmits<{
   slotClick: [slot: DaySlotView];
-  blockClick: [item: AppointmentDto];
+  blockClick: [item: AgendaItem];
 }>();
 </script>

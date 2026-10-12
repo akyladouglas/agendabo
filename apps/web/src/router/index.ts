@@ -79,6 +79,18 @@ const router = createRouter({
       component: () => import('../view/pages/agenda/AgendaPage.vue'),
       meta: { middleware: ['requireAuth'] },
     },
+    // Compartilhamento (spec D.22, decisao D10 do plano): aceite do convite por
+    // link. `requireAuth` SEM handoff de sessao (mesma politica do /redefinir-
+    // senha: quem chega deslogado passa pelo login e volta pela URL). O
+    // `?token=` replica a UNICA excecao documentada a politica "nenhum dado do
+    // usuario em query params": token OPACO de uso unico, TTL 24h, que nao carrega
+    // dado do usuario (o aceite em si e autenticado e o token vai no BODY).
+    {
+      path: '/convite-agenda',
+      name: 'shared-invite',
+      component: () => import('../view/pages/agenda/ConviteAgendaPage.vue'),
+      meta: { middleware: ['requireAuth'] },
+    },
     {
       path: '/revisao',
       name: 'review',

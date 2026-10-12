@@ -126,12 +126,12 @@
  */
 import { computed } from 'vue';
 import { AlertTriangle } from 'lucide-vue-next';
-import type { AppointmentDto } from '@agendabo/contracts';
 import type { CalendarDay } from '@agendabo/schedule-core';
 import type { DragBindApi } from '@/app/composables/useDragAppointment';
+import type { AgendaItem } from '@/app/composables/useAgendaPage.composable';
 
 export interface MonthChip {
-  item: AppointmentDto;
+  item: AgendaItem;
   /** "HH:mm" (ou "↦ HH:mm"/"HH:mm ↤" quando cruza a meia-noite — B.9, formato na página). */
   time: string;
   review: boolean;
@@ -158,12 +158,18 @@ const props = defineProps<{
   /** dateKey da âncora (aria-selected; o "hoje" vem do CalendarDay.isToday). */
   anchorKey: string;
   /** Mecânica de drag da página (bind + primitivos) — ausente = grade sem drag. */
-  drag?: DragBindApi<AppointmentDto> | null;
+  drag?: DragBindApi<AgendaItem> | null;
+  /**
+   * C.18 (agenda emprestada): muda só o ARIA da célula — sem vínculo a página
+   * ainda chama `dayClick` (a célula vazia NAVEGA para o Dia, nunca cria);
+   * a decisão é da página, o componente é burro.
+   */
+  readOnly?: boolean;
 }>();
 
 const emit = defineEmits<{
   dayClick: [cell: MonthCellView];
-  itemClick: [item: AppointmentDto];
+  itemClick: [item: AgendaItem];
 }>();
 
 const WEEKDAY_LABELS = [
@@ -202,7 +208,13 @@ function cellAria(cell: MonthCellView): string {
   const parts = [`${dayNumber(cell.date)} de ${props.monthName}`];
   if (cell.day.isToday) parts.push('hoje');
   const total = cell.chips.length + cell.overflow;
-  parts.push(`${total} compromisso${total === 1 ? '' : 's'}`);
+  // C.18: vazia na emprestada NÃO é "criar" — é abrir o dia (a página decide o
+  // que o click faz; o aria descreve o efeito real). Na própria mantém B.7.
+  if (total === 0) {
+    parts.push(props.readOnly ? 'sem compromissos — abrir o dia' : 'sem compromissos — criar');
+  } else {
+    parts.push(`${total} compromisso${total === 1 ? '' : 's'}`);
+  }
   if (cell.hasConflict) parts.push('com conflito');
   return parts.join(', ');
 }

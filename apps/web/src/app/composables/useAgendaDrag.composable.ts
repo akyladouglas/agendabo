@@ -8,6 +8,7 @@ import {
 import type { AppointmentDto } from '@agendabo/contracts';
 import { formatDateTimeInTz, formatDayHeading, formatRangeInTz, measureTzOffset, toLocalTimeString } from '../utils/tz';
 import { useDragAppointment, type DragBindApi } from './useDragAppointment';
+import type { AgendaItem } from './useAgendaPage.composable';
 import { useCheckConflict } from './mutations/useCheckConflict.mutation';
 import { useRescheduleMutation } from './mutations/useReschedule.mutation';
 import { conflictMessage } from '../utils/conflict';
@@ -88,11 +89,24 @@ export interface UseAgendaDragOptions {
   originOf: (item: AppointmentDto) => string;
   /** Conflito: a página abre o modal do item com `pendingRelocation` preenchido. */
   onConflict?: (req: DropRelocationRequest) => void;
+  /**
+   * Read-only da fonte (spec C.18, decisão D9): agenda EMPRESTADA desliga o
+   * GESTO na origem — `bind` devolve o pointerdown NO-OP (o pointer do gesto
+   * nunca inicia sessão). É o gate estrutural pedido pelo plano: sem drag sem
+   * depender das grades lembrarem de checar nada.
+   */
+  readonly?: () => boolean;
 }
 
 export interface UseAgendaDragApi {
-  /** O pacote que as grades burras consomem (`v-bind` + primitivos reativos). */
-  drag: DragBindApi<AppointmentDto>;
+  /**
+   * O pacote que as grades burras consomem (`v-bind` + primitivos reativos).
+   * Tipado em AgendaItem (união próprio|emprestado): o fluxo interno usa só
+   * `id`/`startsAt`, válidos nos dois ramos, e o gate `readonly` + a origem
+   * (o drag só começa num bloco próprio) garantem que um item emprestado nunca
+   * entra no fluxo.
+   */
+  drag: DragBindApi<AgendaItem>;
   /** Texto do fantasma enquanto arrasta (título + horário atual do item). */
   ghostText: () => string;
   previewLabel: ReturnType<typeof useDragAppointment>['previewLabel'];
@@ -100,7 +114,9 @@ export interface UseAgendaDragApi {
   dropBusy: ReturnType<typeof ref<boolean>>;
   /** Anúncio `aria-live` pós-drop ("Reagendado para ..."). */
   dropAnnouncement: ReturnType<typeof ref<string>>;
-  /** Drop com conflito: aguardando a decisão do usuário no modal (ou null). */
+  /** Drop com conflito: aguardando a decisão do usuário no modal (ou null).
+   *  O item é estreitado para AppointmentDto: o drop só acontece num bloco
+   *  PRÓPRIO (gate `readonly` + grades não tornam itens emprestados arrastáveis). */
   pendingRelocation: ReturnType<typeof ref<DropRelocationRequest | null>>;
 }
 
@@ -129,11 +145,15 @@ export function useAgendaDrag(options: UseAgendaDragOptions): UseAgendaDragApi {
     toast.success(msg);
   }
 
-  const drag = useDragAppointment<AppointmentDto>({
-    originOf: options.originOf,
+  const drag = useDragAppointment<AgendaItem>({
+    originOf: (item) => options.originOf(item as AppointmentDto),
     cellLabel: (key) => dropCellLabel(key, options.days(), options.timezone(), options.now()),
     ghostTextOf: (item) =>
       `${item.title} · ${formatRangeInTz(item.startsAt, item.endsAt, options.timezone())}`,
+    // C.18/D9 (gate do gesto): fonte emprestada ⇒ o GESTO morre ANTES de qualquer
+    // estado — sessão de press nem abre (pointerdown no-op). A leitura do gate é
+    // no instante do evento (fonte pode trocar no meio da vida da página).
+    canStart: () => !options.readonly?.(),
     // R7/a11y (review 2026-10-09): o hook JÁ avisa ESC/fora-de-célula/pointercancel
     // aqui — antes nenhum listener estava ligado e o cancelamento era mudo para
     // leitor de tela ("com aviso" era só comentário).
@@ -169,16 +189,18 @@ export function useAgendaDrag(options: UseAgendaDragOptions): UseAgendaDragApi {
           // (padrão do form, spec A.4)
         }
         if (conflicted) {
-          pendingRelocation.value = { item, ...next };
+          // item próprio (gate readonly) — estreitamento seguro para o modal de edição
+          pendingRelocation.value = { item: item as AppointmentDto, ...next };
           options.onConflict?.(pendingRelocation.value);
           return;
         }
-        await applyMove(item, next);
+        // applyMove só existe p/ item próprio (gate readonly) — estreitamento espelhado
+        await applyMove(item as AppointmentDto, next);
       } catch (err) {
         const conflict = conflictMessage(err, (s, e) => formatRangeInTz(s, e, options.timezone()));
         if (conflict) {
           // corrida entre check e save: o conflito do server vira jogada no modal
-          pendingRelocation.value = { item, ...next };
+          pendingRelocation.value = { item: item as AppointmentDto, ...next };
           options.onConflict?.(pendingRelocation.value);
           return;
         }

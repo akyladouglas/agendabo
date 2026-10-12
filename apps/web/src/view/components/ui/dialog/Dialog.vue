@@ -22,32 +22,32 @@
         "
       >
         <div class="pointer-events-auto flex max-h-full w-full max-w-[560px] flex-col rounded-2xl border border-border bg-card text-card-foreground shadow-xl">
-        <div class="flex flex-row items-center gap-2 border-b border-border px-4 py-3 md:px-6">
-          <DialogTitle class="title-modal flex-1 font-heading">
-            {{ props.title }}
-          </DialogTitle>
-          <DialogClose
-            class="od-move -mr-2 flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
-            aria-label="Fechar"
+          <div class="flex flex-row items-center gap-2 border-b border-border px-4 py-3 md:px-6">
+            <DialogTitle class="title-modal flex-1 font-heading">
+              {{ props.title }}
+            </DialogTitle>
+            <DialogClose
+              class="od-move -mr-2 flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
+              aria-label="Fechar"
+            >
+              <X class="h-5 w-5" />
+            </DialogClose>
+          </div>
+          <DialogDescription
+            v-if="props.description"
+            class="sr-only"
           >
-            <X class="h-5 w-5" />
-          </DialogClose>
-        </div>
-        <DialogDescription
-          v-if="props.description"
-          class="sr-only"
-        >
-          {{ props.description }}
-        </DialogDescription>
-        <div class="min-h-0 flex-1 overflow-y-auto px-4 py-4 md:px-6">
-          <slot />
-        </div>
-        <div
-          v-if="$slots.footer"
-          class="sticky bottom-0 border-t border-border bg-card px-4 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] md:px-6"
-        >
-          <slot name="footer" />
-        </div>
+            {{ props.description }}
+          </DialogDescription>
+          <div class="min-h-0 flex-1 overflow-y-auto px-4 py-4 md:px-6">
+            <slot />
+          </div>
+          <div
+            v-if="$slots.footer"
+            class="sticky bottom-0 border-t border-border bg-card px-4 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] md:px-6"
+          >
+            <slot name="footer" />
+          </div>
         </div>
       </DialogContent>
     </DialogPortal>

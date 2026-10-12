@@ -49,6 +49,12 @@ export interface UseDragAppointmentOptions<T extends DragItemLike> {
   onDrop: (item: T, cellKey: string) => void;
   /** Cancelou (ESC, `pointercancel` ou soltou fora de célula) — nada foi pedido. */
   onCancel?: (item: T) => void;
+  /**
+   * Portão do GESTO (lido no pointerdown): `false` = o gesto não começa (agenda
+   * emprestada read-only, spec C.18). Ausente = sempre pode (todas as chamadas
+   * existentes ficam intocadas).
+   */
+  canStart?: () => boolean;
   /** Rótulo de destino do preview ("→ 18:00" / "→ qua 14/10"); ausente = só o título no fantasma. */
   cellLabel?: (cellKey: string) => string;
   /** Célula-origem do item (drop na origem = no-op). A view BURRA só injeta o valor pronto. */
@@ -349,6 +355,8 @@ export function useDragAppointment<T extends DragItemLike>(
   function onPointerdown(item: T, ev: DragPointerLike & Event): void {
     // drag em andamento ou botão não-principal: não inicia nova sessão
     if (press || dragging.value || !isMainPointer(ev)) return;
+    // gate do gesto (C.18): fonte read-only ⇒ pointerdown no-op (sem sessão de press)
+    if (options.canStart && !options.canStart()) return;
     if (typeof document === 'undefined') return;
     const el = blockOf(item.id);
     const originKey = el?.getAttribute('data-drag-origin') ?? (options.originOf ? options.originOf(item) : '');

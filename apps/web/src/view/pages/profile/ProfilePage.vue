@@ -121,6 +121,9 @@
 
       <!-- Sessao 24h: gestao de dispositivos (spec sessao-24h "Web") -->
       <SessionsCard />
+
+      <!-- Compartilhamento (spec D.21): vínculos enviados/recebidos + convite -->
+      <SharedAgendasCard />
     </div>
   </AppLayout>
 </template>
@@ -142,6 +145,7 @@ import { updateProfile } from '@/app/composables/useUpdateProfile.composable';
 import { useThemeStore } from '@/app/store/themeStore';
 import AppLayout from '@/view/layouts/AppLayout.vue';
 import SessionsCard from '@/view/components/profile/SessionsCard.vue';
+import SharedAgendasCard from '@/view/components/profile/SharedAgendasCard.vue';
 import AppCard from '@/view/components/ui/card/Card.vue';
 import AppButton from '@/view/components/ui/button/Button.vue';
 import AppField from '@/view/components/ui/field/Field.vue';

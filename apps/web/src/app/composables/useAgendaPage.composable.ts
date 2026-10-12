@@ -28,7 +28,7 @@ import {
   type TimelineItem,
   type YearHeatMonth,
 } from '@agendabo/schedule-core';
-import type { AppointmentDto } from '@agendabo/contracts';
+import type { AppointmentDto, SharedAppointmentDto } from '@agendabo/contracts';
 import { useAuthStore } from '../store/authStore';
 import { useAppointmentsQuery } from './queries/useAppointments.query';
 import { sortAppointmentsByStart } from '../utils/sorting';
@@ -41,7 +41,17 @@ import { monthName, measureTzOffset } from '../utils/tz';
  * data aqui também — só composição (vue.md #6/#7).
  */
 
-export type SliceTimelineItem = TimelineItem & DaySlice<AppointmentDto>;
+export type SliceTimelineItem = TimelineItem & DaySlice<AgendaItem>;
+
+/**
+ * Item da agenda na página: o DTO próprio OU o DTO EMPRESTADO (spec C.17/D9).
+ * O emprestado é um SUBCONJUNTO estrutural de `AppointmentDto` (sem
+ * `origin`/`notificationRules`; `rawText`/`reviewReason` nem existem no schema)
+ * — por isso a UNIÓN (e não `AppointmentDto`): o compilador impede a página de
+ * ler campo de revisão num item emprestado. `AgendaPage` estreita com a
+ * discriminante da FONTE (`readonly`), nunca com cast.
+ */
+export type AgendaItem = AppointmentDto | SharedAppointmentDto;
 
 /**
  * Bloco posicionado cujo `item` é um slice de dia (Semana/Dia com recorte multi-dia):
@@ -49,7 +59,7 @@ export type SliceTimelineItem = TimelineItem & DaySlice<AppointmentDto>;
  * integral). Usado pelo composable e pela página como tipo dos `TimelineBlock`.
  */
 export type SliceTimelineBlock = Omit<TimelineBlock<TimelineItem>, 'item'> & {
-  item: DaySlice<AppointmentDto>;
+  item: DaySlice<AgendaItem>;
 };
 
 export type AgendaView = 'day' | 'week' | 'month' | 'year';
@@ -111,12 +121,24 @@ export interface UseAgendaPage {
   /** Instantâneo de "agora" da borda (re-tirado a cada minuto; esmaecer passados). */
   now: Ref<Date>;
   timezone: ComputedRef<string>;
+  /**
+   * Fonte da agenda (spec C.17, decisão D9): `null` = a minha; uuid = agenda
+   * EMPRESTADA do dono. Estado LOCAL (nunca na URL); trocar a fonte mantém
+   * visão/âncora/período — nada é resetado. A PÁGINA mantém o invariante
+   * "fonte emprestada ⇒ só vínculo recebido ATIVO": se o vínculo some da lista
+   * (revogado/saíu), a fonte volta para a minha (watch na query da página).
+   */
+  sourceOwner: Ref<string | null>;
+  /** Nome do dono da fonte emprestada ('' na minha) — texto do marcador/aria. */
+  sourceName: ComputedRef<string>;
+  /** Read-only ESTRUTURAL: derivado da fonte — nunca um flag solto por chamada. */
+  readonly: ComputedRef<boolean>;
   /** Período da QUERY: Dia/Semana civis; Mês = grade de 42 dias; Ano = ano civil. */
   range: ComputedRef<DateRange>;
   from: ComputedRef<string>;
   to: ComputedRef<string>;
   appointmentsQuery: ReturnType<typeof useAppointmentsQuery>;
-  items: ComputedRef<AppointmentDto[]>;
+  items: ComputedRef<AgendaItem[]>;
   /** Mês M exibido na grade/menu (≠ mês da âncora quando a âncora é trailing de M). */
   monthIndex: ComputedRef<number>;
   /** Ano exibido no menu/heading (ano do mês M). */
@@ -132,20 +154,20 @@ export interface UseAgendaPage {
    * dateKey → compromissos que TOCAM o dia (multi-dia: o item entra em TODOS os dias
    * que toca — spec multi-dia-nas-visoes F.1/D5; vale para o período da query atual).
    */
-  byDay: ComputedRef<Map<string, AppointmentDto[]>>;
+  byDay: ComputedRef<Map<string, AgendaItem[]>>;
   /**
    * Semana: dateKey da coluna → SLICES do recorte local do dia (`sliceItemToRange`).
    * A página dá o range [meia-noite local, próxima) de cada coluna; aqui só corta
    * (borda) — o recorte é schedule-core. Itens que não tocam a coluna ficam fora.
    */
-  slicesByRowDate: ComputedRef<Map<string, DaySlice<AppointmentDto>[]>>;
+  slicesByRowDate: ComputedRef<Map<string, DaySlice<AgendaItem>[]>>;
   /** Grade de horas da visão Dia (célula por hora local coberta pelo range — 1.1). */
   hourCells: ComputedRef<HourCell[]>;
   /**
    * Dia: SLICES do recorte dos itens ao range do dia (`sliceTimelineItems`) — o
    * layout posiciona pelo recorte, as flags de continuação vêm daqui (D4).
    */
-  daySlices: ComputedRef<DaySlice<AppointmentDto>[]>;
+  daySlices: ComputedRef<DaySlice<AgendaItem>[]>;
   /** Blocos da visão Dia posicionados em % (layoutDayTimeline sobre os slices). */
   dayBlocks: ComputedRef<SliceTimelineBlock[]>;
   /** Offset do fuso no RANGE (meia-noite local do dia focado) — a grade deriva daqui. */
@@ -167,13 +189,33 @@ export interface UseAgendaPage {
   openMonth(month: number): void;
 }
 
-export function useAgendaPage(): UseAgendaPage {
+export interface UseAgendaPageOptions {
+  /**
+   * Nome do dono da agenda emprestada (fonte = `sourceOwner`) — vem da página
+   * (query `qk.sharedAgendas`); o composable não busca nada (vue.md: query só em
+   * composable de query). O FUSO continua o do VISUALIZADOR (`auth.user.timezone`):
+   * C.19 é satisfeito por construção — o dono nunca mede offset aqui.
+   */
+  sourceName?: Ref<string>;
+}
+
+export function useAgendaPage(options: UseAgendaPageOptions = {}): UseAgendaPage {
   const auth = useAuthStore();
   const timezone = computed(() => auth.user?.timezone ?? 'UTC');
 
   const anchor = ref(setAnchorDate0());
   const view = ref<AgendaView>(storedView() ?? defaultAgendaView());
   watch(view, (v) => storeView(v));
+
+  /**
+   * Fonte da agenda (spec C.17, decisão D9). TROCAR a fonte NÃO reseta nada:
+   * `view`/`anchor`/período continuam os mesmos — só a dimensão `owner` da chave
+   * da query muda. `readonly` é DERIVADO daqui (fonte emprestada ⇒ tudo
+   * somente-leitura): a página não recebe um flag que possa desyncar.
+   */
+  const sourceOwner = ref<string | null>(null);
+  const sourceName = computed(() => (sourceOwner.value ? (options.sourceName?.value ?? '') : ''));
+  const readonly = computed(() => sourceOwner.value !== null);
 
   const offset = computed(() => measureTzOffset(timezone.value, anchor.value));
 
@@ -305,7 +347,7 @@ export function useAgendaPage(): UseAgendaPage {
     short: monthName(displayedMonthStart.value, timezone.value, 'short'),
   }));
 
-  /** Período da query por visão (D.14): UMA query `qk.appointments(from,to)`. */
+  /** Período da query por visão (D.14): UMA query `qk.appointments(from,to,owner)`. */
   const range = computed<DateRange>(() => {
     switch (view.value) {
       case 'day':
@@ -326,9 +368,16 @@ export function useAgendaPage(): UseAgendaPage {
 
   const from = computed(() => range.value.start.toISOString());
   const to = computed(() => range.value.end.toISOString());
-  const appointmentsQuery = useAppointmentsQuery(from, to);
+  /**
+   * A FONTE entra na query (D9): `sourceOwner` nulo = agenda própria (parse do
+   * shape de sempre); uuid = emprestada (parse do subconjunto). Como a resposta
+   * pode ser um dos dois shapes, os itens aqui vivem como a unión `AgendaItem`.
+   */
+  const appointmentsQuery = useAppointmentsQuery(from, to, sourceOwner);
 
-  const items = computed(() => sortAppointmentsByStart(appointmentsQuery.data.value?.items ?? []));
+  const items = computed<AgendaItem[]>(() =>
+    sortAppointmentsByStart(appointmentsQuery.data.value?.items ?? []),
+  );
 
   const cells = computed(() => monthCells(grid.value, offset.value, now.value));
   /**
@@ -336,7 +385,6 @@ export function useAgendaPage(): UseAgendaPage {
    * densidade das bolinhas; o Dia usa `items` inteiro (a carga já é por intersecção).
    */
   const byDay = computed(() => groupByLocalDayTouched(items.value, offset.value));
-
   /**
    * Offset do fuso no RANGE: meia-noite LOCAL do início do período (o MESMO offset
    * que `buildMonth`/`monthGridRange` derivam — ADR-002, modelo de offset único por
@@ -378,8 +426,8 @@ export function useAgendaPage(): UseAgendaPage {
    * A meia-noite local de cada linha vem do próprio `row.start`/`row.end`
    * (meia-noites locais reais — mesma fonte da grade de horas da linha).
    */
-  const slicesByRowDate = computed<Map<string, DaySlice<AppointmentDto>[]>>(() => {
-    const out = new Map<string, DaySlice<AppointmentDto>[]>();
+  const slicesByRowDate = computed<Map<string, DaySlice<AgendaItem>[]>>(() => {
+    const out = new Map<string, DaySlice<AgendaItem>[]>();
     for (const row of rows.value) {
       out.set(row.date, sliceTimelineItems(items.value, { start: row.start, end: row.end }));
     }
@@ -501,6 +549,9 @@ export function useAgendaPage(): UseAgendaPage {
     rangeOffsetMin,
     density,
     todayKey,
+    sourceOwner,
+    sourceName,
+    readonly,
     setView,
     shift,
     goToday,
