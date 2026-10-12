@@ -29,6 +29,9 @@ import type { Env } from '../../config/env.validation';
     AuthSessionsService,
     MailService,
   ],
-  exports: [AuthService],
+  // MailService exportado (Etapa 2 do compartilhamento): SharedAgendasService
+  // precisa do unico ponto de saida de email (regra depcruise resend-encapsulation)
+  // sem importar Resend diretamente.
+  exports: [AuthService, MailService],
 })
 export class AuthModule {}

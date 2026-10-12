@@ -69,7 +69,7 @@ function make(
     return 1;
   });
   const outbox = { materializeInTx, enqueueJobs, invalidateForAppointment };
-  const svc = new AppointmentsService(prisma as never, outbox as never);
+  const svc = new AppointmentsService(prisma as never, outbox as never, undefined as never, undefined as never);
   svc.now = () => NOW;
   return { svc, calls, materializeInTx, enqueueJobs, invalidateForAppointment };
 }

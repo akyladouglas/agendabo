@@ -27,6 +27,23 @@ const CROSS_MODULE_EDGES = {
   // (src/workers/, ADR-009) consome DispatchService via entrypoint fino.
   'modules/notifications': ['modules', 'workers'],
   'modules/users': ['modules'],
+  // Compartilhamento de agenda (spec F.6/decisao D1): os consumidores do
+  // SharedAgendasService sao declarados ANTES de existirem para a regra ficar
+  // restritiva desde o primeiro commit:
+  //  - modules/appointments: resolucao de vinculo ativo na leitura emprestada (Etapa 3);
+  //  - modules/notifications: vinculos ativos no digest (Etapa 4);
+  //  - modules/bot e modules/ai: alvo de consulta / negacao de escrita (Etapa 4);
+  //  - workers: o worker standalone consome services exportados (padrao notifications);
+  //  - app.module.ts: composition root (importa o .module.ts — liberado a parte
+  //    pela regra, listado por documentacao da dependencia no grafo).
+  // shared-agendas -> modules/auth (MailService) e coberto pela aresta 'modules'
+  // (auth aceita qualquer fonte de src/modules — guard/infra de identidade).
+  'modules/shared-agendas': [
+    'modules',
+    'workers',
+    'shared',
+    'app.module.ts',
+  ],
 };
 
 /** @type {import('dependency-cruiser').IConfiguration} */

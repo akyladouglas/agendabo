@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  listAppointmentsQuerySchema,
   relocationOptionsInputSchema,
   rescheduleAppointmentInputSchema,
 } from './appointments';
@@ -124,6 +125,51 @@ describe('relocationOptionsInputSchema', () => {
       relocationOptionsInputSchema.parse({
         startsAt: '2026-10-12T14:30:00.000Z',
         endsAt: '2026-10-12T14:30:00.000Z',
+      }),
+    ).toThrow();
+  });
+});
+
+/**
+ * Compartilhamento (spec B.12, decisao D2 do plano): a listagem ganha `owner`
+ * OPCIONAL (uuid do dono = agenda emprestada); sem `owner` o comportamento e o
+ * de hoje (regressao zero).
+ */
+describe('listAppointmentsQuerySchema — owner opcional (agenda emprestada)', () => {
+  it('owner uuid valido parseia junto de from/to', () => {
+    const parsed = listAppointmentsQuerySchema.parse({
+      from: '2026-10-12T00:00:00.000Z',
+      to: '2026-10-12T23:59:59.000Z',
+      owner: id1,
+    });
+    expect(parsed.owner).toBe(id1);
+  });
+
+  it('owner invalido (nao-uuid) rejeita', () => {
+    expect(() =>
+      listAppointmentsQuerySchema.parse({
+        from: '2026-10-12T00:00:00.000Z',
+        to: '2026-10-12T23:59:59.000Z',
+        owner: 'fulano',
+      }),
+    ).toThrow();
+  });
+
+  it('sem owner continua identico ao de hoje (agenda propria — sem regressao)', () => {
+    const parsed = listAppointmentsQuerySchema.parse({
+      from: '2026-10-12T00:00:00.000Z',
+      to: '2026-10-12T23:59:59.000Z',
+    });
+    expect(parsed.owner).toBeUndefined();
+    expect('owner' in parsed).toBe(false);
+  });
+
+  it('refine to >= from continua valendo com owner presente', () => {
+    expect(() =>
+      listAppointmentsQuerySchema.parse({
+        from: '2026-10-13T00:00:00.000Z',
+        to: '2026-10-12T00:00:00.000Z',
+        owner: id1,
       }),
     ).toThrow();
   });

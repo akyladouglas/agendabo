@@ -56,16 +56,19 @@ function make(opts: { rows?: Record<string, ReturnType<typeof appt>> } = {}) {
     },
   };
   const prisma = {
+    // O service agora injeta `select` explícito na findMany de conflito
+    // (campos de revisão fora do round-trip); o mock devolve as MESMAS linhas
+    // cruas de sempre — o select é comportamento do Prisma real, não regra.
+    appointment: {
+      findFirst: async ({ where }: { where: Record<string, unknown> }) =>
+        rows[where.id as string] ?? null,
+      findMany: async () => Object.values(rows),
+    },
     $transaction: async (fn: (t: typeof tx) => Promise<unknown>) => {
       calls.push('tx.begin');
       const out = await fn(tx);
       calls.push('tx.commit');
       return out;
-    },
-    appointment: {
-      findFirst: async ({ where }: { where: Record<string, unknown> }) =>
-        rows[where.id as string] ?? null,
-      findMany: async () => Object.values(rows),
     },
     notificationRule: { findMany: async () => [{ type: 'before_hours', value: 2 }] },
   };
@@ -85,7 +88,7 @@ function make(opts: { rows?: Record<string, ReturnType<typeof appt>> } = {}) {
     return 1;
   });
   const outbox = { materializeInTx, enqueueJobs, invalidateForAppointment };
-  const svc = new AppointmentsService(prisma as never, outbox as never);
+  const svc = new AppointmentsService(prisma as never, outbox as never, undefined as never, undefined as never);
   svc.now = () => NOW;
   return { svc, calls, materializeInTx, enqueueJobs, invalidateForAppointment };
 }

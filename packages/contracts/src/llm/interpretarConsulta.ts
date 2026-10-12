@@ -36,6 +36,17 @@ export const interpretarConsultaSchema = z.discriminatedUnion('tipo', [
         'fim_de_semana',
       ])
       .optional(),
+    /**
+     * Alvo da consulta (spec compartilhamento E.24, decisao D6 do plano): o LLM
+     * só EXTRAI o alvo; a decisao de ACESSO e deterministica (o service casa
+     * `alvo_nome` com os vinculos ativos recebidos do usuario — regua 1/N/0).
+     * Ausente = `minha` (regressao zero no fluxo atual). Modo STRIP (gotcha 4):
+     * parse/confianca baixa do alvo => o bot pergunta "De qual agenda?" e nunca
+     * chuta.
+     */
+    alvo: z.enum(['minha', 'compartilhada']).optional(),
+    /** Nome da agenda compartilhada COMO DITO na fala (comparacao fica no service). */
+    alvo_nome: z.string().min(1).max(120).optional(),
     confidence: z.number().min(0).max(1),
   }),
   /** Usuario nao estava perguntando sobre agenda (o bot segue outro fluxo). */
@@ -94,6 +105,20 @@ export const interpretarConsultaTool = {
         description:
           'Use para fala relativa (hoje, amanha, semana que vem, ...): a data e resolvida ' +
           'por regra deterministica, nao por voce. Prefira simbolo a calcular datas voce mesmo.',
+      },
+      alvo: {
+        type: 'string',
+        enum: ['minha', 'compartilhada'],
+        description:
+          'Use alvo=compartilhada quando a pergunta for sobre a agenda de OUTRA pessoa ' +
+          'compartilhada com o usuario; omita alvo (ou use minha) para a agenda propria do usuario.',
+      },
+      alvo_nome: {
+        type: 'string',
+        description:
+          'Quando alvo=compartilhada: o nome da pessoa COMO DITO na fala, como dito ' +
+          '(ex.: "agenda da Fulano" => "Fulano"). Nao invente nem corrija o nome; ' +
+          'omita quando alvo nao for compartilhada.',
       },
       confidence: { type: 'number', description: 'Confianca da interpretacao, 0 a 1' },
     },

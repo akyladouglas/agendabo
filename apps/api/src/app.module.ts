@@ -11,6 +11,7 @@ import { AuthModule } from './modules/auth/auth.module';
 import { BotModule } from './modules/bot/bot.module';
 import { NotificationsModule } from './modules/notifications/notifications.module';
 import { ObservabilidadeModule } from './modules/observabilidade/observabilidade.module';
+import { SharedAgendasModule } from './modules/shared-agendas/shared-agendas.module';
 import { UsersModule } from './modules/users/users.module';
 import { HealthController } from './health/health.controller';
 import { PrismaModule } from './shared/prisma/prisma.module';
@@ -52,6 +53,7 @@ import { JwtAuthGuard } from './modules/auth/jwt-auth.guard';
     NotificationsModule,
     AiModule,
     ObservabilidadeModule,
+    SharedAgendasModule,
   ],
   controllers: [HealthController],
   providers: [

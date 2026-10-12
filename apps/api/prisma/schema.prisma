@@ -124,6 +124,16 @@ model User {
   botEvents BotEvent[]
   /// Chamadas LLM atribuidas a este usuario (Fase 9; chamada sem dono e null)
   llmCalls  LlmCall[]
+  /// Vinculos de agenda que este usuario compartilha como DONO (compartilhamento A.1)
+  sharedAgendasOwned SharedAgenda[] @relation("sharedOwner")
+  /// Vinculos de agenda que este usuario recebeu como CONVIDADO (compartilhamento A.1)
+  sharedAgendasGuest SharedAgenda[] @relation("sharedGuest")
+  /// Eventos de auditoria de compartilhamento praticados por este usuario (F.4)
+  sharedAgendaAuditActs SharedAgendaAuditEvent[] @relation("sharedAuditActor")
+  /// Auditoria de vinculos onde este usuario e o dono (F.4)
+  sharedAgendaAuditOwner SharedAgendaAuditEvent[] @relation("sharedAuditOwner")
+  /// Auditoria de vinculos onde este usuario e o convidado (F.4)
+  sharedAgendaAuditGuest SharedAgendaAuditEvent[] @relation("sharedAuditGuest")
 
   @@map("users")
 }
@@ -308,4 +318,83 @@ model LlmCall {
   @@index([userId, createdAt])
   @@index([purpose, createdAt])
   @@map("llm_calls")
+}
+
+/// Vinculo compartilhado par ordenado dono -> convidado, papel fixo `read` e
+/// status `pending | active | revoked` (spec compartilhamento A.1; decisoes
+/// D11/D13 do plano). A linha do par PERSISTE entre reconvites (revoked->pending
+/// na MESMA linha — historico do vinculo e ela mesma). Status/role sao varchar
+/// com CHECK na migracao (nao enum Prisma — decisao D11; a borda e o zod dos
+/// contracts).
+model SharedAgenda {
+  id       String @id @default(uuid()) @db.Uuid
+  /// Papel do convidado — fixo `read` no v1 (P1); coluna com default/check para
+  /// um futuro papel nao exigir migration.
+  role     String @default("read")
+  /// pending | active | revoked (CHECK na migracao).
+  status   String @default("pending")
+  /// Hash sha256 do token opaco do convite — o valor cru NUNCA e gravado (F.2).
+  /// Null fora de `pending` (aceite/revogar zeram). Unicidade PARCIAL entre
+  /// pendentes: `@@unique` do Prisma NAO expressa WHERE parcial (licao F.6 do
+  /// digest/reset/admin) — a constraint real e o CREATE UNIQUE INDEX ... WHERE
+  /// "status" = 'pending' criado no SQL da migracao 20261012000000_shared_agendas.
+  tokenHash       String?
+  inviteSentAt    DateTime?
+  /// TTL do convite: 24h (spec A.5). Expiracao checada NA HORA (`inviteIsLive`)
+  /// — sem job/cron; aceite tardio cai na falha genérica unica.
+  inviteExpiresAt DateTime?
+  acceptedAt      DateTime?
+  revokedAt       DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  ownerId String @db.Uuid
+  owner   User   @relation("sharedOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+  guestId String @db.Uuid
+  guest   User   @relation("sharedGuest", fields: [guestId], references: [id], onDelete: Cascade)
+
+  /// Unicidade logica do par ordenado fica no SERVICE (leitura da linha do par),
+  /// NAO em @@unique: a linha persiste entre reconvites por design (D13) e uma
+  /// constraint total nao expressaria nada que o service ja nao garanta (F.6).
+  @@index([ownerId])
+  @@index([guestId])
+  @@index([ownerId, guestId])
+  @@index([tokenHash])
+  /// "Vinculos ativos recebidos" (seletor da web / alvo do bot / secoes do digest)
+  @@index([guestId, status])
+  @@map("shared_agendas")
+}
+
+/// Auditoria do compartilhamento (spec F.4 — 100% completo). Tabela dedicada no
+/// padrao `BotEvent`: `kind` fechado em constante dos contracts e `metadata`
+/// validada por zod `.strict()` ANTES de gravar — proibido por construcao:
+/// qualquer conteudo de compromisso, fala ou email (so ids/quantidades/estados).
+/// Retencao: para sempre (mesma decisao dos bot_events).
+model SharedAgendaAuditEvent {
+  id         String   @id @default(uuid()) @db.Uuid
+  occurredAt DateTime @default(now())
+  /// Quem praticou a acao (dono, convidado ou null quando o sistema a descobriu
+  /// sozinho — ex.: invite_expired_auto). FK Cascade como em BotEvent: o evento
+  /// e do usuario que o gerou.
+  actorId String? @db.Uuid
+  actor   User?   @relation("sharedAuditActor", fields: [actorId], references: [id], onDelete: Cascade)
+
+  /// Dono do vinculo auditado (sempre presente — leitura dos proprios eventos).
+  ownerId String @db.Uuid
+  owner   User   @relation("sharedAuditOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+  /// Convidado do vinculo; null so em eventos sem convidado definido (nao ha
+  /// caso assim no fluxo atual — nullable por seguranca do schema).
+  guestId String? @db.Uuid
+  guest   User?   @relation("sharedAuditGuest", fields: [guestId], references: [id], onDelete: Cascade)
+
+  /// SHARED_AUDIT_KINDS dos contracts (11 valores — constante testavel da F.4).
+  kind     String
+  /// Metadados estruturados (parseSharedAuditMetadata): uuids/int/bool/enum/ISO.
+  metadata Json?
+
+  @@index([ownerId, occurredAt])
+  @@index([guestId, occurredAt])
+  @@index([actorId, occurredAt])
+  @@index([kind, occurredAt])
+  @@map("shared_agenda_audit_events")
 }

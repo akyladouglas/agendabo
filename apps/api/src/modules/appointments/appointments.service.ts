@@ -36,6 +36,8 @@ type RawAppointmentRow = {
 };
 import { PrismaService } from '../../shared/prisma/prisma.service';
 import { OutboxService } from '../notifications/outbox.service';
+import { SharedAgendaAuditService } from '../shared-agendas/shared-agenda-audit.service';
+import { SharedAgendasService } from '../shared-agendas/shared-agendas.service';
 
 /** Erro de dominio: conflito de horario (1.1). A controller vira 409 com o compromisso que choca. */
 export class AppointmentConflictError extends Error {
@@ -48,6 +50,21 @@ export class AppointmentConflictError extends Error {
 export class RelocationNotAvailableError extends Error {
   constructor(readonly conflictWith: { id: string; title: string; startsAt: Date; endsAt: Date }) {
     super('jogada de reagendamento nao disponivel');
+  }
+}
+
+/**
+ * Erro de dominio (spec compartilhamento B.12): o `owner` pedido nao tem vinculo
+ * ATIVO dono=owner/convidado=sessao. TODOS os sabores — dono inexistente, vinculo
+ * pendente (vivo ou morto), revogado, self sem vinculo — caem aqui: o controller
+ * mapeia para o 403 UNIFORME `{ code: 'shared_access_invalid' }` (a resposta nao
+ * distingue inexistente/pendente/revogado — anti-oraculo). Padrao
+ * `SharedInviteInvalidError` (Etapa 2); handler no controller e obrigatorio
+ * (gotcha 15 — sem handler vira 500).
+ */
+export class SharedAccessInvalidError extends Error {
+  constructor() {
+    super('acesso compartilhado invalido');
   }
 }
 
@@ -68,6 +85,8 @@ export class AppointmentsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly outbox: OutboxService,
+    private readonly sharedAgendas: SharedAgendasService,
+    private readonly sharedAudit: SharedAgendaAuditService,
   ) {}
 
   /** Relógio da borda (testes sobrescrevem — testing.md; regra de domínio recebe `now`). */
@@ -84,12 +103,47 @@ export class AppointmentsService {
    * multi-dia invisível na grade (gotcha 25). Status/campos/order inalterados.
    */
   async list(userId: string, raw: unknown) {
-    const { from, to } = listAppointmentsQuerySchema.parse(raw);
+    const { from, to, owner } = listAppointmentsQuerySchema.parse(raw);
+
+    // SEM `owner` — agenda propria: caminho IDENTICO ao de hoje (D2, zero branch
+    // no hot path de quem nao compartilha). Mesmo where/include/ordem.
+    if (owner === undefined) {
+      const items = await this.prisma.appointment.findMany({
+        where: { userId, startsAt: { lt: to }, endsAt: { gte: from } },
+        orderBy: { startsAt: 'asc' },
+        include: { notificationRules: true },
+      });
+      return { items };
+    }
+
+    // COM `owner` — agenda EMPRESTADA (spec B.12/B.13, decisoes D2/D3).
+    // 1. Vinculo ATIVO dono=owner/convidado=sessao. Qualquer outro sabor
+    //    (inexistente/pendente/pendente-morto/revogado/self) e o MESMO erro.
+    const link = await this.sharedAgendas.activeLinkBetween(owner, userId);
+    if (!link) throw new SharedAccessInvalidError();
+
+    // 2. Privacidade na CONSULTA (D3/B.13): `status: 'confirmed'` fixo (a fila
+    //    needs_review do dono e invisivel) e `select` explicito SEM
+    //    rawText/reviewReason/notificationRules. O indice [userId, startsAt]
+    //    cobre a forma do where+orderBy.
     const items = await this.prisma.appointment.findMany({
-      where: { userId, startsAt: { lt: to }, endsAt: { gte: from } },
+      where: { userId: owner, status: 'confirmed', startsAt: { lt: to }, endsAt: { gte: from } },
       orderBy: { startsAt: 'asc' },
-      include: { notificationRules: true },
+      select: { id: true, title: true, startsAt: true, endsAt: true, notes: true, status: true, createdAt: true },
     });
+
+    // 3. Auditoria `access_read` best-effort ANTES do return (F.4). O
+    //    `registrar` NUNCA lanca (try/catch interno — padrao BotEventsService,
+    //    invariante testada no spec dele). A list nao envolve o audit por try/
+    //    catch proprio: se o contrato do auditor quebrar um dia, a queixa morre
+    //    no auditor — silenciar aqui esconderia o bug (revisao R1).
+    await this.sharedAudit.registrar(userId, 'access_read', {
+      ownerId: owner,
+      guestId: userId,
+      metadata: { count: items.length },
+    });
+
+    // 4. Shape `{ items }` — a web faz safeParse em `sharedAppointmentListResultSchema`.
     return { items };
   }
 
@@ -121,7 +175,9 @@ export class AppointmentsService {
   async checkConflict(userId: string, raw: unknown) {
     const input = checkConflictInputSchema.parse(raw);
     const existing = await this.existingFor(userId, input, input.ignoreId);
-    const result = findConflict(input, existing);
+    // `now` da borda injetado na regra (testing.md): o default `new Date()` do
+    // findConflict vazava o relógio real e tornava a checagem não-determinística.
+    const result = findConflict(input, existing, { now: this.now() });
     return { conflict: result.conflict, with: result.with ?? null };
   }
 
@@ -676,7 +732,10 @@ export class AppointmentsService {
     ignoreId?: string,
   ): Promise<void> {
     const existing = await this.existingFor(userId, candidate, ignoreId);
-    const result = findConflict(candidate, existing);
+    // `now` da borda injetado na regra (testing.md): sem isto o findConflict usava
+    // o relógio real e um obstáculo que cruza "agora" entre a carga e a checagem
+    // parava de contar — sobreposição no futuro gravada (não-determinístico).
+    const result = findConflict(candidate, existing, { now: this.now() });
     if (result.conflict && result.with) {
       throw new AppointmentConflictError(result.with);
     }

@@ -14,14 +14,24 @@ import {
   AppointmentConflictError,
   AppointmentsService,
   RelocationNotAvailableError,
+  SharedAccessInvalidError,
 } from './appointments.service';
 
 @Controller('appointments')
 export class AppointmentsController {
   constructor(private readonly service: AppointmentsService) {}
   @Get()
-  list(@CurrentUser() user: { id: string }, @Query() query: Record<string, string>) {
-    return this.service.list(user.id, query);
+  async list(@CurrentUser() user: { id: string }, @Query() query: Record<string, string>) {
+    try {
+      return await this.service.list(user.id, query);
+    } catch (err) {
+      // Compartilhamento (spec B.12, gotcha 15): sem vinculo ATIVO o 403 e
+      // UNIFORME — nao distingue dono inexistente/pendente/revogado/self.
+      if (err instanceof SharedAccessInvalidError) {
+        throw new HttpException({ code: 'shared_access_invalid' }, 403);
+      }
+      throw err;
+    }
   }
 
   @Post('check-conflict')

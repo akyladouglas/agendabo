@@ -7,11 +7,21 @@ import {
 } from '../entities/appointment';
 import { isoDateSchema } from '../primitives';
 
-/** GET /appointments?from=&to= — listagem para o calendario (timezone resolvido na API). */
+/**
+ * GET /appointments?from=&to= — listagem para o calendario (timezone resolvido na API).
+ *
+ * `owner` opcional (spec compartilhamento B.12, decisao D2 do plano): SEM `owner`
+ * a agenda e a propria (comportamento identico ao de hoje); COM `owner` (uuid do
+ * dono) a agenda e EMPRESTADA — o service resolve o vinculo ativo dono=owner /
+ * convidado=sessao e responde 403 uniforme sem vinculo (B.12/B.13). As rotas de
+ * ESCrita continuam sem parâmetro de dono (B.15) — elas nem usam este schema.
+ */
 export const listAppointmentsQuerySchema = z
   .object({
     from: isoDateSchema,
     to: isoDateSchema,
+    /** Dono da agenda a listar (uuid); ausente = agenda propria. */
+    owner: z.string().uuid().optional(),
   })
   .refine((v) => v.to.getTime() >= v.from.getTime(), {
     message: 'to deve ser depois de from',

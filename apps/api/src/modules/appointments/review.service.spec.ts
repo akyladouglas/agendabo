@@ -234,6 +234,8 @@ describe('ReviewService (fila needs_review — Fase 4)', () => {
       {
         materializeInTx: jest.fn(),
       } as never,
+      undefined as never,
+      undefined as never,
     );
     await svc.list('u1', {
       from: '2026-10-01T00:00:00.000Z',

@@ -25,7 +25,7 @@ function make() {
     enqueueJobs: jest.fn().mockResolvedValue(undefined),
     invalidateForAppointment: jest.fn().mockResolvedValue(0),
   };
-  const svc = new AppointmentsService(prisma as never, outbox as never);
+  const svc = new AppointmentsService(prisma as never, outbox as never, undefined as never, undefined as never);
   svc.now = () => NOW;
   return { svc, findMany };
 }
