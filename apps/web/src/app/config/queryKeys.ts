@@ -9,6 +9,8 @@ export const qk = {
   appointmentsAll: ['appointments'] as const,
   review: ['review'] as const,
   profile: ['profile'] as const,
+  /** Sessao 24h: GET /auth/sessions (dispositivos logados). */
+  sessions: ['sessions'] as const,
   /** Fase 9 (página Admin): flags de papel, eventos do bot, custo de LLM, usuários. */
   obsMe: ['obs', 'me'] as const,
   botEvents: (params: Record<string, string | number | undefined>) =>

@@ -83,7 +83,7 @@
               variant="ghost"
               size="sm"
               class="gap-2 px-3"
-              @click="auth.logout()"
+              @click="() => void auth.logout()"
             >
               <LogOut
                 class="h-4 w-4"
@@ -158,7 +158,7 @@
           <div class="mt-auto border-t border-border pt-2">
             <button
               class="od-move flex min-h-11 w-full items-center gap-2 rounded-md px-3 text-left text-sm font-medium text-danger hover:bg-muted"
-              @click="auth.logout(); closeMenu()"
+              @click="onLogoutMobile"
             >
               <LogOut
                 class="h-4 w-4"
@@ -228,5 +228,11 @@ async function go(to: string): Promise<void> {
 
 function closeMenu(): void {
   menuOpen.value = false;
+}
+
+/** Gaveta <md: encerra a gaveta na hora; o logout (await API + redirect) segue. */
+function onLogoutMobile(): void {
+  closeMenu();
+  void auth.logout();
 }
 </script>

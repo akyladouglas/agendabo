@@ -90,7 +90,7 @@ D-W1. **`AppointmentModal` (criar E editar)**: ao salvar com conflito (via `chec
 
 - **`move-other`** → botão "**Mover ‹título do existente› para ‹novo horário no tz do usuário›**";
 - **`move-self`** → botão "**Criar ‹novo horário› movendo este para ‹novo horário self›**" (modo criar) / "**Salvar ‹novo horário› movendo este para ‹novo horário self›**" (modo editar);
-- **Cancelar** (fecha sem salvar).
+- **Cancelar** é o botão do rodapé do modal (o Reagendamento Assistido NÃO tem botão de cancelar próprio — decisão humana 2026-10-11: a seção só mostra as jogadas; fechar/descartar é papel do rodapé).
 
 D-W2. Ao confirmar uma opção, o form chama `POST /appointments/reschedule`:
 

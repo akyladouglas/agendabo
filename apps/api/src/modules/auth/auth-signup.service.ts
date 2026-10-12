@@ -18,6 +18,8 @@ import { PrismaService } from '../../shared/prisma/prisma.service';
 import { AuthService } from './auth.service';
 import { MailService } from './mail.service';
 import { verificationCodeEmailHtml } from './verification-email';
+import { newLoginEmail } from './new-login-email';
+import { computeSessionExpiry } from './session-expiry';
 import { evaluateResendQuota, generateNumericCode, sha256Hex } from './verification-code';
 
 const CODE_TTL_MS = 15 * 60_000;
@@ -27,6 +29,18 @@ export class EmailAlreadyInUseError extends Error {}
 export class TelegramAlreadyInUseError extends Error {}
 export class InvalidCredentialsError extends Error {}
 export class EmailNotConfirmedError extends Error {}
+/**
+ * Spec sessão-24h (decisão humana nº 1): a cadeia de refresh morreu no teto
+ * absoluto (`loginAt + SESSION_ABSOLUTE_TTL`). A controller mapeia para o 401
+ * com `code: 'session_expired'` — a web faz forceLogout com aviso.
+ */
+export class SessionExpiredError extends Error {}
+
+/** Metadados da requisição gravados na sessão (D4 do plano: ip só registrado). */
+export interface SessionMeta {
+  ip?: string | null;
+  userAgent?: string | null;
+}
 
 @Injectable()
 export class AuthSignupService {
@@ -36,6 +50,20 @@ export class AuthSignupService {
     private readonly mail: MailService,
     private readonly config: ConfigService<Env, true>,
   ) {}
+
+  /** Borda do relógio (D1 do plano): injectable em teste via subclass/spy — a
+   *  regra de data em si mora na pura `computeSessionExpiry`. */
+  protected now(): Date {
+    return new Date();
+  }
+
+  /** TTLs (ms) lidos do env: deslizante do refresh + teto absoluto da cadeia. */
+  private sessionTtlsMs(): { refreshTtlMs: number; absoluteTtlMs: number } {
+    return {
+      refreshTtlMs: this.config.get('REFRESH_TOKEN_TTL_DAYS', { infer: true }) * 86_400_000,
+      absoluteTtlMs: this.config.get('SESSION_ABSOLUTE_TTL_HOURS', { infer: true }) * 3_600_000,
+    };
+  }
 
   /** Cadastro (3.1): cria conta pendente + envia primeiro codigo (nao conta como reenvio).
    *  Falha de email NAO desfaz a conta nem explode o cadastro: o codigo fica criado e
@@ -209,8 +237,12 @@ export class AuthSignupService {
     return { confirmed: true as const };
   }
 
-  /** Login (3.2): credenciais + email confirmado. */
-  async login(raw: unknown) {
+  /** Login (3.2): credenciais + email confirmado. A linha de refresh que nasce
+   *  aqui É a sessão (spec sessão-24h): loginAt/ip/userAgent + expiresAt capado
+   *  no teto absoluto. Login NÃO revoga as outras sessões (múltiplos devices é o
+   *  objetivo). `refreshExpiresAt` é o expiresAt REAL — a controller usa como
+   *  maxAge do cookie (D6 do plano). */
+  async login(raw: unknown, meta: SessionMeta = {}) {
     const input = loginInputSchema.parse(raw);
     const user = await this.prisma.user.findUnique({
       where: { email: input.email },
@@ -220,15 +252,30 @@ export class AuthSignupService {
     }
     if (!user.emailConfirmedAt) throw new EmailNotConfirmedError();
 
+    const now = this.now();
+    // Sessões ANTES deste login (fingerprint prévio do dispositivo — decisão 3).
+    const priorSessions = await this.prisma.refreshToken.findMany({
+      where: { userId: user.id, expiresAt: { gt: now } },
+      select: { userAgent: true },
+    });
+
     const refresh = this.auth.newRefreshToken();
+    const { refreshTtlMs, absoluteTtlMs } = this.sessionTtlsMs();
+    const expiresAt = computeSessionExpiry({
+      now,
+      loginAt: now,
+      absoluteTtlMs,
+      refreshTtlMs,
+    }).expiresAt;
     try {
       await this.prisma.refreshToken.create({
         data: {
           tokenHash: refresh.tokenHash,
           userId: user.id,
-          expiresAt: new Date(
-            Date.now() + this.config.get('REFRESH_TOKEN_TTL_DAYS', { infer: true }) * 86_400_000,
-          ),
+          expiresAt,
+          loginAt: now,
+          ip: meta.ip ?? null,
+          userAgent: meta.userAgent ?? null,
         },
       });
     } catch (err) {
@@ -243,9 +290,19 @@ export class AuthSignupService {
       email: user.email,
       telegramId: user.telegramId,
     });
+    // Alerta de dispositivo novo: best-effort apos o login bem-sucedido (falha de
+    // email NUNCA quebra o login — padrao sendNewCode). Await interno com try/catch.
+    await this.maybeSendNewLoginAlert({
+      email: user.email,
+      priorSessions,
+      meta,
+      at: now,
+    });
     return {
       accessToken,
       refreshToken: refresh.token,
+      /** expiresAt REAL da linha criada — maxAge do cookie na controller (D6). */
+      refreshExpiresAt: expiresAt,
       user: {
         id: user.id,
         email: user.email,
@@ -261,15 +318,33 @@ export class AuthSignupService {
     };
   }
 
-  /** POST /auth/refresh — rotaciona o refresh token (cookie httpOnly). */
-  async refresh(rawToken: string | undefined) {
+  /**
+   * POST /auth/refresh — rotaciona o refresh token (cookie httpOnly) DENTRO do
+   * teto absoluto da cadeia (spec sessão-24h, decisão humana nº 1): o novo token
+   * HERDA o `loginAt` e recebe `expiresAt = min(now + refreshTtl, loginAt + teto)`.
+   * Passou do teto → a linha MORRE no banco e `SessionExpiredError` sobe (a
+   * controller faz o 401 `session_expired`). Token pré-teto sem loginAt (sessões
+   * criadas antes da migration) ganha `loginAt = now` — vive no máximo 24h após
+   * o deploy, aceito na spec.
+   */
+  async refresh(rawToken: string | undefined, meta: SessionMeta = {}) {
     if (!rawToken) throw new UnauthorizedException();
+    const now = this.now();
     const tokenHash = this.auth.hashRefreshToken(rawToken);
     const stored = await this.prisma.refreshToken.findUnique({
       where: { tokenHash },
       include: { user: true },
     });
-    if (!stored || stored.expiresAt <= new Date()) throw new UnauthorizedException();
+    if (!stored || stored.expiresAt <= now) throw new UnauthorizedException();
+
+    const { refreshTtlMs, absoluteTtlMs } = this.sessionTtlsMs();
+    const loginAt = stored.loginAt ?? now; // linha pré-migration: o login é agora
+    const expiry = computeSessionExpiry({ now, loginAt, absoluteTtlMs, refreshTtlMs });
+    if (expiry.expired) {
+      // cadeia morta: a linha sobrevivente não tem propósito — apaga e responde 401.
+      await this.prisma.refreshToken.delete({ where: { id: stored.id } });
+      throw new SessionExpiredError();
+    }
 
     const next = this.auth.newRefreshToken();
     await this.prisma.$transaction([
@@ -278,9 +353,10 @@ export class AuthSignupService {
         data: {
           tokenHash: next.tokenHash,
           userId: stored.userId,
-          expiresAt: new Date(
-            Date.now() + this.config.get('REFRESH_TOKEN_TTL_DAYS', { infer: true }) * 86_400_000,
-          ),
+          expiresAt: expiry.expiresAt,
+          loginAt, // HERDADO — é isso que faz o teto valer para a cadeia toda
+          ip: meta.ip ?? stored.ip,
+          userAgent: meta.userAgent ?? stored.userAgent,
         },
       }),
     ]);
@@ -294,6 +370,8 @@ export class AuthSignupService {
     return {
       accessToken,
       refreshToken: next.token,
+      /** expiresAt REAL do novo token — maxAge do cookie na controller (D6). */
+      refreshExpiresAt: expiry.expiresAt,
       user: {
         id: stored.user.id,
         email: stored.user.email,
@@ -304,6 +382,41 @@ export class AuthSignupService {
         isAdmin: stored.user.isAdmin,
       },
     };
+  }
+
+  /**
+   * E-mail de alerta de novo login (spec sessão-24h, decisão humana nº 3 / D4):
+   * fingerprint é o user-agent (ip flutua — alarme falso). Regras:
+   * - nenhuma sessão prévia (primeiro login) → nada;
+   * - login sem user-agent → nada (sem fingerprint não há comparação honesta);
+   * - alguma sessão prévia com o MESMO user-agent → mesmo dispositivo, nada;
+   * - senão → e-mail com ip/UA/data-hora + aviso de encerrar sessões.
+   * Falha de e-mail NUNCA quebra o login (padrão sendNewCode: try/catch + stderr).
+   */
+  private async maybeSendNewLoginAlert(input: {
+    email: string;
+    priorSessions: { userAgent: string | null }[];
+    meta: SessionMeta;
+    at: Date;
+  }): Promise<void> {
+    if (input.priorSessions.length === 0) return;
+    const ua = input.meta.userAgent;
+    if (!ua) return;
+    if (input.priorSessions.some((s) => s.userAgent === ua)) return;
+    try {
+      await this.mail.send(
+        newLoginEmail({
+          to: input.email,
+          ip: input.meta.ip ?? null,
+          userAgent: ua,
+          at: input.at,
+        }),
+      );
+    } catch (err) {
+      process.stderr.write(
+        `[mail] alerta de novo login falhou para ${input.email}: ${(err as Error).message}\n`,
+      );
+    }
   }
 
   /** true = email entregue; false = codigo criado mas o envio falhou (logado; a

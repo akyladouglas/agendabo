@@ -212,14 +212,6 @@
         >
           {{ relocationLabel(option) }}
         </AppButton>
-        <AppButton
-          variant="ghost"
-          class="justify-start text-muted-foreground"
-          data-testid="relocation-cancel"
-          @click="form.closeRelocation()"
-        >
-          Cancelar
-        </AppButton>
       </div>
 
       <p

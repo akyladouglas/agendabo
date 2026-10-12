@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { forgotPasswordInputSchema, resetPasswordInputSchema } from "./auth";
+import {
+  activeSessionSchema,
+  authSessionsListResultSchema,
+  forgotPasswordInputSchema,
+  resetPasswordInputSchema,
+  revokeOtherSessionsResultSchema,
+} from "./auth";
 
 /**
  * Contrato da mini-fase "Esqueci a senha" (spec esqueci-a-senha, critérios
@@ -69,5 +75,80 @@ describe("resetPasswordInputSchema (POST /auth/reset-password)", () => {
     });
     expect(parsed.success).toBe(false);
     expect(parsed.error.flatten().fieldErrors.password?.[0]).toMatch(/8/);
+  });
+});
+
+/**
+ * Sessões ativas (spec sessao-24h-e-gestao-de-sessoes): a web DESPENCA se a
+ * lista vier torta — uuid de verdade, ip/UA nullable, loginAt coerido a Date.
+ */
+const SESSION_ID = "3f2b6c1e-8a4d-4a5b-9c3e-1d2f3a4b5c6d";
+
+describe("activeSessionSchema (1 linha por refresh token ativo)", () => {
+  it("aceita a linha completa e converte loginAt ISO em Date", () => {
+    const parsed = activeSessionSchema.parse({
+      id: SESSION_ID,
+      ip: "201.1.2.3",
+      userAgent: "Mozilla/5.0 (Windows NT 10.0)",
+      loginAt: "2026-10-10T09:05:00.000Z",
+      current: true,
+    });
+    expect(parsed.loginAt).toBeInstanceOf(Date);
+    expect(parsed.current).toBe(true);
+  });
+
+  it("tolera ip/userAgent nulos (header ausente nao mata a sessao)", () => {
+    expect(() =>
+      activeSessionSchema.parse({
+        id: SESSION_ID,
+        ip: null,
+        userAgent: null,
+        loginAt: "2026-10-10T09:05:00.000Z",
+        current: false,
+      }),
+    ).not.toThrow();
+  });
+
+  it("rejeita id que nao e uuid e loginAt que nao e data", () => {
+    expect(() =>
+      activeSessionSchema.parse({
+        id: "sessao-1",
+        ip: null,
+        userAgent: null,
+        loginAt: "ontem",
+        current: true,
+      }),
+    ).toThrow();
+  });
+});
+
+describe("authSessionsListResultSchema", () => {
+  it("items e obrigatorio (ausente = payload torto → throw)", () => {
+    expect(authSessionsListResultSchema.parse({ items: [] })).toEqual({
+      items: [],
+    });
+    const parsed = authSessionsListResultSchema.parse({
+      items: [
+        {
+          id: SESSION_ID,
+          ip: null,
+          userAgent: null,
+          loginAt: "2026-10-10T09:05:00.000Z",
+          current: true,
+        },
+      ],
+    });
+    expect(parsed.items).toHaveLength(1);
+    expect(() => authSessionsListResultSchema.parse({})).toThrow();
+  });
+});
+
+describe("revokeOtherSessionsResultSchema", () => {
+  it("revoked e inteiro >= 0 (contagem de sessoes revogadas)", () => {
+    expect(revokeOtherSessionsResultSchema.parse({ revoked: 0 })).toEqual({
+      revoked: 0,
+    });
+    expect(() => revokeOtherSessionsResultSchema.parse({ revoked: -1 })).toThrow();
+    expect(() => revokeOtherSessionsResultSchema.parse({ revoked: 1.5 })).toThrow();
   });
 });

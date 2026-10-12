@@ -118,6 +118,9 @@
           {{ theme.theme === 'dark' ? 'Tema claro' : 'Tema escuro' }}
         </AppButton>
       </AppCard>
+
+      <!-- Sessao 24h: gestao de dispositivos (spec sessao-24h "Web") -->
+      <SessionsCard />
     </div>
   </AppLayout>
 </template>
@@ -138,6 +141,7 @@ import { useAuthStore } from '@/app/store/authStore';
 import { updateProfile } from '@/app/composables/useUpdateProfile.composable';
 import { useThemeStore } from '@/app/store/themeStore';
 import AppLayout from '@/view/layouts/AppLayout.vue';
+import SessionsCard from '@/view/components/profile/SessionsCard.vue';
 import AppCard from '@/view/components/ui/card/Card.vue';
 import AppButton from '@/view/components/ui/button/Button.vue';
 import AppField from '@/view/components/ui/field/Field.vue';

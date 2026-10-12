@@ -2,6 +2,7 @@ import { z } from "zod";
 import { emailSchema, passwordSchema } from "../entities/user";
 import {
   hourOfDaySchema,
+  isoDateSchema,
   optionalText,
   telegramIdSchema,
   timezoneSchema,
@@ -98,3 +99,23 @@ export const loginResultSchema = z.object({
   }),
 });
 export type LoginResult = z.infer<typeof loginResultSchema>;
+
+/**
+ * Sessões ativas (spec sessao-24h-e-gestao-de-sessoes): uma linha por refresh
+ * token vivo. `id` e o uuid do refresh token no banco; `ip`/`userAgent` sao a
+ * impressao digital do login (nulls tolerated — header ausente nao e motivo
+ * para perder a sessao); `current` marca a sessao que fez a requisicao.
+ */
+export const activeSessionSchema = z.object({
+  id: z.string().uuid(),
+  ip: z.string().nullable(),
+  userAgent: z.string().nullable(),
+  loginAt: isoDateSchema,
+  current: z.boolean(),
+});
+
+export const authSessionsListResultSchema = z.object({ items: z.array(activeSessionSchema) });
+export type ActiveSession = z.infer<typeof activeSessionSchema>;
+export type AuthSessionsListResult = z.infer<typeof authSessionsListResultSchema>;
+export const revokeOtherSessionsResultSchema = z.object({ revoked: z.number().int().min(0) });
+export type RevokeOtherSessionsResult = z.infer<typeof revokeOtherSessionsResultSchema>;

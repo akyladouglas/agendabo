@@ -5,12 +5,16 @@ import { setupQuery } from './app/config/query';
 import { setupErrorTracker } from './app/config/errorTracker';
 import { setupPinia } from './app/store/pinia';
 import { useThemeStore } from './app/store/themeStore';
+import { registerSessionExpiredHandler } from './app/composables/useAuthExpiry';
 import './styles/main.css';
 
 async function bootstrap(): Promise<void> {
   const app = createApp(App);
   setupPinia(app);
   setupQuery(app);
+  // sessao 24h: refresh que falha em runtime (teto/cookie morto) limpa o store,
+  // redireciona para /login e toastifica — registrado apos o pinia existir.
+  registerSessionExpiredHandler();
   // tracker antes do mount: erros de boot/render sobem (Fase 9/ADR-0016)
   setupErrorTracker(app);
   // tema antes do router: evita flash claro no primeiro paint (default é escuro)

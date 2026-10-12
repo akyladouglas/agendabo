@@ -22,6 +22,12 @@ const envSchema = z.object({
   JWT_SECRET: z.string().min(16, REQUIRED),
   ACCESS_TOKEN_TTL: z.string().default('15m'),
   REFRESH_TOKEN_TTL_DAYS: z.coerce.number().int().positive().default(30),
+  /**
+   * Spec sessão-24h (decisão humana nº 1): teto ABSOLUTO da cadeia de refresh
+   * desde o login (herdado a cada rotação). O TTL de 30d acima vira só o default
+   * deslizante — o teto manda: `expiresAt = min(now + REFRESH_TTL, loginAt + aqui)`.
+   */
+  SESSION_ABSOLUTE_TTL_HOURS: z.coerce.number().int().positive().default(24),
 
   TELEGRAM_BOT_TOKEN: z.string().min(1).optional(),
   /**

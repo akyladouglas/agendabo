@@ -243,6 +243,10 @@ model RefreshToken {
   tokenHash String   @unique
   expiresAt DateTime
   createdAt DateTime @default(now())
+  /// Instante do LOGIN que originou a cadeia — herdado a cada rotação (spec sessão-24h).
+  loginAt     DateTime @default(now())
+  ip          String?
+  userAgent   String?
 
   userId String @db.Uuid
   user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)

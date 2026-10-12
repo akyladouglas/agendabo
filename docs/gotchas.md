@@ -336,3 +336,22 @@ INTERSECAO meia-aberta, nunca contencao; e corte por `now` em carga de conflito 
 seguro se o par de condicoes for `startsAt < limite AND endsAt >= now` (o contrario
 esconde quem comecou antes). O teste de WHERE (mock na fronteira) e obrigatorio nos
 dois sentidos: tocando pela esquerda E pela direita do periodo.
+
+## 26. refreshOnce sem dedupe por chamada = N rotacoes de cookie numa rajada de 401
+
+**Problema:** spec sessao-24h (web): o refresh ROTACIONA o cookie no servidor
+(delete+create). N queries que tomam 401 ao mesmo tempo chamavam `refreshOnce`
+cada uma → N POSTs `/auth/refresh` concurrentes no MESMO cookie: a segunda
+rotacao em diante ve hash ja revogado e MORRE a sessao (o teto de 24h nem
+precisa chegar). Pior: sem propagar a falha, a web ficava "logada com token
+morto" (o erro era engolido e as queries só repetiam o 401).
+**Fix aplicado:** `refreshOnce` dedupa pela DURACAO DO POST (`inflightRefresh ??=`
+com `finally` limpando) — N queries = 1 rotacao = 1 `sessionExpiredHandler`. O
+dedupe NAO pode ser memoizado permanentemente: a promessa do bootstrap (sessao
+morta no boot) reutilizada depois de um login novo refresha com o cookie
+PRE-LOGIN e o login nao navega (gotcha herdado do financas — continua valido).
+**Se acontecer de novo:** qualquer chamada que REVOLVER estado no servidor
+(rotacao, one-time token, logout) precisa de dedupe com escopo = duracao da
+chamada, nunca cache permanente nem ausente. E falha de sessao nunca e engolida:
+propaga via handler registrado (inversao de dependencia: api.ts nao importa
+pinia/router).

@@ -25,6 +25,17 @@ vi.mock('vue-sonner', () => ({
   }),
 }));
 
+// Relógio travado em 2026-10-08 (T0): `emptyValues` do form de criação parte de
+// `new Date()` e o teste "mudar a data de início NÃO pergunta" asserta o FIM
+// DERIVADO do agora real — sem isso ele quebra no dia 09/10 (e em qualquer data
+// != 08) por design. testing.md: data fixa, nunca `new Date()` solto.
+beforeEach(() => {
+  vi.useFakeTimers({ toFake: ['Date'], now: new Date('2026-10-08T12:00:00.000Z') });
+});
+afterEach(() => {
+  vi.useRealTimers();
+});
+
 const TZ = 'America/Sao_Paulo';
 
 function appt(
