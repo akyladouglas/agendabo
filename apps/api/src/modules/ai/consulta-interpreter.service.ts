@@ -24,10 +24,26 @@ type SimboloConsulta = NonNullable<ListarOutput['simbolo']>;
  * `simbolo` (resolvido deterministicamente em schedule-core) OU `intervalo`
  * (datas explicitas em calendario local do usuario — o LLM so extrai, a
  * aritmetica e do schedule-core; ADR-003/004 aplicado a leitura).
+ *
+ * `alvo`/`alvo_nome` (spec compartilhamento E.24, decisao D6): pass-through do
+ * candidato extraido pelo LLM. Ausente = `minha` (regressao zero); a decisao de
+ * ACESSO nunca e daqui — e da pura `resolveSharedTarget` no service (ADR-004/008).
  */
 export type ConsultaPeriodo =
-  | { ok: true; simbolo: SimboloConsulta; confidence: number }
-  | { ok: true; intervalo: { from: string; to: string }; confidence: number }
+  | {
+      ok: true;
+      simbolo: SimboloConsulta;
+      confidence: number;
+      alvo?: 'minha' | 'compartilhada';
+      alvo_nome?: string;
+    }
+  | {
+      ok: true;
+      intervalo: { from: string; to: string };
+      confidence: number;
+      alvo?: 'minha' | 'compartilhada';
+      alvo_nome?: string;
+    }
   | { ok: false; reason: 'parse' | 'low_confidence' | 'no_tool_use' | 'fora_do_escopo' };
 
 const MAX_TOKENS = 256;
@@ -49,6 +65,10 @@ const SYSTEM_PROMPT = [
   '  data de hoje informada no prompt.',
   '- Sem periodo claro na fala (ex.: "meus compromissos"), deixe simbolo e intervalo em branco',
   '  e use confidence baixa: quem recebe vai perguntar o periodo.',
+  '- Alvo (campos alvo/alvo_nome): use alvo="compartilhada" + alvo_nome (o nome COMO DITO) quando a',
+  '  fala mirar a agenda de OUTRA pessoa ("na agenda da Fulano", "agenda do Fulano") — vale tambem',
+  '  para PEDIDOS de marcacao ("marca X na agenda da Fulano"), nao apenas perguntas. Omita alvo',
+  '  (ou use minha) para a agenda propria do usuario.',
   '- Na duvida, prefira confidence baixa (ex.: 0.3) a chutar.',
 ].join('\n');
 
@@ -121,13 +141,22 @@ export class ConsultaInterpreterService {
       }
       if (parsed.data.simbolo) {
         // simbolo presente => intervalo e ignorado (contrato do contracts/llm).
-        return { ok: true, simbolo: parsed.data.simbolo, confidence: parsed.data.confidence };
+        // alvo/alvo_nome: pass-through do candidato (E.24/D6) — o service decide.
+        return {
+          ok: true,
+          simbolo: parsed.data.simbolo,
+          confidence: parsed.data.confidence,
+          ...(parsed.data.alvo ? { alvo: parsed.data.alvo } : {}),
+          ...(parsed.data.alvo_nome ? { alvo_nome: parsed.data.alvo_nome } : {}),
+        };
       }
       if (parsed.data.intervalo) {
         return {
           ok: true,
           intervalo: parsed.data.intervalo,
           confidence: parsed.data.confidence,
+          ...(parsed.data.alvo ? { alvo: parsed.data.alvo } : {}),
+          ...(parsed.data.alvo_nome ? { alvo_nome: parsed.data.alvo_nome } : {}),
         };
       }
       // "listar" sem simbolo nem intervalo: periodo nao extraido — o bot pergunta.

@@ -355,3 +355,24 @@ PRE-LOGIN e o login nao navega (gotcha herdado do financas — continua valido).
 chamada, nunca cache permanente nem ausente. E falha de sessao nunca e engolida:
 propaga via handler registrado (inversao de dependencia: api.ts nao importa
 pinia/router).
+
+## 27. Parse de strip na query apaga campo extra do backend - a fonte da agenda pediu 403
+
+**Problema:** bug da fonte compartilhada (spec B.12, web): o seletor de fonte montava
+opcoes com `value: l.id` (id do VINCULO) e a query de compromissos mandava
+`owner=<id do vinculo>` - a API espera o **ownerId** (uuid do DONO) e dava 403 sempre.
+Ao corrigir, achado pior: o `queryFn` era `schema.parse(await api.list())` - o zod de
+STRIP destroi campos extras do OBJETO PARSEADO, entao um `ownerId` que o backend mande
+no payload fica INLEGIVEL para a pagina (o contrato e intocavel): a pagina nao tem como
+ler o dono a partir do `data` ja validado.
+**Fix aplicado:** o `queryFn` guarda o wrapper `{ data, raw }` no cache (MESMO fetch,
+zero requests extras) - `data` = o contrato validado (shape de sempre), `rawData` = a
+resposta crua de onde a pagina le `ownerId` (com fallback documentado para o shape
+antigo: sem uuid do dono, usa-se o id do vinculo - nunca se inventa). Dimensoes
+diferentes NUNCA se misturam: `sourceOwner` = valor do seletor = `owner=` da query =
+dimensao de `qk.appointments(from, to, owner)` = o DONO.
+**Se acontecer de novo:** quando a UI precisar de um campo que o contrato ainda nao
+lista, o parse de strip NAO e a unica copia - ou o campo entra no contrato, ou o
+`queryFn` preserva o cru junto (`{data, raw}`); e o valor que vai para query/cache tem
+que ser a MESMA dimensao que a API espera na borda (testado com uuids diferentes de
+proposito: dono != vinculo).

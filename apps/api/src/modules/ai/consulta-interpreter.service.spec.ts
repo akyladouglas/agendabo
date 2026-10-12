@@ -160,6 +160,52 @@ describe('ConsultaInterpreterService', () => {
     });
   });
 
+  it('alvo compartilhada + nome dito: pass-through do candidato no ok:true (E.24/D6 — a decisão de acesso é do service)', async () => {
+    const client = new StubClient([
+      toolUse({
+        tipo: 'listar',
+        simbolo: 'amanha',
+        alvo: 'compartilhada',
+        alvo_nome: 'Fulano',
+        confidence: 0.9,
+      }),
+    ]);
+    const svc = new ConsultaInterpreterService(client as never, env(), new LlmCallContextService());
+
+    expect(await svc.interpret('como está a agenda da Fulano amanhã?', { todayLocal: TODAY })).toEqual(
+      {
+        ok: true,
+        simbolo: 'amanha',
+        confidence: 0.9,
+        alvo: 'compartilhada',
+        alvo_nome: 'Fulano',
+      },
+    );
+  });
+
+  it('alvo ausente (fala da agenda própria): shape IDÊNTICO ao de hoje (regressão zero)', async () => {
+    const client = new StubClient([toolUse({ tipo: 'listar', simbolo: 'hoje', confidence: 0.95 })]);
+    const svc = new ConsultaInterpreterService(client as never, env(), new LlmCallContextService());
+
+    const result = await svc.interpret('o que tenho hoje?', { todayLocal: TODAY });
+
+    // nem `alvo` nem `alvo_nome` entram como undefined (toEqual strict no shape)
+    expect(result).toEqual({ ok: true, simbolo: 'hoje', confidence: 0.95 });
+    expect(Object.keys(result as object)).toEqual(['ok', 'simbolo', 'confidence']);
+  });
+
+  it('confiança baixa do payload COM alvo: cai em low_confidence global (nunca usa alvo no chute)', async () => {
+    const client = new StubClient([
+      toolUse({ tipo: 'listar', simbolo: 'hoje', alvo: 'compartilhada', confidence: 0.3 }),
+    ]);
+    const svc = new ConsultaInterpreterService(client as never, env(), new LlmCallContextService());
+
+    expect(await svc.interpret('a agenda da Fulano hoje?', { todayLocal: TODAY })).toEqual({
+      ok: false,
+      reason: 'low_confidence',
+    });
+  });
+
   it('data de hoje no timezone do usuario vai no bloco volatile (prompt, llm.md #4)', async () => {
     const client = new StubClient([toolUse({ tipo: 'listar', simbolo: 'hoje', confidence: 0.9 })]);
     const svc = new ConsultaInterpreterService(client as never, env(), new LlmCallContextService());

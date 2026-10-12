@@ -1,6 +1,6 @@
 # Spec — Compartilhamento de agenda entre usuários (bidirecional por par)
 
-- Domínio: **compartilhamento** (novo) | Data: 2026-10-12 | Status: **aprovada (abertos 1–6 resolvidos pelo humano em 2026-10-12)**
+- Domínio: **compartilhamento** (novo) | Data: 2026-10-12 | Status: **implementada (aprovada 2026-10-12; implementada e revisada em 2026-10-12 — plano ia-docs/plans/compartilhamento-agenda-par.plan.md)**
 - ADRs relacionados: **ADR-002** (UTC no banco + timezone por usuário na borda — o convidado
   vê a agenda emprestada no fuso **dele**, seguido integralmente), **ADR-004/008** (LLM
   interpreta, regras decidem — a decisão de _acesso_ a uma agenda compartilhada é
@@ -243,7 +243,7 @@ carregando/erro/vazio das listas do perfil visíveis; [ ] sem scroll horizontal.
 
 ## Critérios de aceite (checklist de fim de feature)
 
-- [ ] Spec marcada implementada; plano `ia-docs/plans/compartilhamento-agenda-par.plan.md` concluído.
+- [x] Spec marcada implementada; plano `ia-docs/plans/compartilhamento-agenda-par.plan.md` concluído.
 - [ ] Migrations `shared_agendas` + `shared_agenda_audit_events` aplicáveis (índice parcial único do `tokenHash` via SQL, lição do digest).
 - [ ] Matriz status × rota testada (pending/active/revoked × `GET /appointments?owner`, accept, decline, revoke).
 - [ ] `needs_review` do dono invisível ao convidado (`rawText`/`reviewReason` ausentes do payload).
